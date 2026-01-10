@@ -1,0 +1,23 @@
+# macOS
+.DS_Store
+
+# Rust
+target/
+Cargo.lock
+*.rs.bk
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Build artifacts
+*.o
+*.so
+*.dylib
+
+# Working documents (superseded by final docs)
+AGENT_MENTAL_MODEL.md
+ARCHITECTURE.md
+architecture-plan.md
