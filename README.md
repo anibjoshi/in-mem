@@ -251,9 +251,18 @@ See [M1_ARCHITECTURE.md](M1_ARCHITECTURE.md) for complete architecture specifica
 
 ## Documentation
 
+### Architecture & Design
 - **[M1_ARCHITECTURE.md](M1_ARCHITECTURE.md)**: Complete M1 architecture specification
 - **[docs/diagrams/m1-architecture.md](docs/diagrams/m1-architecture.md)**: Visual architecture diagrams
 - **[MILESTONES.md](MILESTONES.md)**: Project roadmap and milestone definitions
+
+### Development Process
+- **[TDD_METHODOLOGY.md](TDD_METHODOLOGY.md)**: Test-Driven Development approach and testing strategy
+- **[DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md)**: Git workflow for parallel development
+- **[CLAUDE_COORDINATION.md](CLAUDE_COORDINATION.md)**: Multi-Claude coordination guide
+- **[GETTING_STARTED.md](GETTING_STARTED.md)**: Quick start guide for new developers
+
+### Project Management
 - **[github-issues/](github-issues/)**: Epic and user story creation scripts
 
 ## License

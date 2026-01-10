@@ -109,6 +109,8 @@ cargo build --all
 # 5. Run linting: cargo clippy --all -- -D warnings
 ```
 
+**See [TDD_METHODOLOGY.md](TDD_METHODOLOGY.md) for complete testing strategy and examples.**
+
 ### Step 5: Complete the Story
 
 ```bash
