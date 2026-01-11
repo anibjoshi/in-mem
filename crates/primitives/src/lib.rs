@@ -10,28 +10,17 @@
 //!
 //! All primitives are stateless facades over the Database engine.
 
-// Module declarations (will be implemented across milestones)
-// pub mod kv;              // Story #31 (M1)
+#![warn(missing_docs)]
+#![warn(clippy::all)]
+
+// Module declarations
+pub mod kv;
+// Future primitives (will be implemented across milestones):
 // pub mod event_log;       // M3
 // pub mod state_machine;   // M3
 // pub mod trace;           // M3
 // pub mod run_index;       // M3
 // pub mod vector;          // M6
 
-#![warn(missing_docs)]
-#![warn(clippy::all)]
-
-/// Placeholder for primitives functionality
-pub fn placeholder() {
-    // This crate will contain primitive implementations
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_placeholder() {
-        placeholder();
-    }
-}
+// Re-exports
+pub use kv::KVStore;
