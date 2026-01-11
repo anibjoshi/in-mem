@@ -137,11 +137,12 @@ impl Database {
             incomplete_txns = stats.incomplete_txns,
             orphaned_entries = stats.orphaned_entries,
             final_version = stats.final_version,
+            max_txn_id = stats.max_txn_id,
             "Recovery complete"
         );
 
-        // Initialize txn_id counter from 1 - each run_id + txn_id combination is unique
-        let next_txn_id = AtomicU64::new(1);
+        // Initialize txn_id counter from max seen in WAL + 1 to avoid collisions
+        let next_txn_id = AtomicU64::new(stats.max_txn_id + 1);
 
         Ok(Self {
             data_dir,
@@ -252,6 +253,8 @@ impl Database {
                 key: key.clone(),
                 value: Value::RunMetadata(metadata.clone()),
                 version,
+                timestamp,
+                ttl: None,
             })?;
 
             wal.append(&WALEntry::CommitTxn { txn_id, run_id })?;
@@ -330,6 +333,8 @@ impl Database {
                 key: key.clone(),
                 value: Value::RunMetadata(metadata.clone()),
                 version,
+                timestamp,
+                ttl: None,
             })?;
 
             wal.append(&WALEntry::CommitTxn { txn_id, run_id })?;
@@ -395,6 +400,8 @@ impl Database {
                     key: key.clone(),
                     value: Value::RunMetadata(metadata.clone()),
                     version,
+                    timestamp,
+                    ttl: None,
                 })?;
 
                 wal.append(&WALEntry::CommitTxn { txn_id, run_id })?;
@@ -555,6 +562,8 @@ impl Database {
             key: storage_key,
             value,
             version,
+            timestamp,
+            ttl,
         })?;
 
         // Log CommitTxn to WAL
@@ -751,6 +760,8 @@ mod tests {
                 key: Key::new_kv(ns.clone(), "key1"),
                 value: Value::Bytes(b"value1".to_vec()),
                 version: 1,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
 
@@ -807,6 +818,8 @@ mod tests {
                     key: Key::new_kv(ns.clone(), "persistent"),
                     value: Value::Bytes(b"data".to_vec()),
                     version: 1,
+                    timestamp: 0,
+                    ttl: None,
                 })
                 .unwrap();
 
@@ -865,6 +878,8 @@ mod tests {
                 key: Key::new_kv(ns.clone(), "incomplete"),
                 value: Value::Bytes(b"never_committed".to_vec()),
                 version: 1,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
 
@@ -1031,6 +1046,8 @@ mod tests {
                     key: Key::new_kv(ns.clone(), "drop_test"),
                     value: Value::Bytes(b"value".to_vec()),
                     version: 1,
+                    timestamp: 0,
+                    ttl: None,
                 })
                 .unwrap();
 

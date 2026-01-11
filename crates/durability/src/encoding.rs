@@ -279,6 +279,8 @@ mod tests {
                 key: Key::new_kv(ns.clone(), "key"),
                 value: Value::Bytes(b"value".to_vec()),
                 version: 10,
+                timestamp: 0,
+                ttl: None,
             },
             WALEntry::Delete {
                 run_id,

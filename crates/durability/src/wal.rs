@@ -83,6 +83,10 @@ pub enum WALEntry {
         value: Value,
         /// Version number for this write
         version: u64,
+        /// Timestamp when this write occurred
+        timestamp: Timestamp,
+        /// Optional TTL for this value
+        ttl: Option<Duration>,
     },
 
     /// Delete operation
@@ -532,37 +536,52 @@ impl WAL {
         let mut entries = Vec::new();
         let mut file_offset = start_offset;
 
-        // Read file in chunks
+        // Read file in chunks, handling entries that span buffer boundaries
+        let mut leftover: Vec<u8> = Vec::new();
+
         loop {
-            // Read into buffer
+            // Read into buffer (prepend any leftover bytes from previous iteration)
             let mut buf = vec![0u8; 64 * 1024]; // 64KB buffer
             let bytes_read = reader.read(&mut buf)?;
 
-            if bytes_read == 0 {
-                break; // EOF
+            if bytes_read == 0 && leftover.is_empty() {
+                break; // True EOF with no pending data
+            }
+
+            if bytes_read == 0 && !leftover.is_empty() {
+                // EOF but we have leftover bytes - incomplete entry at end
+                // This is expected for partial writes during crash
+                break;
             }
 
             buf.truncate(bytes_read);
 
-            // Decode entries from buffer
+            // Prepend leftover bytes from previous chunk
+            let mut combined = leftover;
+            combined.extend_from_slice(&buf);
+            leftover = Vec::new(); // Clear leftover
+
+            // Decode entries from combined buffer
             let mut offset_in_buf = 0;
-            while offset_in_buf < buf.len() {
-                match decode_entry(&buf[offset_in_buf..], file_offset) {
+            while offset_in_buf < combined.len() {
+                match decode_entry(&combined[offset_in_buf..], file_offset) {
                     Ok((entry, bytes_consumed)) => {
                         entries.push(entry);
                         offset_in_buf += bytes_consumed;
                         file_offset += bytes_consumed as u64;
                     }
                     Err(_) => {
-                        // Could be incomplete entry at end or corruption
-                        // If buffer wasn't full, we're at EOF - incomplete entry is expected
-                        if bytes_read < buf.capacity() {
-                            // EOF, incomplete entry at end is expected (partial write)
+                        // Could be incomplete entry at end of buffer
+                        if bytes_read < 64 * 1024 {
+                            // We read less than buffer size, so we're at EOF
+                            // Remaining bytes are incomplete entry (expected for partial writes)
                             return Ok(entries);
                         }
-                        // Buffer was full but decode failed - might need more data
-                        // For simplicity, break and return what we have
-                        return Ok(entries);
+
+                        // Buffer was full - entry might span into next chunk
+                        // Save remaining bytes for next iteration
+                        leftover = combined[offset_in_buf..].to_vec();
+                        break;
                     }
                 }
             }
@@ -652,6 +671,8 @@ mod tests {
             key: key.clone(),
             value: value.clone(),
             version: 100,
+            timestamp: 0,
+            ttl: None,
         };
 
         assert_eq!(entry.run_id(), Some(run_id));
@@ -791,6 +812,8 @@ mod tests {
                 key: Key::new_kv(ns.clone(), "key"),
                 value: Value::Bytes(b"value".to_vec()),
                 version: 10,
+                timestamp: 0,
+                ttl: None,
             },
             WALEntry::Delete {
                 run_id,
@@ -878,6 +901,8 @@ mod tests {
                 key: Key::new_kv(ns.clone(), format!("key_{}", i)),
                 value: Value::Bytes(vec![i as u8]),
                 version: i,
+                timestamp: 0,
+                ttl: None,
             };
             wal.append(&entry).unwrap();
         }

@@ -47,6 +47,8 @@ pub struct ReplayStats {
     pub aborted_txns: usize,
     /// Number of orphaned entries discarded (Write/Delete without BeginTxn)
     pub orphaned_entries: usize,
+    /// Maximum transaction ID seen in WAL (for initializing next_txn_id)
+    pub max_txn_id: u64,
 }
 
 /// Transaction state during replay
@@ -282,6 +284,7 @@ pub fn replay_wal(wal: &WAL, storage: &UnifiedStore) -> Result<ReplayStats> {
     // When a BeginTxn comes in, it becomes the active transaction for that run_id
     let mut active_txn_per_run: HashMap<RunId, u64> = HashMap::new();
     let mut max_version: u64 = 0;
+    let mut max_txn_id: u64 = 0;
     let mut orphaned_count: usize = 0;
 
     for entry in entries {
@@ -292,6 +295,8 @@ pub fn replay_wal(wal: &WAL, storage: &UnifiedStore) -> Result<ReplayStats> {
 
         match &entry {
             WALEntry::BeginTxn { txn_id, run_id, .. } => {
+                // Track max txn_id for initializing next_txn_id after recovery
+                max_txn_id = max_txn_id.max(*txn_id);
                 // Start a new transaction and make it the active one for this run_id
                 transactions.insert(*txn_id, Transaction::new(*txn_id, *run_id));
                 active_txn_per_run.insert(*run_id, *txn_id);
@@ -337,6 +342,7 @@ pub fn replay_wal(wal: &WAL, storage: &UnifiedStore) -> Result<ReplayStats> {
     // Apply committed transactions and collect stats
     let mut stats = ReplayStats {
         final_version: max_version,
+        max_txn_id,
         ..Default::default()
     };
 
@@ -389,10 +395,18 @@ fn apply_transaction(
                 key,
                 value,
                 version,
+                timestamp,
+                ttl,
                 ..
             } => {
-                // Apply write, preserving version from WAL
-                storage.put_with_version(key.clone(), value.clone(), *version)?;
+                // Apply write, preserving version, TTL, and timestamp from WAL
+                storage.put_with_version_and_ttl(
+                    key.clone(),
+                    value.clone(),
+                    *version,
+                    *ttl,
+                    Some(*timestamp),
+                )?;
                 stats.writes_applied += 1;
                 stats.final_version = stats.final_version.max(*version);
             }
@@ -474,6 +488,8 @@ mod tests {
                 key: Key::new_kv(ns.clone(), "key1"),
                 value: Value::Bytes(b"value1".to_vec()),
                 version: 1,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
 
@@ -482,6 +498,8 @@ mod tests {
                 key: Key::new_kv(ns.clone(), "key2"),
                 value: Value::String("value2".to_string()),
                 version: 2,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
 
@@ -541,6 +559,8 @@ mod tests {
                 key: Key::new_kv(ns.clone(), "key1"),
                 value: Value::Bytes(b"value1".to_vec()),
                 version: 1,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
 
@@ -590,6 +610,8 @@ mod tests {
                 key: Key::new_kv(ns.clone(), "key1"),
                 value: Value::Bytes(b"value1".to_vec()),
                 version: 1,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
 
@@ -641,6 +663,8 @@ mod tests {
                 key: Key::new_kv(ns.clone(), "key1"),
                 value: Value::Bytes(b"v1".to_vec()),
                 version: 1,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
             wal.append(&WALEntry::CommitTxn { txn_id: 1, run_id })
@@ -658,6 +682,8 @@ mod tests {
                 key: Key::new_kv(ns.clone(), "key2"),
                 value: Value::Bytes(b"v2".to_vec()),
                 version: 2,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
             // NO CommitTxn
@@ -674,6 +700,8 @@ mod tests {
                 key: Key::new_kv(ns.clone(), "key3"),
                 value: Value::Bytes(b"v3".to_vec()),
                 version: 3,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
             wal.append(&WALEntry::CommitTxn { txn_id: 3, run_id })
@@ -734,6 +762,8 @@ mod tests {
                 key: Key::new_kv(ns.clone(), "key1"),
                 value: Value::Bytes(b"v1".to_vec()),
                 version: 1,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
 
@@ -790,6 +820,8 @@ mod tests {
                 key: Key::new_kv(ns.clone(), "key1"),
                 value: Value::I64(100),
                 version: 100, // Non-sequential version
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
 
@@ -798,6 +830,8 @@ mod tests {
                 key: Key::new_kv(ns.clone(), "key2"),
                 value: Value::I64(200),
                 version: 200,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
 
@@ -806,6 +840,8 @@ mod tests {
                 key: Key::new_kv(ns.clone(), "key3"),
                 value: Value::I64(300),
                 version: 300,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
 
@@ -862,6 +898,8 @@ mod tests {
                 key: Key::new_kv(ns.clone(), "key1"),
                 value: Value::Bytes(b"v1".to_vec()),
                 version: 1,
+                timestamp: 0,
+                ttl: None,
             },
             WALEntry::CommitTxn { txn_id: 1, run_id },
         ];
@@ -894,6 +932,8 @@ mod tests {
                 key: Key::new_kv(ns, "key1"),
                 value: Value::Bytes(b"v1".to_vec()),
                 version: 1,
+                timestamp: 0,
+                ttl: None,
             },
             // NO CommitTxn
         ];
@@ -921,6 +961,8 @@ mod tests {
             key: Key::new_kv(ns, "key1"),
             value: Value::Bytes(b"v1".to_vec()),
             version: 1,
+            timestamp: 0,
+            ttl: None,
         }];
 
         let result = validate_transactions(&entries);
@@ -998,6 +1040,8 @@ mod tests {
                 key: Key::new_kv(ns.clone(), "orphan1"),
                 value: Value::I64(1),
                 version: 1,
+                timestamp: 0,
+                ttl: None,
             },
             // Valid complete transaction
             WALEntry::BeginTxn {
@@ -1010,6 +1054,8 @@ mod tests {
                 key: Key::new_kv(ns.clone(), "valid"),
                 value: Value::I64(2),
                 version: 2,
+                timestamp: 0,
+                ttl: None,
             },
             WALEntry::CommitTxn { txn_id: 1, run_id },
             // Incomplete transaction
@@ -1023,6 +1069,8 @@ mod tests {
                 key: Key::new_kv(ns.clone(), "incomplete"),
                 value: Value::I64(3),
                 version: 3,
+                timestamp: 0,
+                ttl: None,
             },
             // No CommitTxn for txn 2
             // Orphaned write (txn 2 ended implicitly with txn 3)

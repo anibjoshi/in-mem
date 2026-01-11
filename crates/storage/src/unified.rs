@@ -187,7 +187,40 @@ impl UnifiedStore {
     ///
     /// * `Ok(())` - Write succeeded
     pub fn put_with_version(&self, key: Key, value: Value, version: u64) -> Result<()> {
-        let versioned_value = VersionedValue::new(value, version, None);
+        self.put_with_version_and_ttl(key, value, version, None, None)
+    }
+
+    /// Put with a specific version, TTL, and timestamp (for WAL replay only)
+    ///
+    /// Preserves all metadata from WAL entries during recovery, including
+    /// TTL and the original timestamp. This ensures TTL expiration works
+    /// correctly after recovery.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key to write
+    /// * `value` - The value to write
+    /// * `version` - The exact version from the WAL entry
+    /// * `ttl` - Optional TTL from the WAL entry
+    /// * `timestamp` - Optional original timestamp (uses current time if None)
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - Write succeeded
+    pub fn put_with_version_and_ttl(
+        &self,
+        key: Key,
+        value: Value,
+        version: u64,
+        ttl: Option<std::time::Duration>,
+        timestamp: Option<i64>,
+    ) -> Result<()> {
+        let mut versioned_value = VersionedValue::new(value, version, ttl);
+        // Override timestamp if provided (for recovery)
+        if let Some(ts) = timestamp {
+            versioned_value.timestamp = ts;
+        }
+        let versioned_value = versioned_value;
         let new_expiry = Self::expiry_timestamp(&versioned_value);
 
         // Acquire ALL locks (data + indices) for atomic update
