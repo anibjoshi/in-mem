@@ -25,8 +25,8 @@ gh auth status
 ### 3. Understand the Structure
 
 **Key Documents:**
-- [README.md](README.md) - Project overview
-- [M1_ARCHITECTURE.md](M1_ARCHITECTURE.md) - Complete M1 architecture spec
+- [README.md](../../README.md) - Project overview
+- [M1_ARCHITECTURE.md](../architecture/M1_ARCHITECTURE.md) - Complete M1 architecture spec
 - [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md) - Git workflow for parallel development
 - [CLAUDE_COORDINATION.md](CLAUDE_COORDINATION.md) - How multiple Claudes coordinate
 

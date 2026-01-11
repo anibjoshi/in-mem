@@ -252,18 +252,20 @@ See [M1_ARCHITECTURE.md](M1_ARCHITECTURE.md) for complete architecture specifica
 ## Documentation
 
 ### Architecture & Design
-- **[M1_ARCHITECTURE.md](M1_ARCHITECTURE.md)**: Complete M1 architecture specification
-- **[docs/diagrams/m1-architecture.md](docs/diagrams/m1-architecture.md)**: Visual architecture diagrams
-- **[MILESTONES.md](MILESTONES.md)**: Project roadmap and milestone definitions
+- **[M1_ARCHITECTURE.md](docs/architecture/M1_ARCHITECTURE.md)**: Complete M1 architecture specification
+- **[Architecture Diagrams](docs/diagrams/m1-architecture.md)**: Visual architecture diagrams
+- **[Original Spec](docs/architecture/spec.md)**: Original project specification
 
 ### Development Process
-- **[TDD_METHODOLOGY.md](TDD_METHODOLOGY.md)**: Test-Driven Development approach and testing strategy
-- **[DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md)**: Git workflow for parallel development
-- **[CLAUDE_COORDINATION.md](CLAUDE_COORDINATION.md)**: Multi-Claude coordination guide
-- **[GETTING_STARTED.md](GETTING_STARTED.md)**: Quick start guide for new developers
+- **[Getting Started](docs/development/GETTING_STARTED.md)**: Quick start guide for new developers
+- **[TDD Methodology](docs/development/TDD_METHODOLOGY.md)**: Test-Driven Development approach and testing strategy
+- **[Development Workflow](docs/development/DEVELOPMENT_WORKFLOW.md)**: Git workflow for parallel development
+- **[Claude Coordination](docs/development/CLAUDE_COORDINATION.md)**: Multi-Claude coordination guide
 
 ### Project Management
-- **[github-issues/](github-issues/)**: Epic and user story creation scripts
+- **[Milestones](docs/milestones/MILESTONES.md)**: Project roadmap and milestone definitions
+- **[Project Status](docs/milestones/PROJECT_STATUS.md)**: Current status and progress tracking
+- **[Epic & User Stories](github-issues/)**: GitHub issue creation scripts
 
 ## License
 
