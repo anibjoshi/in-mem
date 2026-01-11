@@ -2,19 +2,33 @@
 //!
 //! This crate implements optimistic concurrency control (OCC) with:
 //! - TransactionContext: Read/write set tracking
-//! - Snapshot isolation via ClonedSnapshotView
-//! - Conflict detection at commit time (Story #83)
+//! - Snapshot isolation
+//! - Conflict detection at commit time
 //! - Compare-and-swap (CAS) operations
+//!
+//! Note: M1 does NOT implement full OCC. That comes in M2.
+//! M1 has implicit transactions only (simple put/get).
+
+// Module declarations (will be implemented in M2)
+// pub mod transaction;  // M2: TransactionContext
+// pub mod snapshot;     // M2: Snapshot isolation
+// pub mod validation;   // M2: Conflict detection
+// pub mod cas;          // M2: CAS operations
 
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 
-pub mod snapshot;
-pub mod transaction;
-// pub mod validation;  // Story #83
+/// Placeholder for concurrency functionality
+pub fn placeholder() {
+    // This crate will contain OCC implementation in M2
+}
 
-pub use snapshot::ClonedSnapshotView;
-pub use transaction::{CASOperation, TransactionContext, TransactionStatus};
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-// Re-export the SnapshotView trait from core for convenience
-pub use in_mem_core::traits::SnapshotView;
+    #[test]
+    fn test_placeholder() {
+        placeholder();
+    }
+}
