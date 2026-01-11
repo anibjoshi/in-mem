@@ -17,7 +17,11 @@
 - ✅ **TDD integrity verified** (no evidence of silent test modifications)
 - ✅ **All integration tests passing** (end-to-end validation)
 
-**See**: [M1_COMPLETION_REPORT.md](M1_COMPLETION_REPORT.md) for full details.
+**For detailed reports**: See [docs-archive branch](https://github.com/anibjoshi/in-mem/tree/docs-archive) for:
+- M1 Completion Report
+- 9-Phase Quality Audit Report
+- Epic Reviews and Summaries
+- Claude Coordination Prompts
 
 **Next**: M2 Planning - Transactions, Primitives, Run Index, Vectors
 

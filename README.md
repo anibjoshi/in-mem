@@ -71,28 +71,31 @@ All primitives share the same unified storage layer, enabling efficient cross-pr
 
 ## Project Status
 
-**Current Phase**: Milestone 1 (Foundation) - In Planning
+**Current Phase**: ✅ **M1 Foundation Complete!**
 
-### Milestone Progress
+### M1 Achievements
 
-- ✅ Architecture specification complete ([M1_ARCHITECTURE.md](M1_ARCHITECTURE.md))
-- ✅ Architecture diagrams complete ([docs/diagrams/](docs/diagrams/))
-- ✅ 5 Epics defined with 27 user stories ([GitHub Issues](https://github.com/anibjoshi/in-mem/issues))
-- ⏳ Implementation in progress
+- ✅ **297 total tests** (95.45% coverage)
+- ✅ **Performance**: 20,564 txns/sec recovery (10x over target)
+- ✅ **Zero compiler warnings** (clippy clean)
+- ✅ **TDD integrity verified** (9-phase quality audit passed)
+- ✅ All integration tests passing
+
+**See**: [PROJECT_STATUS.md](docs/milestones/PROJECT_STATUS.md) for full details.
 
 ### Roadmap to MVP
 
 | Milestone | Goal | Status | Duration |
 |-----------|------|--------|----------|
-| **M1: Foundation** | Basic storage + WAL + recovery | 🔄 In Progress | Week 1-2 |
-| **M2: Transactions** | OCC with snapshot isolation | 📋 Planned | Week 3 |
+| **M1: Foundation** | Basic storage + WAL + recovery | ✅ **Complete** | 2 days |
+| **M2: Transactions** | OCC with snapshot isolation | 📋 Next | Week 3 |
 | **M3: Primitives** | All 5 primitives (KV, Events, SM, Trace, RunIndex) | 📋 Planned | Week 4 |
 | **M4: Durability** | Snapshots + production recovery | 📋 Planned | Week 5 |
 | **M5: Replay & Polish** | Deterministic replay + benchmarks | 📋 Planned | Week 6 |
 
-**Target: 6 weeks to MVP**
+**Target: M1 complete, M2-M5 in progress**
 
-See [MILESTONES.md](MILESTONES.md) for detailed milestone breakdown.
+See [MILESTONES.md](docs/milestones/MILESTONES.md) for detailed milestone breakdown.
 
 ## Quick Start
 
@@ -251,21 +254,36 @@ See [M1_ARCHITECTURE.md](M1_ARCHITECTURE.md) for complete architecture specifica
 
 ## Documentation
 
-### Architecture & Design
-- **[M1_ARCHITECTURE.md](docs/architecture/M1_ARCHITECTURE.md)**: Complete M1 architecture specification
-- **[Architecture Diagrams](docs/diagrams/m1-architecture.md)**: Visual architecture diagrams
-- **[Original Spec](docs/architecture/spec.md)**: Original project specification
+### Core Documentation (main branch)
 
-### Development Process
-- **[Getting Started](docs/development/GETTING_STARTED.md)**: Quick start guide for new developers
-- **[TDD Methodology](docs/development/TDD_METHODOLOGY.md)**: Test-Driven Development approach and testing strategy
-- **[Development Workflow](docs/development/DEVELOPMENT_WORKFLOW.md)**: Git workflow for parallel development
-- **[Claude Coordination](docs/development/CLAUDE_COORDINATION.md)**: Multi-Claude coordination guide
+**Architecture & Design**:
+- [M1_ARCHITECTURE.md](docs/architecture/M1_ARCHITECTURE.md) - Complete M1 architecture specification
+- [Architecture Diagrams](docs/diagrams/m1-architecture.md) - Visual architecture diagrams
 
-### Project Management
-- **[Milestones](docs/milestones/MILESTONES.md)**: Project roadmap and milestone definitions
-- **[Project Status](docs/milestones/PROJECT_STATUS.md)**: Current status and progress tracking
-- **[Epic & User Stories](github-issues/)**: GitHub issue creation scripts
+**Development**:
+- [Getting Started](docs/development/GETTING_STARTED.md) - Quick start guide for new developers
+- [TDD Methodology](docs/development/TDD_METHODOLOGY.md) - Test-Driven Development approach
+- [Development Workflow](docs/development/DEVELOPMENT_WORKFLOW.md) - Git workflow
+
+**Project Management**:
+- [Milestones](docs/milestones/MILESTONES.md) - Project roadmap M1-M5
+- [Project Status](docs/milestones/PROJECT_STATUS.md) - Current status and metrics
+
+### Historical Documentation ([docs-archive branch](https://github.com/anibjoshi/in-mem/tree/docs-archive))
+
+**M1 Completion**:
+- M1 Completion Report - Epic-by-epic results, performance benchmarks
+- 9-Phase Quality Audit Report - Comprehensive quality validation
+- Epic Reviews (1-4) - Detailed epic validation reports
+
+**Development Process**:
+- Claude Coordination Guide - Multi-agent coordination
+- Epic Review Process - Quality gates and validation
+- TDD Lessons Learned - Insights from M1
+
+**Planning**:
+- Epic Claude Prompts (2-5) - Implementation guidance for agents
+- Original Spec - Initial project specification
 
 ## License
 
@@ -278,4 +296,4 @@ See [M1_ARCHITECTURE.md](M1_ARCHITECTURE.md) for complete architecture specifica
 
 ---
 
-**Status**: Active development - M1 Foundation in progress (27 user stories defined)
+**Status**: ✅ M1 Foundation Complete | 📋 M2 Planning Phase
