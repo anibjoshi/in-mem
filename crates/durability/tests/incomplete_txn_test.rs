@@ -59,6 +59,8 @@ fn test_discard_incomplete_transaction() {
             key: Key::new_kv(ns.clone(), "incomplete_key"),
             value: Value::String("should_not_persist".to_string()),
             version: 1,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
 
@@ -98,6 +100,8 @@ fn test_discard_orphaned_entries() {
             key: Key::new_kv(ns.clone(), "orphan_key"),
             value: Value::Bytes(b"orphaned_value".to_vec()),
             version: 1,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
 
@@ -153,6 +157,8 @@ fn test_mixed_committed_and_incomplete() {
             key: Key::new_kv(ns.clone(), "committed_key"),
             value: Value::I64(100),
             version: 1,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
         wal.append(&WALEntry::CommitTxn { txn_id: 1, run_id })
@@ -170,6 +176,8 @@ fn test_mixed_committed_and_incomplete() {
             key: Key::new_kv(ns.clone(), "incomplete_key"),
             value: Value::I64(200),
             version: 2,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
         // NO CommitTxn for txn 2
@@ -221,6 +229,8 @@ fn test_aborted_transactions_discarded() {
             key: Key::new_kv(ns.clone(), "aborted_key"),
             value: Value::String("should_not_persist".to_string()),
             version: 1,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
 
@@ -274,6 +284,8 @@ fn test_multiple_incomplete_transactions() {
             key: Key::new_kv(ns.clone(), "k1"),
             value: Value::I64(1),
             version: 1,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
 
@@ -289,6 +301,8 @@ fn test_multiple_incomplete_transactions() {
             key: Key::new_kv(ns.clone(), "k2"),
             value: Value::I64(2),
             version: 2,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
         wal.append(&WALEntry::CommitTxn { txn_id: 2, run_id })
@@ -314,6 +328,8 @@ fn test_multiple_incomplete_transactions() {
             key: Key::new_kv(ns.clone(), "k4"),
             value: Value::I64(4),
             version: 4,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
         wal.append(&WALEntry::AbortTxn { txn_id: 4, run_id })
@@ -331,6 +347,8 @@ fn test_multiple_incomplete_transactions() {
             key: Key::new_kv(ns.clone(), "k5"),
             value: Value::I64(5),
             version: 5,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
         wal.append(&WALEntry::CommitTxn { txn_id: 5, run_id })
@@ -348,6 +366,8 @@ fn test_multiple_incomplete_transactions() {
             key: Key::new_kv(ns.clone(), "k6"),
             value: Value::I64(6),
             version: 6,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
     }
@@ -389,6 +409,8 @@ fn test_orphaned_entries_with_valid_transactions() {
             key: Key::new_kv(ns.clone(), "orphan1"),
             value: Value::I64(1),
             version: 1,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
         wal.append(&WALEntry::Delete {
@@ -410,6 +432,8 @@ fn test_orphaned_entries_with_valid_transactions() {
             key: Key::new_kv(ns.clone(), "valid"),
             value: Value::I64(100),
             version: 3,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
         wal.append(&WALEntry::CommitTxn { txn_id: 1, run_id })
@@ -471,6 +495,8 @@ fn test_interleaved_transactions_different_run_ids() {
             key: Key::new_kv(ns2.clone(), "run2_key"),
             value: Value::I64(2),
             version: 1,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
         wal.append(&WALEntry::CommitTxn {
@@ -485,6 +511,8 @@ fn test_interleaved_transactions_different_run_ids() {
             key: Key::new_kv(ns1.clone(), "run1_key"),
             value: Value::I64(1),
             version: 2,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
         // NO CommitTxn for run 1
@@ -560,6 +588,8 @@ fn test_crash_during_large_transaction() {
                 key: Key::new_kv(ns.clone(), format!("key_{}", i)),
                 value: Value::I64(i as i64),
                 version: i as u64 + 1,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
         }

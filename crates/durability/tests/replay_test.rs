@@ -58,6 +58,8 @@ fn test_replay_single_committed_transaction() {
             key: Key::new_kv(ns.clone(), "hello"),
             value: Value::String("world".to_string()),
             version: 1,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
 
@@ -110,6 +112,8 @@ fn test_replay_single_incomplete_transaction() {
             key: Key::new_kv(ns.clone(), "crash_data"),
             value: Value::Bytes(b"should_not_persist".to_vec()),
             version: 1,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
 
@@ -160,6 +164,8 @@ fn test_replay_multiple_committed_transactions() {
                 key: Key::new_kv(ns.clone(), format!("key{}", i)),
                 value: Value::I64(i as i64 * 100),
                 version: i,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
 
@@ -211,6 +217,8 @@ fn test_replay_mixed_committed_and_incomplete() {
             key: Key::new_kv(ns.clone(), "key1"),
             value: Value::String("v1".to_string()),
             version: 1,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
         wal.append(&WALEntry::CommitTxn { txn_id: 1, run_id })
@@ -228,6 +236,8 @@ fn test_replay_mixed_committed_and_incomplete() {
             key: Key::new_kv(ns.clone(), "key2"),
             value: Value::String("v2".to_string()),
             version: 2,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
         // NO commit
@@ -244,6 +254,8 @@ fn test_replay_mixed_committed_and_incomplete() {
             key: Key::new_kv(ns.clone(), "key3"),
             value: Value::String("v3".to_string()),
             version: 3,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
         wal.append(&WALEntry::CommitTxn { txn_id: 3, run_id })
@@ -261,6 +273,8 @@ fn test_replay_mixed_committed_and_incomplete() {
             key: Key::new_kv(ns.clone(), "key4"),
             value: Value::String("v4".to_string()),
             version: 4,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
         wal.append(&WALEntry::AbortTxn { txn_id: 4, run_id })
@@ -278,6 +292,8 @@ fn test_replay_mixed_committed_and_incomplete() {
             key: Key::new_kv(ns.clone(), "key5"),
             value: Value::String("v5".to_string()),
             version: 5,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
         // NO commit
@@ -346,6 +362,8 @@ fn test_replay_preserves_exact_versions() {
             key: Key::new_kv(ns.clone(), "alpha"),
             value: Value::I64(111),
             version: 1000, // High version number
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
 
@@ -354,6 +372,8 @@ fn test_replay_preserves_exact_versions() {
             key: Key::new_kv(ns.clone(), "beta"),
             value: Value::I64(222),
             version: 2000,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
 
@@ -362,6 +382,8 @@ fn test_replay_preserves_exact_versions() {
             key: Key::new_kv(ns.clone(), "gamma"),
             value: Value::I64(333),
             version: 3000,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
 
@@ -426,6 +448,8 @@ fn test_replay_version_ordering_preserved() {
             key: Key::new_kv(ns.clone(), "key_z"),
             value: Value::Bool(true),
             version: 50,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
 
@@ -434,6 +458,8 @@ fn test_replay_version_ordering_preserved() {
             key: Key::new_kv(ns.clone(), "key_a"),
             value: Value::Bool(false),
             version: 10,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
 
@@ -442,6 +468,8 @@ fn test_replay_version_ordering_preserved() {
             key: Key::new_kv(ns.clone(), "key_m"),
             value: Value::Bool(true),
             version: 30,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
 
@@ -513,6 +541,8 @@ fn test_replay_write_then_delete_same_key() {
             key: Key::new_kv(ns.clone(), "temp"),
             value: Value::Bytes(b"created".to_vec()),
             version: 1,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
 
@@ -611,6 +641,8 @@ fn test_replay_multiple_writes_same_key() {
             key: Key::new_kv(ns.clone(), "counter"),
             value: Value::I64(1),
             version: 1,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
 
@@ -619,6 +651,8 @@ fn test_replay_multiple_writes_same_key() {
             key: Key::new_kv(ns.clone(), "counter"),
             value: Value::I64(2),
             version: 2,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
 
@@ -627,6 +661,8 @@ fn test_replay_multiple_writes_same_key() {
             key: Key::new_kv(ns.clone(), "counter"),
             value: Value::I64(3),
             version: 3,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
 
@@ -709,6 +745,8 @@ fn test_replay_different_value_types() {
             key: Key::new_kv(ns.clone(), "string"),
             value: Value::String("hello".to_string()),
             version: 1,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
 
@@ -717,6 +755,8 @@ fn test_replay_different_value_types() {
             key: Key::new_kv(ns.clone(), "i64"),
             value: Value::I64(-42),
             version: 2,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
 
@@ -725,6 +765,8 @@ fn test_replay_different_value_types() {
             key: Key::new_kv(ns.clone(), "bool"),
             value: Value::Bool(true),
             version: 3,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
 
@@ -733,6 +775,8 @@ fn test_replay_different_value_types() {
             key: Key::new_kv(ns.clone(), "bytes"),
             value: Value::Bytes(vec![0xDE, 0xAD, 0xBE, 0xEF]),
             version: 4,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
 
@@ -807,6 +851,8 @@ fn test_replay_deterministic_order() {
                 key: Key::new_kv(ns.clone(), format!("k{}", i)),
                 value: Value::I64(i as i64),
                 version: i,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
             wal.append(&WALEntry::CommitTxn { txn_id: i, run_id })

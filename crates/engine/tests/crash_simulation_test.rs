@@ -101,6 +101,8 @@ fn test_crash_after_begin_and_write() {
                 key: Key::new_kv(ns.clone(), "crash_key"),
                 value: Value::Bytes(b"never_committed".to_vec()),
                 version: 1,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
 
@@ -153,6 +155,8 @@ fn test_crash_after_commit_strict_mode() {
                 key: Key::new_kv(ns.clone(), "durable_key"),
                 value: Value::Bytes(b"durable_value".to_vec()),
                 version: 1,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
 
@@ -223,6 +227,8 @@ fn test_crash_batched_mode_may_lose_recent() {
                 key: Key::new_kv(ns.clone(), "maybe_lost"),
                 value: Value::Bytes(b"might_not_be_durable".to_vec()),
                 version: 1,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
 
@@ -284,6 +290,8 @@ fn test_multiple_incomplete_transactions() {
                     key: Key::new_kv(ns.clone(), format!("incomplete_{}", i)),
                     value: Value::Bytes(format!("value_{}", i).into_bytes()),
                     version: i + 1,
+                    timestamp: 0,
+                    ttl: None,
                 })
                 .unwrap();
 
@@ -346,6 +354,8 @@ fn test_mixed_committed_and_incomplete() {
                 key: Key::new_kv(ns.clone(), "committed_1"),
                 value: Value::Bytes(b"c1".to_vec()),
                 version: 1,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
         wal_guard
@@ -366,6 +376,8 @@ fn test_mixed_committed_and_incomplete() {
                 key: Key::new_kv(ns.clone(), "incomplete_2"),
                 value: Value::Bytes(b"i2".to_vec()),
                 version: 2,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
         // NO CommitTxn
@@ -384,6 +396,8 @@ fn test_mixed_committed_and_incomplete() {
                 key: Key::new_kv(ns.clone(), "committed_3"),
                 value: Value::Bytes(b"c3".to_vec()),
                 version: 3,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
         wal_guard
@@ -404,6 +418,8 @@ fn test_mixed_committed_and_incomplete() {
                 key: Key::new_kv(ns.clone(), "incomplete_4"),
                 value: Value::Bytes(b"i4".to_vec()),
                 version: 4,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
         // NO CommitTxn
@@ -483,6 +499,8 @@ fn test_recovery_after_clean_shutdown() {
                     key: Key::new_kv(ns.clone(), format!("key_{}", i)),
                     value: Value::Bytes(format!("value_{}", i).into_bytes()),
                     version: i + 1,
+                    timestamp: 0,
+                    ttl: None,
                 })
                 .unwrap();
             wal_guard
@@ -555,6 +573,8 @@ fn test_recovery_with_large_wal() {
                     key: Key::new_kv(ns.clone(), format!("k{}", i)),
                     value: Value::Bytes(vec![i as u8]),
                     version: i + 1,
+                    timestamp: 0,
+                    ttl: None,
                 })
                 .unwrap();
             wal_guard
@@ -626,6 +646,8 @@ fn test_crash_with_aborted_transaction() {
                 key: Key::new_kv(ns.clone(), "aborted_key"),
                 value: Value::Bytes(b"aborted_value".to_vec()),
                 version: 1,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
 
@@ -681,6 +703,8 @@ fn test_crash_multi_write_transaction() {
                     key: Key::new_kv(ns.clone(), format!("multi_key_{}", i)),
                     value: Value::I64(i),
                     version: (i + 1) as u64,
+                    timestamp: 0,
+                    ttl: None,
                 })
                 .unwrap();
         }
@@ -740,6 +764,8 @@ fn test_crash_with_delete_operation() {
                 key: Key::new_kv(ns.clone(), "to_delete"),
                 value: Value::Bytes(b"original".to_vec()),
                 version: 1,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
 
@@ -835,6 +861,8 @@ fn test_crash_interleaved_run_ids() {
                 key: Key::new_kv(ns1.clone(), "run1_committed"),
                 value: Value::Bytes(b"r1c".to_vec()),
                 version: 1,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
         wal_guard
@@ -858,6 +886,8 @@ fn test_crash_interleaved_run_ids() {
                 key: Key::new_kv(ns2.clone(), "run2_incomplete"),
                 value: Value::Bytes(b"r2i".to_vec()),
                 version: 2,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
         // NO CommitTxn for run 2
@@ -876,6 +906,8 @@ fn test_crash_interleaved_run_ids() {
                 key: Key::new_kv(ns1.clone(), "run1_incomplete"),
                 value: Value::Bytes(b"r1i".to_vec()),
                 version: 3,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
         // NO CommitTxn for run 1 txn 3

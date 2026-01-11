@@ -53,6 +53,8 @@ fn test_database_lifecycle() {
                 key: Key::new_kv(ns.clone(), "user:1"),
                 value: Value::String("Alice".to_string()),
                 version: 1,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
 
@@ -62,6 +64,8 @@ fn test_database_lifecycle() {
                 key: Key::new_kv(ns.clone(), "user:2"),
                 value: Value::String("Bob".to_string()),
                 version: 2,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
 
@@ -112,6 +116,8 @@ fn test_database_lifecycle() {
                 key: Key::new_kv(ns.clone(), "user:3"),
                 value: Value::String("Charlie".to_string()),
                 version: 3,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
 
@@ -184,6 +190,8 @@ fn test_crash_recovery() {
                 key: Key::new_kv(ns.clone(), "committed_key"),
                 value: Value::I64(42),
                 version: 1,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
 
@@ -206,6 +214,8 @@ fn test_crash_recovery() {
                 key: Key::new_kv(ns.clone(), "uncommitted_key"),
                 value: Value::I64(999),
                 version: 2,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
 
@@ -279,6 +289,8 @@ fn test_multiple_run_ids() {
                 key: Key::new_kv(ns1.clone(), "run1_key"),
                 value: Value::String("run1_value".to_string()),
                 version: 1,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
 
@@ -304,6 +316,8 @@ fn test_multiple_run_ids() {
                 key: Key::new_kv(ns2.clone(), "run2_key"),
                 value: Value::String("run2_value".to_string()),
                 version: 2,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
 
@@ -375,6 +389,8 @@ fn test_delete_operations() {
                 key: Key::new_kv(ns.clone(), "to_delete"),
                 value: Value::String("temp_value".to_string()),
                 version: 1,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
 
@@ -454,6 +470,8 @@ fn test_durability_modes() {
                 key: Key::new_kv(ns.clone(), "strict_key"),
                 value: Value::I64(1),
                 version: 1,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
 
@@ -502,6 +520,8 @@ fn test_durability_modes() {
                 key: Key::new_kv(ns.clone(), "batched_key"),
                 value: Value::I64(2),
                 version: 1,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
 
@@ -560,6 +580,8 @@ fn test_large_transaction() {
                     key: Key::new_kv(ns.clone(), format!("key_{}", i)),
                     value: Value::I64(i as i64),
                     version: (i + 1) as u64,
+                    timestamp: 0,
+                    ttl: None,
                 })
                 .unwrap();
         }
@@ -625,6 +647,8 @@ fn test_aborted_transaction_discarded() {
                 key: Key::new_kv(ns.clone(), "committed"),
                 value: Value::Bool(true),
                 version: 1,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
 
@@ -647,6 +671,8 @@ fn test_aborted_transaction_discarded() {
                 key: Key::new_kv(ns.clone(), "aborted"),
                 value: Value::Bool(false),
                 version: 2,
+                timestamp: 0,
+                ttl: None,
             })
             .unwrap();
 

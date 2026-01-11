@@ -21,3 +21,4 @@ tracing = { workspace = true }
 tempfile = { workspace = true }
 proptest = { workspace = true }
 chrono = { workspace = true }
+in-mem-primitives = { path = "../primitives" }

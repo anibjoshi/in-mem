@@ -153,6 +153,8 @@ fn test_incomplete_transaction_detection() {
             key: Key::new_kv(ns.clone(), "key1"),
             value: Value::Bytes(b"value1".to_vec()),
             version: 1,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
 
@@ -161,6 +163,8 @@ fn test_incomplete_transaction_detection() {
             key: Key::new_kv(ns.clone(), "key2"),
             value: Value::Bytes(b"value2".to_vec()),
             version: 2,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
 
@@ -291,6 +295,8 @@ fn test_valid_wal_after_drop_fsync() {
             key: Key::new_kv(ns.clone(), "key"),
             value: Value::Bytes(b"value".to_vec()),
             version: 1,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
 
@@ -347,6 +353,8 @@ fn test_crc_on_all_entry_types() {
             key: Key::new_kv(ns.clone(), "key"),
             value: Value::Bytes(b"value".to_vec()),
             version: 1,
+            timestamp: 0,
+            ttl: None,
         })
         .unwrap();
 
