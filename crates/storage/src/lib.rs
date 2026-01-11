@@ -13,11 +13,12 @@
 
 pub mod cleaner;
 pub mod index;
+pub mod snapshot;
 pub mod ttl;
 pub mod unified;
-// pub mod snapshot;   // Story #15
 
 pub use cleaner::TTLCleaner;
 pub use index::{RunIndex, TypeIndex};
+pub use snapshot::ClonedSnapshotView;
 pub use ttl::TTLIndex;
 pub use unified::UnifiedStore;

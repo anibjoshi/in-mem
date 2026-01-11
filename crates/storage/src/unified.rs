@@ -24,6 +24,7 @@ use parking_lot::RwLock;
 use in_mem_core::{Key, Result, RunId, Storage, Timestamp, TypeTag, Value, VersionedValue};
 
 use crate::index::{RunIndex, TypeIndex};
+use crate::snapshot::ClonedSnapshotView;
 use crate::ttl::TTLIndex;
 
 /// Unified storage backend using BTreeMap with RwLock
@@ -125,6 +126,40 @@ impl UnifiedStore {
     /// - Versions are monotonically increasing (1, 2, 3, ...)
     fn next_version(&self) -> u64 {
         self.version.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// Create a snapshot of the current state
+    ///
+    /// This is the MVP implementation - creates a deep clone of the BTreeMap.
+    /// The snapshot captures the data at the current version and is immutable.
+    ///
+    /// # Performance
+    ///
+    /// This operation is O(n) where n is the number of keys in the store.
+    /// It clones the entire BTreeMap, which is expensive but correct for MVP.
+    ///
+    /// # Future Optimization
+    ///
+    /// The `SnapshotView` trait abstraction allows replacing this with a lazy
+    /// implementation (LazySnapshotView) that reads from live storage with
+    /// version filtering, avoiding the clone cost.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let store = UnifiedStore::new();
+    /// store.put(key, value, None);
+    ///
+    /// let snapshot = store.create_snapshot();
+    ///
+    /// // Writes after snapshot creation are not visible in snapshot
+    /// store.put(key2, value2, None);
+    /// assert!(snapshot.get(&key2).unwrap().is_none());
+    /// ```
+    pub fn create_snapshot(&self) -> ClonedSnapshotView {
+        let version = self.current_version();
+        let data = self.data.read();
+        ClonedSnapshotView::new(version, data.clone())
     }
 }
 
