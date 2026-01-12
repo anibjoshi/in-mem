@@ -44,6 +44,28 @@ impl std::fmt::Display for CommitError {
 
 impl std::error::Error for CommitError {}
 
+/// Result of applying transaction writes to storage
+///
+/// Per spec Section 6.1: All keys in a transaction get the same commit version.
+#[derive(Debug, Clone)]
+pub struct ApplyResult {
+    /// Version assigned to all writes in this transaction
+    pub commit_version: u64,
+    /// Number of puts applied
+    pub puts_applied: usize,
+    /// Number of deletes applied
+    pub deletes_applied: usize,
+    /// Number of CAS operations applied
+    pub cas_applied: usize,
+}
+
+impl ApplyResult {
+    /// Total number of operations applied
+    pub fn total_operations(&self) -> usize {
+        self.puts_applied + self.deletes_applied + self.cas_applied
+    }
+}
+
 /// Status of a transaction in its lifecycle
 ///
 /// State transitions:
@@ -661,6 +683,70 @@ impl TransactionContext {
         self.status = TransactionStatus::Committed;
 
         Ok(())
+    }
+
+    /// Apply all buffered writes to storage
+    ///
+    /// Per spec Section 6.1:
+    /// - Global version incremented ONCE for the whole transaction
+    /// - All keys in this transaction get the same commit version
+    ///
+    /// Per spec Section 6.5:
+    /// - Deletes create tombstones with the commit version
+    ///
+    /// # Arguments
+    /// * `store` - Storage to apply writes to
+    /// * `commit_version` - Version to assign to all writes
+    ///
+    /// # Returns
+    /// ApplyResult with counts of applied operations
+    ///
+    /// # Preconditions
+    /// - Transaction must be in Committed state (validation passed)
+    ///
+    /// # Errors
+    /// - Error::InvalidState if transaction is not in Committed state
+    /// - Error from storage operations if they fail
+    pub fn apply_writes<S: Storage>(&self, store: &S, commit_version: u64) -> Result<ApplyResult> {
+        if !self.is_committed() {
+            return Err(Error::InvalidState(format!(
+                "Cannot apply writes: transaction {} is {:?}, must be Committed",
+                self.txn_id, self.status
+            )));
+        }
+
+        let mut result = ApplyResult {
+            commit_version,
+            puts_applied: 0,
+            deletes_applied: 0,
+            cas_applied: 0,
+        };
+
+        // Apply puts from write_set
+        for (key, value) in &self.write_set {
+            store.put_with_version(key.clone(), value.clone(), commit_version, None)?;
+            result.puts_applied += 1;
+        }
+
+        // Apply deletes from delete_set
+        for key in &self.delete_set {
+            store.delete_with_version(key, commit_version)?;
+            result.deletes_applied += 1;
+        }
+
+        // Apply CAS operations from cas_set
+        // Note: CAS validation already passed in commit(), so we just apply the new values
+        for cas_op in &self.cas_set {
+            store.put_with_version(
+                cas_op.key.clone(),
+                cas_op.new_value.clone(),
+                commit_version,
+                None,
+            )?;
+            result.cas_applied += 1;
+        }
+
+        Ok(result)
     }
 
     // === Introspection ===
@@ -2048,6 +2134,219 @@ mod tests {
             let display = format!("{}", err);
             assert!(display.contains("Invalid state"));
             assert!(display.contains("test reason"));
+        }
+    }
+
+    // === Apply Writes Tests ===
+
+    mod apply_writes_tests {
+        use super::*;
+        use in_mem_storage::UnifiedStore;
+
+        fn create_test_store() -> UnifiedStore {
+            UnifiedStore::new()
+        }
+
+        fn create_txn_with_store(store: &UnifiedStore) -> TransactionContext {
+            let snapshot = store.create_snapshot();
+            let run_id = RunId::new();
+            TransactionContext::with_snapshot(1, run_id, Box::new(snapshot))
+        }
+
+        #[test]
+        fn test_apply_writes_empty_transaction() {
+            let store = create_test_store();
+            let mut txn = create_txn_with_store(&store);
+            txn.commit(&store).expect("commit failed");
+
+            let result = txn.apply_writes(&store, 100).expect("apply_writes failed");
+
+            assert_eq!(result.commit_version, 100);
+            assert_eq!(result.puts_applied, 0);
+            assert_eq!(result.deletes_applied, 0);
+            assert_eq!(result.cas_applied, 0);
+            assert_eq!(result.total_operations(), 0);
+        }
+
+        #[test]
+        fn test_apply_writes_single_put() {
+            let store = create_test_store();
+            let ns = create_test_namespace();
+            let key = create_test_key(&ns, b"key");
+
+            let mut txn = create_txn_with_store(&store);
+            txn.put(key.clone(), Value::I64(42)).expect("put failed");
+            txn.commit(&store).expect("commit failed");
+
+            let result = txn.apply_writes(&store, 100).expect("apply_writes failed");
+
+            assert_eq!(result.puts_applied, 1);
+            assert_eq!(result.commit_version, 100);
+
+            // Verify key was written with correct version
+            let stored = store.get(&key).expect("get failed").unwrap();
+            assert_eq!(stored.version, 100);
+            assert_eq!(stored.value, Value::I64(42));
+        }
+
+        #[test]
+        fn test_apply_writes_multiple_puts_same_version() {
+            let store = create_test_store();
+            let ns = create_test_namespace();
+            let key1 = create_test_key(&ns, b"key1");
+            let key2 = create_test_key(&ns, b"key2");
+            let key3 = create_test_key(&ns, b"key3");
+
+            let mut txn = create_txn_with_store(&store);
+            txn.put(key1.clone(), Value::I64(1)).expect("put failed");
+            txn.put(key2.clone(), Value::I64(2)).expect("put failed");
+            txn.put(key3.clone(), Value::I64(3)).expect("put failed");
+            txn.commit(&store).expect("commit failed");
+
+            let result = txn.apply_writes(&store, 50).expect("apply_writes failed");
+
+            assert_eq!(result.puts_applied, 3);
+
+            // All keys should have same commit version
+            assert_eq!(store.get(&key1).unwrap().unwrap().version, 50);
+            assert_eq!(store.get(&key2).unwrap().unwrap().version, 50);
+            assert_eq!(store.get(&key3).unwrap().unwrap().version, 50);
+        }
+
+        #[test]
+        fn test_apply_writes_with_delete() {
+            let store = create_test_store();
+            let ns = create_test_namespace();
+            let key = create_test_key(&ns, b"key");
+
+            // Pre-existing key
+            store
+                .put(key.clone(), Value::I64(100), None)
+                .expect("put failed");
+
+            let mut txn = create_txn_with_store(&store);
+            txn.delete(key.clone()).expect("delete failed");
+            txn.commit(&store).expect("commit failed");
+
+            let result = txn.apply_writes(&store, 50).expect("apply_writes failed");
+
+            assert_eq!(result.deletes_applied, 1);
+            assert!(store.get(&key).expect("get failed").is_none());
+        }
+
+        #[test]
+        fn test_apply_writes_with_cas() {
+            let store = create_test_store();
+            let ns = create_test_namespace();
+            let key = create_test_key(&ns, b"counter");
+
+            store
+                .put(key.clone(), Value::I64(0), None)
+                .expect("put failed");
+            let v1 = store.get(&key).expect("get failed").unwrap().version;
+
+            let mut txn = create_txn_with_store(&store);
+            txn.cas(key.clone(), v1, Value::I64(1)).expect("cas failed");
+            txn.commit(&store).expect("commit failed");
+
+            let result = txn.apply_writes(&store, 50).expect("apply_writes failed");
+
+            assert_eq!(result.cas_applied, 1);
+
+            let stored = store.get(&key).expect("get failed").unwrap();
+            assert_eq!(stored.version, 50);
+            assert_eq!(stored.value, Value::I64(1));
+        }
+
+        #[test]
+        fn test_apply_writes_fails_if_not_committed() {
+            let store = create_test_store();
+            let txn = create_txn_with_store(&store);
+
+            // Transaction is still Active
+            let result = txn.apply_writes(&store, 100);
+
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_apply_writes_fails_if_aborted() {
+            let store = create_test_store();
+            let mut txn = create_txn_with_store(&store);
+
+            txn.mark_aborted("test abort".to_string())
+                .expect("abort failed");
+
+            let result = txn.apply_writes(&store, 100);
+
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_apply_writes_updates_global_version() {
+            let store = create_test_store();
+            let ns = create_test_namespace();
+            let key = create_test_key(&ns, b"key");
+
+            let initial_version = store.current_version();
+
+            let mut txn = create_txn_with_store(&store);
+            txn.put(key.clone(), Value::I64(42)).expect("put failed");
+            txn.commit(&store).expect("commit failed");
+
+            txn.apply_writes(&store, 100).expect("apply_writes failed");
+
+            assert!(store.current_version() >= 100);
+            assert!(store.current_version() > initial_version);
+        }
+
+        #[test]
+        fn test_apply_writes_mixed_operations() {
+            let store = create_test_store();
+            let ns = create_test_namespace();
+            let key1 = create_test_key(&ns, b"put_key");
+            let key2 = create_test_key(&ns, b"delete_key");
+            let key3 = create_test_key(&ns, b"cas_key");
+
+            // Setup: pre-existing keys
+            store
+                .put(key2.clone(), Value::I64(200), None)
+                .expect("put failed");
+            store
+                .put(key3.clone(), Value::I64(300), None)
+                .expect("put failed");
+            let v3 = store.get(&key3).expect("get failed").unwrap().version;
+
+            let mut txn = create_txn_with_store(&store);
+            txn.put(key1.clone(), Value::I64(1)).expect("put failed");
+            txn.delete(key2.clone()).expect("delete failed");
+            txn.cas(key3.clone(), v3, Value::I64(301))
+                .expect("cas failed");
+            txn.commit(&store).expect("commit failed");
+
+            let result = txn.apply_writes(&store, 50).expect("apply_writes failed");
+
+            assert_eq!(result.puts_applied, 1);
+            assert_eq!(result.deletes_applied, 1);
+            assert_eq!(result.cas_applied, 1);
+            assert_eq!(result.total_operations(), 3);
+
+            // Verify results
+            assert_eq!(store.get(&key1).unwrap().unwrap().value, Value::I64(1));
+            assert!(store.get(&key2).unwrap().is_none());
+            assert_eq!(store.get(&key3).unwrap().unwrap().value, Value::I64(301));
+        }
+
+        #[test]
+        fn test_apply_result_total_operations() {
+            let result = ApplyResult {
+                commit_version: 100,
+                puts_applied: 5,
+                deletes_applied: 3,
+                cas_applied: 2,
+            };
+
+            assert_eq!(result.total_operations(), 10);
         }
     }
 }

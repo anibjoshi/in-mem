@@ -22,6 +22,7 @@
 
 use crate::wal::{WALEntry, WAL};
 use in_mem_core::error::Result;
+use in_mem_core::traits::Storage;
 use in_mem_core::types::RunId;
 use in_mem_storage::UnifiedStore;
 use std::collections::{HashMap, HashSet};
@@ -392,7 +393,7 @@ fn apply_transaction(
                 ..
             } => {
                 // Apply write, preserving version from WAL
-                storage.put_with_version(key.clone(), value.clone(), *version)?;
+                storage.put_with_version(key.clone(), value.clone(), *version, None)?;
                 stats.writes_applied += 1;
                 stats.final_version = stats.final_version.max(*version);
             }
