@@ -11,10 +11,13 @@
 
 pub mod snapshot;
 pub mod transaction;
-// pub mod validation;  // Story #83
+pub mod validation;
 
 pub use snapshot::ClonedSnapshotView;
 pub use transaction::{CASOperation, TransactionContext, TransactionStatus};
+pub use validation::{
+    validate_cas_set, validate_read_set, validate_write_set, ConflictType, ValidationResult,
+};
 
 // Re-export the SnapshotView trait from core for convenience
 pub use in_mem_core::traits::SnapshotView;
