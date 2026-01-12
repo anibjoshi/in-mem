@@ -1289,8 +1289,7 @@ mod tests {
                     version: commit_version,
                 })
                 .unwrap();
-                wal.append(&WALEntry::CommitTxn { txn_id, run_id })
-                    .unwrap();
+                wal.append(&WALEntry::CommitTxn { txn_id, run_id }).unwrap();
 
                 // Apply to storage (simulating what would happen in normal operation)
                 storage

@@ -74,7 +74,10 @@ impl std::fmt::Debug for ReplayOptions {
         f.debug_struct("ReplayOptions")
             .field("filter_run_id", &self.filter_run_id)
             .field("stop_at_version", &self.stop_at_version)
-            .field("progress_callback", &self.progress_callback.as_ref().map(|_| "<callback>"))
+            .field(
+                "progress_callback",
+                &self.progress_callback.as_ref().map(|_| "<callback>"),
+            )
             .finish()
     }
 }
