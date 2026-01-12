@@ -9,7 +9,9 @@
 //! - CAS is validated separately from read-set
 //! - Write skew is ALLOWED (do not try to prevent it)
 
+use in_mem_core::traits::Storage;
 use in_mem_core::types::Key;
+use std::collections::HashMap;
 
 /// Types of conflicts that can occur during transaction validation
 ///
@@ -86,6 +88,45 @@ impl ValidationResult {
     pub fn conflict_count(&self) -> usize {
         self.conflicts.len()
     }
+}
+
+/// Validate the read-set against current storage state
+///
+/// Per spec Section 3.1 Condition 1:
+/// - For each key in read_set, check if current version matches read version
+/// - If any version changed, report ReadWriteConflict
+///
+/// # Arguments
+/// * `read_set` - Keys read with their versions at read time
+/// * `store` - Storage to check current versions against
+///
+/// # Returns
+/// ValidationResult with any ReadWriteConflicts found
+pub fn validate_read_set<S: Storage>(read_set: &HashMap<Key, u64>, store: &S) -> ValidationResult {
+    let mut result = ValidationResult::ok();
+
+    for (key, read_version) in read_set {
+        // Get current version from storage
+        let current_version = match store.get(key) {
+            Ok(Some(vv)) => vv.version,
+            Ok(None) => 0, // Key doesn't exist = version 0
+            Err(_) => {
+                // Storage error - treat as version 0 (conservative)
+                0
+            }
+        };
+
+        // Check if version changed
+        if current_version != *read_version {
+            result.conflicts.push(ConflictType::ReadWriteConflict {
+                key: key.clone(),
+                read_version: *read_version,
+                current_version,
+            });
+        }
+    }
+
+    result
 }
 
 #[cfg(test)]
@@ -248,5 +289,243 @@ mod tests {
         let debug_str = format!("{:?}", conflict);
         assert!(debug_str.contains("CASConflict"));
         assert!(debug_str.contains("expected_version: 5"));
+    }
+
+    // === Read-Set Validation Tests ===
+
+    mod read_set_tests {
+        use super::*;
+        use in_mem_core::value::Value;
+        use in_mem_storage::UnifiedStore;
+
+        fn create_test_store() -> UnifiedStore {
+            UnifiedStore::new()
+        }
+
+        fn create_test_namespace() -> Namespace {
+            Namespace::new("t".into(), "a".into(), "g".into(), RunId::new())
+        }
+
+        fn create_key(ns: &Namespace, name: &[u8]) -> Key {
+            Key::new(ns.clone(), TypeTag::KV, name.to_vec())
+        }
+
+        #[test]
+        fn test_validate_read_set_empty() {
+            let store = create_test_store();
+            let read_set: HashMap<Key, u64> = HashMap::new();
+
+            let result = validate_read_set(&read_set, &store);
+
+            assert!(result.is_valid());
+        }
+
+        #[test]
+        fn test_validate_read_set_version_unchanged() {
+            let store = create_test_store();
+            let ns = create_test_namespace();
+            let key = create_key(&ns, b"key1");
+
+            // Put key at version
+            store
+                .put(key.clone(), Value::Bytes(b"value".to_vec()), None)
+                .unwrap();
+            let current_version = store.get(&key).unwrap().unwrap().version;
+
+            // Read-set records the same version
+            let mut read_set = HashMap::new();
+            read_set.insert(key.clone(), current_version);
+
+            let result = validate_read_set(&read_set, &store);
+
+            assert!(result.is_valid());
+        }
+
+        #[test]
+        fn test_validate_read_set_version_changed() {
+            let store = create_test_store();
+            let ns = create_test_namespace();
+            let key = create_key(&ns, b"key1");
+
+            // Put key at version 1
+            store
+                .put(key.clone(), Value::Bytes(b"v1".to_vec()), None)
+                .unwrap();
+            let v1 = store.get(&key).unwrap().unwrap().version;
+
+            // Another transaction modified it (version 2)
+            store
+                .put(key.clone(), Value::Bytes(b"v2".to_vec()), None)
+                .unwrap();
+
+            // Read-set still has old version
+            let mut read_set = HashMap::new();
+            read_set.insert(key.clone(), v1);
+
+            let result = validate_read_set(&read_set, &store);
+
+            assert!(!result.is_valid());
+            assert_eq!(result.conflict_count(), 1);
+            match &result.conflicts[0] {
+                ConflictType::ReadWriteConflict {
+                    key: k,
+                    read_version,
+                    current_version,
+                } => {
+                    assert_eq!(k, &key);
+                    assert_eq!(*read_version, v1);
+                    assert!(*current_version > v1);
+                }
+                _ => panic!("Expected ReadWriteConflict"),
+            }
+        }
+
+        #[test]
+        fn test_validate_read_set_key_deleted() {
+            let store = create_test_store();
+            let ns = create_test_namespace();
+            let key = create_key(&ns, b"key1");
+
+            // Put then delete
+            store
+                .put(key.clone(), Value::Bytes(b"value".to_vec()), None)
+                .unwrap();
+            let version_when_read = store.get(&key).unwrap().unwrap().version;
+            store.delete(&key).unwrap();
+
+            // Read-set has version from when key existed
+            let mut read_set = HashMap::new();
+            read_set.insert(key.clone(), version_when_read);
+
+            let result = validate_read_set(&read_set, &store);
+
+            assert!(!result.is_valid());
+            match &result.conflicts[0] {
+                ConflictType::ReadWriteConflict {
+                    current_version, ..
+                } => {
+                    // Deleted key has version 0 (doesn't exist)
+                    assert_eq!(*current_version, 0);
+                }
+                _ => panic!("Expected ReadWriteConflict"),
+            }
+        }
+
+        #[test]
+        fn test_validate_read_set_key_created_after_read() {
+            let store = create_test_store();
+            let ns = create_test_namespace();
+            let key = create_key(&ns, b"key1");
+
+            // Read-set recorded key as non-existent (version 0)
+            let mut read_set = HashMap::new();
+            read_set.insert(key.clone(), 0);
+
+            // Another transaction created the key
+            store
+                .put(key.clone(), Value::Bytes(b"value".to_vec()), None)
+                .unwrap();
+
+            let result = validate_read_set(&read_set, &store);
+
+            assert!(!result.is_valid());
+            match &result.conflicts[0] {
+                ConflictType::ReadWriteConflict {
+                    read_version,
+                    current_version,
+                    ..
+                } => {
+                    assert_eq!(*read_version, 0);
+                    assert!(*current_version > 0);
+                }
+                _ => panic!("Expected ReadWriteConflict"),
+            }
+        }
+
+        #[test]
+        fn test_validate_read_set_multiple_conflicts() {
+            let store = create_test_store();
+            let ns = create_test_namespace();
+            let key1 = create_key(&ns, b"key1");
+            let key2 = create_key(&ns, b"key2");
+
+            // Put both keys
+            store
+                .put(key1.clone(), Value::Bytes(b"v1".to_vec()), None)
+                .unwrap();
+            store
+                .put(key2.clone(), Value::Bytes(b"v1".to_vec()), None)
+                .unwrap();
+            let v1_1 = store.get(&key1).unwrap().unwrap().version;
+            let v1_2 = store.get(&key2).unwrap().unwrap().version;
+
+            // Both keys modified
+            store
+                .put(key1.clone(), Value::Bytes(b"v2".to_vec()), None)
+                .unwrap();
+            store
+                .put(key2.clone(), Value::Bytes(b"v2".to_vec()), None)
+                .unwrap();
+
+            // Read-set has old versions
+            let mut read_set = HashMap::new();
+            read_set.insert(key1.clone(), v1_1);
+            read_set.insert(key2.clone(), v1_2);
+
+            let result = validate_read_set(&read_set, &store);
+
+            assert!(!result.is_valid());
+            assert_eq!(result.conflict_count(), 2);
+        }
+
+        #[test]
+        fn test_validate_read_set_partial_conflict() {
+            let store = create_test_store();
+            let ns = create_test_namespace();
+            let key1 = create_key(&ns, b"key1");
+            let key2 = create_key(&ns, b"key2");
+
+            // Put both keys
+            store
+                .put(key1.clone(), Value::Bytes(b"v1".to_vec()), None)
+                .unwrap();
+            store
+                .put(key2.clone(), Value::Bytes(b"v1".to_vec()), None)
+                .unwrap();
+            let v1_1 = store.get(&key1).unwrap().unwrap().version;
+            let v1_2 = store.get(&key2).unwrap().unwrap().version;
+
+            // Only key1 modified
+            store
+                .put(key1.clone(), Value::Bytes(b"v2".to_vec()), None)
+                .unwrap();
+
+            // Read-set has old versions for both
+            let mut read_set = HashMap::new();
+            read_set.insert(key1.clone(), v1_1);
+            read_set.insert(key2.clone(), v1_2);
+
+            let result = validate_read_set(&read_set, &store);
+
+            // Only one conflict (key1)
+            assert!(!result.is_valid());
+            assert_eq!(result.conflict_count(), 1);
+        }
+
+        #[test]
+        fn test_validate_read_set_nonexistent_stays_nonexistent() {
+            let store = create_test_store();
+            let ns = create_test_namespace();
+            let key = create_key(&ns, b"key1");
+
+            // Key never existed, read-set recorded version 0
+            let mut read_set = HashMap::new();
+            read_set.insert(key.clone(), 0);
+
+            // Key still doesn't exist - no conflict
+            let result = validate_read_set(&read_set, &store);
+
+            assert!(result.is_valid());
+        }
     }
 }
