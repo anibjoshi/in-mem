@@ -9,7 +9,7 @@
 //! - CAS is validated separately from read-set
 //! - Write skew is ALLOWED (do not try to prevent it)
 
-use crate::transaction::CASOperation;
+use crate::transaction::{CASOperation, TransactionContext};
 use in_mem_core::traits::Storage;
 use in_mem_core::types::Key;
 use in_mem_core::value::Value;
@@ -208,6 +208,42 @@ pub fn validate_cas_set<S: Storage>(cas_set: &[CASOperation], store: &S) -> Vali
             });
         }
     }
+
+    result
+}
+
+/// Validate a transaction for conflicts before commit
+///
+/// Orchestrates all validation phases per spec Section 3:
+/// 1. Validate read-set (read-write conflicts)
+/// 2. Validate write-set (blind writes always OK)
+/// 3. Validate CAS set (CAS conflicts)
+///
+/// All conflicts are accumulated and returned together.
+///
+/// # Arguments
+/// * `txn` - Transaction context with read/write/cas sets
+/// * `store` - Storage to validate against
+///
+/// # Returns
+/// ValidationResult with all conflicts found (empty if valid)
+///
+/// # Note
+/// Transaction must be in Validating state before calling this.
+pub fn validate_transaction<S: Storage>(txn: &TransactionContext, store: &S) -> ValidationResult {
+    let mut result = ValidationResult::ok();
+
+    // Phase 1: Read-set validation
+    let read_result = validate_read_set(&txn.read_set, store);
+    result.merge(read_result);
+
+    // Phase 2: Write-set validation (no-op per spec)
+    let write_result = validate_write_set(&txn.write_set, &txn.read_set, txn.start_version, store);
+    result.merge(write_result);
+
+    // Phase 3: CAS validation
+    let cas_result = validate_cas_set(&txn.cas_set, store);
+    result.merge(cas_result);
 
     result
 }
@@ -990,6 +1026,258 @@ mod tests {
 
             assert!(!result.is_valid());
             assert_eq!(result.conflict_count(), 1); // Only key1 conflicts
+        }
+    }
+
+    // === Transaction Validation Tests ===
+
+    mod transaction_validation_tests {
+        use super::*;
+        use crate::TransactionContext;
+        use in_mem_core::value::Value;
+        use in_mem_storage::UnifiedStore;
+
+        fn create_test_store() -> UnifiedStore {
+            UnifiedStore::new()
+        }
+
+        fn create_test_namespace() -> Namespace {
+            Namespace::new("t".into(), "a".into(), "g".into(), RunId::new())
+        }
+
+        fn create_key(ns: &Namespace, name: &[u8]) -> Key {
+            Key::new(ns.clone(), TypeTag::KV, name.to_vec())
+        }
+
+        fn create_txn_with_snapshot(store: &UnifiedStore) -> TransactionContext {
+            let snapshot = store.create_snapshot();
+            let run_id = RunId::new();
+            TransactionContext::with_snapshot(1, run_id, Box::new(snapshot))
+        }
+
+        #[test]
+        fn test_validate_transaction_empty() {
+            let store = create_test_store();
+            let txn = create_txn_with_snapshot(&store);
+
+            let result = validate_transaction(&txn, &store);
+
+            assert!(result.is_valid());
+        }
+
+        #[test]
+        fn test_validate_transaction_read_only_version_unchanged() {
+            let store = create_test_store();
+            let ns = create_test_namespace();
+            let key = create_key(&ns, b"key");
+
+            store.put(key.clone(), Value::I64(100), None).unwrap();
+
+            let mut txn = create_txn_with_snapshot(&store);
+            let _ = txn.get(&key).unwrap(); // Read the key
+
+            // No concurrent modifications
+
+            let result = validate_transaction(&txn, &store);
+
+            assert!(result.is_valid());
+        }
+
+        #[test]
+        fn test_validate_transaction_read_write_conflict() {
+            let store = create_test_store();
+            let ns = create_test_namespace();
+            let key = create_key(&ns, b"key");
+
+            store.put(key.clone(), Value::I64(100), None).unwrap();
+
+            let mut txn = create_txn_with_snapshot(&store);
+            let _ = txn.get(&key).unwrap(); // Read
+            txn.put(key.clone(), Value::I64(101)).unwrap(); // Write
+
+            // Concurrent modification
+            store.put(key.clone(), Value::I64(200), None).unwrap();
+
+            let result = validate_transaction(&txn, &store);
+
+            assert!(!result.is_valid());
+            assert!(result
+                .conflicts
+                .iter()
+                .any(|c| matches!(c, ConflictType::ReadWriteConflict { .. })));
+        }
+
+        #[test]
+        fn test_validate_transaction_blind_write_no_conflict() {
+            let store = create_test_store();
+            let ns = create_test_namespace();
+            let key = create_key(&ns, b"key");
+
+            store.put(key.clone(), Value::I64(100), None).unwrap();
+
+            let mut txn = create_txn_with_snapshot(&store);
+            // Blind write - no read first
+            txn.put(key.clone(), Value::I64(101)).unwrap();
+
+            // Concurrent modification
+            store.put(key.clone(), Value::I64(200), None).unwrap();
+
+            // Per spec: blind writes do NOT conflict
+            let result = validate_transaction(&txn, &store);
+
+            assert!(result.is_valid());
+        }
+
+        #[test]
+        fn test_validate_transaction_cas_conflict() {
+            let store = create_test_store();
+            let ns = create_test_namespace();
+            let key = create_key(&ns, b"counter");
+
+            store.put(key.clone(), Value::I64(0), None).unwrap();
+            let v1 = store.get(&key).unwrap().unwrap().version;
+
+            let mut txn = create_txn_with_snapshot(&store);
+            txn.cas(key.clone(), v1, Value::I64(1)).unwrap();
+
+            // Concurrent modification
+            store.put(key.clone(), Value::I64(100), None).unwrap();
+
+            let result = validate_transaction(&txn, &store);
+
+            assert!(!result.is_valid());
+            assert!(result
+                .conflicts
+                .iter()
+                .any(|c| matches!(c, ConflictType::CASConflict { .. })));
+        }
+
+        #[test]
+        fn test_validate_transaction_multiple_conflicts() {
+            let store = create_test_store();
+            let ns = create_test_namespace();
+            let key1 = create_key(&ns, b"key1");
+            let key2 = create_key(&ns, b"key2");
+
+            store.put(key1.clone(), Value::I64(1), None).unwrap();
+            store.put(key2.clone(), Value::I64(2), None).unwrap();
+            let v2 = store.get(&key2).unwrap().unwrap().version;
+
+            let mut txn = create_txn_with_snapshot(&store);
+            let _ = txn.get(&key1).unwrap(); // Read key1
+            txn.cas(key2.clone(), v2, Value::I64(20)).unwrap(); // CAS key2
+
+            // Concurrent modifications to both
+            store.put(key1.clone(), Value::I64(10), None).unwrap();
+            store.put(key2.clone(), Value::I64(20), None).unwrap();
+
+            let result = validate_transaction(&txn, &store);
+
+            assert!(!result.is_valid());
+            assert_eq!(result.conflict_count(), 2); // Both read-write and CAS conflict
+        }
+
+        #[test]
+        fn test_validate_transaction_first_committer_wins() {
+            let store = create_test_store();
+            let ns = create_test_namespace();
+            let key = create_key(&ns, b"shared");
+
+            store
+                .put(key.clone(), Value::String("initial".into()), None)
+                .unwrap();
+
+            // T1 reads and writes
+            let mut txn1 = create_txn_with_snapshot(&store);
+            let _ = txn1.get(&key).unwrap();
+            txn1.put(key.clone(), Value::String("from_t1".into()))
+                .unwrap();
+
+            // T2 reads and writes (same key)
+            let mut txn2 = create_txn_with_snapshot(&store);
+            let _ = txn2.get(&key).unwrap();
+            txn2.put(key.clone(), Value::String("from_t2".into()))
+                .unwrap();
+
+            // T1 commits first (simulated by applying to store)
+            // In real implementation, this would be atomic
+            let result1 = validate_transaction(&txn1, &store);
+            assert!(result1.is_valid(), "T1 should commit (first committer)");
+
+            // Apply T1's write
+            store
+                .put(key.clone(), Value::String("from_t1".into()), None)
+                .unwrap();
+
+            // T2 tries to commit - should fail (read version changed)
+            let result2 = validate_transaction(&txn2, &store);
+            assert!(
+                !result2.is_valid(),
+                "T2 should abort (read key was modified)"
+            );
+        }
+
+        #[test]
+        fn test_validate_transaction_cas_without_read_protection() {
+            let store = create_test_store();
+            let ns = create_test_namespace();
+            let key = create_key(&ns, b"key");
+
+            store.put(key.clone(), Value::I64(1), None).unwrap();
+            let v1 = store.get(&key).unwrap().unwrap().version;
+
+            let mut txn = create_txn_with_snapshot(&store);
+            // CAS without reading first - per spec, CAS does NOT add to read_set
+            txn.cas(key.clone(), v1, Value::I64(2)).unwrap();
+
+            // Verify read_set is empty (CAS doesn't add to it)
+            assert!(txn.read_set.is_empty());
+
+            // No concurrent modification - CAS should succeed
+            let result = validate_transaction(&txn, &store);
+            assert!(result.is_valid());
+        }
+
+        #[test]
+        fn test_validate_transaction_read_then_delete() {
+            let store = create_test_store();
+            let ns = create_test_namespace();
+            let key = create_key(&ns, b"key");
+
+            store.put(key.clone(), Value::I64(100), None).unwrap();
+
+            let mut txn = create_txn_with_snapshot(&store);
+            let _ = txn.get(&key).unwrap(); // Read
+            txn.delete(key.clone()).unwrap(); // Delete
+
+            // Concurrent modification
+            store.put(key.clone(), Value::I64(200), None).unwrap();
+
+            let result = validate_transaction(&txn, &store);
+
+            // Read-write conflict because the key was read first
+            assert!(!result.is_valid());
+        }
+
+        #[test]
+        fn test_validate_transaction_blind_delete_no_conflict() {
+            let store = create_test_store();
+            let ns = create_test_namespace();
+            let key = create_key(&ns, b"key");
+
+            store.put(key.clone(), Value::I64(100), None).unwrap();
+
+            let mut txn = create_txn_with_snapshot(&store);
+            // Blind delete - no read first
+            txn.delete(key.clone()).unwrap();
+
+            // Concurrent modification
+            store.put(key.clone(), Value::I64(200), None).unwrap();
+
+            // Per spec: blind deletes (write without read) do NOT conflict
+            let result = validate_transaction(&txn, &store);
+
+            assert!(result.is_valid());
         }
     }
 }
