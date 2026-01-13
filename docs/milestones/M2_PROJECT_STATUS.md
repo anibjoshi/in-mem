@@ -2,7 +2,7 @@
 
 **Last Updated**: 2026-01-13
 
-## Current Phase: Epics 6-11 Complete, Epic 12 Pending
+## Current Phase: Epics 6-11 Complete, Epic 12 Ready
 
 ---
 
@@ -22,11 +22,11 @@
 | 7 | Transaction Semantics | #83-#88 | ✅ Complete |
 | 8 | Durability & Commit | #89-#93 | ✅ Complete |
 | 9 | Recovery Support | #94-#97 | ✅ Complete |
-| 10 | Database API Integration | #98-#102 | ⏳ 2 stories remaining |
+| 10 | Database API Integration | #98-#102 | ✅ Complete |
 | 11 | Backwards Compatibility | #103-#105 | ✅ Complete |
-| 12 | OCC Validation & Benchmarking | #106-#109 | ⏳ Not started |
+| 12 | OCC Validation & Benchmarking | #106-#109 | ⏳ Ready to Start |
 
-**Overall Progress**: 6/7 epics complete (26/32 stories closed)
+**Overall Progress**: 6/7 epics complete (28/32 stories closed)
 
 ---
 
@@ -43,7 +43,7 @@
 | #82 | Transaction Write Operations | ✅ |
 
 ### Deliverables
-- `docs/architecture/M2_TRANSACTION_SEMANTICS.md` (1104 lines)
+- `docs/architecture/M2_TRANSACTION_SEMANTICS.md`
 - `crates/concurrency/src/transaction.rs`
 - `crates/concurrency/src/snapshot.rs`
 
@@ -103,27 +103,22 @@
 
 ---
 
-## Epic 10: Database API Integration ⏳ 2 REMAINING
+## Epic 10: Database API Integration ✅ COMPLETE
 
-### Stories
+### Stories Completed
 
 | Story | Title | Status |
 |-------|-------|--------|
 | #98 | Database Transaction API | ✅ |
-| #99 | Cross-Primitive Transactions | ⏳ NOT IMPLEMENTED |
+| #99 | Cross-Primitive Transactions | ✅ |
 | #100 | Transaction Context Lifecycle | ✅ |
 | #101 | Retry Backoff Strategy | ✅ |
-| #102 | Transaction Timeout Support | ⏳ NOT IMPLEMENTED |
+| #102 | Transaction Timeout Support | ✅ |
 
-### Deliverables Complete
-- `crates/engine/src/database.rs` - transaction(), transaction_with_retry()
+### Deliverables
+- `crates/engine/src/database.rs` - transaction(), transaction_with_retry(), transaction_with_timeout()
 - `crates/engine/src/coordinator.rs` - TransactionCoordinator
-
-### Remaining Work
-- **#99**: Cross-primitive transaction tests (KV + Event keys in single txn)
-- **#102**: Transaction timeout support (is_expired(), transaction_with_timeout())
-
-See: `docs/prompts/epic-10-11-remaining-prompts.md`
+- `crates/engine/tests/cross_primitive_tests.rs` - Cross-primitive transaction tests
 
 ---
 
@@ -143,7 +138,7 @@ See: `docs/prompts/epic-10-11-remaining-prompts.md`
 
 ---
 
-## Epic 12: OCC Validation & Benchmarking ⏳ NOT STARTED
+## Epic 12: OCC Validation & Benchmarking ⏳ READY TO START
 
 ### Stories
 
@@ -154,8 +149,8 @@ See: `docs/prompts/epic-10-11-remaining-prompts.md`
 | #108 | Memory Usage Profiling | ⏳ |
 | #109 | M2 Completion Validation | ⏳ |
 
-### Blocked By
-- Epic 10 stories #99, #102
+### Next Steps
+Create `docs/prompts/epic-12-claude-prompts.md` for final validation epic.
 
 ---
 
@@ -164,31 +159,13 @@ See: `docs/prompts/epic-10-11-remaining-prompts.md`
 | Crate | Tests |
 |-------|-------|
 | in-mem-concurrency | 223 |
-| in-mem-core | 71 |
+| in-mem-core | 73 |
 | in-mem-storage | 53 |
 | in-mem-durability | 38 |
-| in-mem-engine | 47+ |
-| **Total** | **~500+** |
+| in-mem-engine | 52+ |
+| **Total** | **~620+** |
 
 All tests passing.
-
----
-
-## Remaining Work
-
-### Immediate (Epic 10)
-1. **#99**: Cross-Primitive Transaction tests
-2. **#102**: Transaction Timeout Support
-
-### After Epic 10 (Epic 12)
-3. **#106**: Multi-Threaded Conflict Tests
-4. **#107**: Transaction Performance Benchmarks
-5. **#108**: Memory Usage Profiling
-6. **#109**: M2 Completion Validation
-
-### Prompts Available
-- `docs/prompts/epic-10-11-remaining-prompts.md` - Stories #99, #102
-- Epic 12 prompts to be created after #99, #102 complete
 
 ---
 
@@ -196,7 +173,7 @@ All tests passing.
 
 ```
 main                              ← Protected (M2 complete will merge here)
-  └── develop                     ← Current working branch (Epics 6-10 merged)
+  └── develop                     ← Current working branch (Epics 6-11 merged)
 ```
 
 ---
