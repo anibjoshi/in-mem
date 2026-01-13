@@ -197,6 +197,7 @@ mod tests {
             writes_applied: 10,
             deletes_applied: 2,
             final_version: 100,
+            max_txn_id: 6,
             from_checkpoint: false,
         };
 

@@ -93,9 +93,13 @@ impl RecoveryCoordinator {
         // - Applying writes with version preservation
         let durability_stats = replay_wal(&wal, &storage)?;
 
-        // Step 4: Create TransactionManager with recovered version
+        // Step 4: Create TransactionManager with recovered version and txn_id
         // Per spec Section 6.1: Global version counter must be restored
-        let txn_manager = TransactionManager::new(durability_stats.final_version);
+        // Also restore txn_id counter to avoid conflicts with existing WAL entries
+        let txn_manager = TransactionManager::with_txn_id(
+            durability_stats.final_version,
+            durability_stats.max_txn_id,
+        );
 
         // Step 5: Convert stats to our format
         let stats = RecoveryStats {
@@ -105,6 +109,7 @@ impl RecoveryCoordinator {
             writes_applied: durability_stats.writes_applied,
             deletes_applied: durability_stats.deletes_applied,
             final_version: durability_stats.final_version,
+            max_txn_id: durability_stats.max_txn_id,
             from_checkpoint: false, // Checkpoint not implemented in M2
         };
 
@@ -164,6 +169,13 @@ pub struct RecoveryStats {
     /// This is the highest version seen in the WAL, used to initialize
     /// the TransactionManager's version counter.
     pub final_version: u64,
+
+    /// Maximum transaction ID seen in WAL
+    ///
+    /// This is used to initialize the TransactionManager's next_txn_id counter
+    /// to ensure new transactions get unique IDs that don't conflict with
+    /// transactions already in the WAL.
+    pub max_txn_id: u64,
 
     /// Whether recovery was from checkpoint
     ///
@@ -606,6 +618,7 @@ mod tests {
             writes_applied: 10,
             deletes_applied: 3,
             final_version: 100,
+            max_txn_id: 8,
             from_checkpoint: false,
         };
 

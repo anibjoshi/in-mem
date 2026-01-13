@@ -42,6 +42,12 @@ pub struct ReplayStats {
     pub deletes_applied: usize,
     /// Final version after replay (highest version seen in WAL)
     pub final_version: u64,
+    /// Maximum transaction ID seen in WAL
+    ///
+    /// This is critical for initializing the TransactionManager after recovery
+    /// to ensure new transactions get unique IDs that don't conflict with
+    /// transactions in the WAL.
+    pub max_txn_id: u64,
     /// Number of incomplete transactions discarded (no CommitTxn)
     pub incomplete_txns: usize,
     /// Number of aborted transactions discarded
@@ -374,12 +380,26 @@ pub fn replay_wal_with_options(
     let validation = validate_transactions(&entries);
     validation.log_warnings();
 
-    // Group entries by transaction
+    // Group entries by transaction using internal sequential IDs
+    // This handles the case where txn_ids are reused across database sessions
+    // (e.g., if the TransactionManager was restarted and started from 1 again)
     let mut transactions: HashMap<u64, Transaction> = HashMap::new();
-    // Track the currently active transaction for each run_id
-    // When a BeginTxn comes in, it becomes the active transaction for that run_id
+
+    // Internal counter for unique transaction grouping
+    // This ensures each BeginTxn gets a unique slot even if txn_ids are reused
+    let mut internal_id_counter: u64 = 0;
+
+    // Track the currently active transaction's internal ID for each run_id
+    // Maps run_id -> internal_id of the currently active transaction
     let mut active_txn_per_run: HashMap<RunId, u64> = HashMap::new();
+
+    // Map from (run_id, original_txn_id) to internal_id for looking up commits/aborts
+    // This helps match CommitTxn/AbortTxn to the correct transaction when there are
+    // duplicate txn_ids
+    let mut txn_id_to_internal: HashMap<(RunId, u64), u64> = HashMap::new();
+
     let mut max_version: u64 = 0;
+    let mut max_txn_id: u64 = 0;
     let mut orphaned_count: usize = 0;
 
     for entry in entries {
@@ -390,14 +410,26 @@ pub fn replay_wal_with_options(
 
         match &entry {
             WALEntry::BeginTxn { txn_id, run_id, .. } => {
-                // Start a new transaction and make it the active one for this run_id
-                transactions.insert(*txn_id, Transaction::new(*txn_id, *run_id));
-                active_txn_per_run.insert(*run_id, *txn_id);
+                // Track max txn_id for TransactionManager initialization
+                max_txn_id = max_txn_id.max(*txn_id);
+
+                // Allocate a new internal ID for this transaction
+                internal_id_counter += 1;
+                let internal_id = internal_id_counter;
+
+                // Create the transaction with the internal ID
+                transactions.insert(internal_id, Transaction::new(*txn_id, *run_id));
+
+                // Track this as the active transaction for this run_id
+                active_txn_per_run.insert(*run_id, internal_id);
+
+                // Map (run_id, txn_id) -> internal_id for commit/abort lookup
+                txn_id_to_internal.insert((*run_id, *txn_id), internal_id);
             }
             WALEntry::Write { run_id, .. } | WALEntry::Delete { run_id, .. } => {
                 // Add to the currently active transaction for this run_id
-                if let Some(&active_txn_id) = active_txn_per_run.get(run_id) {
-                    if let Some(txn) = transactions.get_mut(&active_txn_id) {
+                if let Some(&internal_id) = active_txn_per_run.get(run_id) {
+                    if let Some(txn) = transactions.get_mut(&internal_id) {
                         txn.entries.push(entry.clone());
                     }
                 } else {
@@ -406,23 +438,29 @@ pub fn replay_wal_with_options(
                 }
             }
             WALEntry::CommitTxn { txn_id, run_id } => {
-                // Mark transaction as committed and clear active status
-                if let Some(txn) = transactions.get_mut(txn_id) {
-                    txn.committed = true;
-                }
-                // Clear active transaction for this run_id
-                if active_txn_per_run.get(run_id) == Some(txn_id) {
-                    active_txn_per_run.remove(run_id);
+                // Look up the internal ID for this (run_id, txn_id) pair
+                if let Some(&internal_id) = txn_id_to_internal.get(&(*run_id, *txn_id)) {
+                    // Mark transaction as committed
+                    if let Some(txn) = transactions.get_mut(&internal_id) {
+                        txn.committed = true;
+                    }
+                    // Clear active transaction for this run_id if it matches
+                    if active_txn_per_run.get(run_id) == Some(&internal_id) {
+                        active_txn_per_run.remove(run_id);
+                    }
                 }
             }
             WALEntry::AbortTxn { txn_id, run_id } => {
-                // Mark transaction as aborted and clear active status
-                if let Some(txn) = transactions.get_mut(txn_id) {
-                    txn.aborted = true;
-                }
-                // Clear active transaction for this run_id
-                if active_txn_per_run.get(run_id) == Some(txn_id) {
-                    active_txn_per_run.remove(run_id);
+                // Look up the internal ID for this (run_id, txn_id) pair
+                if let Some(&internal_id) = txn_id_to_internal.get(&(*run_id, *txn_id)) {
+                    // Mark transaction as aborted
+                    if let Some(txn) = transactions.get_mut(&internal_id) {
+                        txn.aborted = true;
+                    }
+                    // Clear active transaction for this run_id if it matches
+                    if active_txn_per_run.get(run_id) == Some(&internal_id) {
+                        active_txn_per_run.remove(run_id);
+                    }
                 }
             }
             WALEntry::Checkpoint { version, .. } => {
@@ -435,6 +473,7 @@ pub fn replay_wal_with_options(
     // Apply committed transactions and collect stats
     let mut stats = ReplayStats {
         final_version: max_version,
+        max_txn_id,
         ..Default::default()
     };
 
