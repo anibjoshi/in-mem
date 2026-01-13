@@ -651,11 +651,11 @@ impl Database {
 
     /// Get a value by key (M1 compatibility)
     ///
-    /// Per spec Section 4.2: Read-only, creates snapshot, always succeeds.
+    /// Per spec Section 4.2: Read-only, always succeeds.
     /// This provides backwards compatibility with M1-style operations.
     ///
-    /// Unlike writes, reads don't need a full transaction - just a snapshot.
-    /// This is an optimization per spec Section 4.2.
+    /// Unlike writes, reads don't need a full transaction.
+    /// We read directly from storage for O(log n) performance.
     ///
     /// # Arguments
     /// * `key` - Key to retrieve
@@ -671,11 +671,9 @@ impl Database {
     /// }
     /// ```
     pub fn get(&self, key: &Key) -> Result<Option<VersionedValue>> {
-        // For read-only operations, we can skip the full transaction
-        // and just use a snapshot directly (per spec Section 4.2)
-        use in_mem_core::traits::SnapshotView;
-        let snapshot = self.storage.create_snapshot();
-        snapshot.get(key)
+        // For read-only operations, read directly from storage
+        // This is O(log n) via BTreeMap lookup, avoiding O(n) snapshot clone
+        self.storage.get(key)
     }
 
     /// Delete a key (M1 compatibility)
