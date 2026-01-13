@@ -60,11 +60,24 @@ impl TransactionManager {
     /// Create a new transaction manager
     ///
     /// # Arguments
-    /// * `initial_version` - Starting version (typically from storage.current_version())
+    /// * `initial_version` - Starting version (typically from recovery's final_version)
     pub fn new(initial_version: u64) -> Self {
+        Self::with_txn_id(initial_version, 0)
+    }
+
+    /// Create a new transaction manager with specific starting txn_id
+    ///
+    /// This is used during recovery to ensure new transactions get unique IDs
+    /// that don't conflict with transactions already in the WAL.
+    ///
+    /// # Arguments
+    /// * `initial_version` - Starting version (from recovery's final_version)
+    /// * `max_txn_id` - Maximum txn_id seen in WAL (new transactions start at max_txn_id + 1)
+    pub fn with_txn_id(initial_version: u64, max_txn_id: u64) -> Self {
         TransactionManager {
             version: AtomicU64::new(initial_version),
-            next_txn_id: AtomicU64::new(1),
+            // Start next_txn_id at max_txn_id + 1 to avoid conflicts
+            next_txn_id: AtomicU64::new(max_txn_id + 1),
         }
     }
 
