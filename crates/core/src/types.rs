@@ -75,6 +75,19 @@ impl Namespace {
             run_id,
         }
     }
+
+    /// Create a namespace for a run with default tenant/app/agent
+    ///
+    /// This is a convenience method for M3 primitives that only need
+    /// run-level isolation. Uses "default" for tenant, app, and agent.
+    pub fn for_run(run_id: RunId) -> Self {
+        Self {
+            tenant: "default".to_string(),
+            app: "default".to_string(),
+            agent: "default".to_string(),
+            run_id,
+        }
+    }
 }
 
 impl fmt::Display for Namespace {

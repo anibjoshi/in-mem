@@ -1,17 +1,695 @@
-//! KV Store primitive implementation
-//!
-//! General-purpose key-value storage for agent working memory, scratchpads,
-//! tool outputs, and ephemeral data.
+//! KVStore: General-purpose key-value storage primitive
 //!
 //! ## Design
 //!
-//! KVStore is a stateless facade over the Database engine. It provides:
-//! - Single-operation API (implicit transactions): get, put, delete, list
-//! - Multi-operation API (explicit transactions): KVTransaction
-//! - Run isolation through key prefix namespacing
+//! KVStore is a stateless facade over the Database engine. It holds no
+//! in-memory state beyond an `Arc<Database>` reference.
 //!
-//! ## Implementation Status
+//! ## Run Isolation
 //!
-//! TODO: Implement in Epic 14 (Stories #169-#173)
+//! All operations are scoped to a `RunId`. Keys are prefixed with the
+//! run's namespace, ensuring complete isolation between runs.
+//!
+//! ## Thread Safety
+//!
+//! KVStore is `Send + Sync` and can be safely shared across threads.
+//! Multiple KVStore instances on the same Database are safe.
+//!
+//! ## API
+//!
+//! - **Single-Operation API**: `get`, `put`, `put_with_ttl`, `delete`, `exists`
+//!   Each operation runs in its own implicit transaction.
+//!
+//! - **Multi-Operation API**: `transaction` with `KVTransaction`
+//!   Multiple operations run atomically in a single transaction.
+//!
+//! - **List Operations**: `list`, `list_with_values`
+//!   Scan keys with optional prefix filtering.
 
-// Placeholder - implementation coming in Epic 14
+use crate::extensions::KVStoreExt;
+use in_mem_concurrency::TransactionContext;
+use in_mem_core::error::Result;
+use in_mem_core::types::{Key, Namespace, RunId};
+use in_mem_core::value::Value;
+use in_mem_engine::Database;
+use std::sync::Arc;
+use std::time::Duration;
+
+/// General-purpose key-value store primitive
+///
+/// Stateless facade over Database - all state lives in storage.
+/// Multiple KVStore instances on same Database are safe.
+///
+/// # Example
+///
+/// ```ignore
+/// use in_mem_primitives::KVStore;
+/// use in_mem_engine::Database;
+/// use in_mem_core::types::RunId;
+/// use in_mem_core::value::Value;
+///
+/// let db = Arc::new(Database::open("/path/to/data")?);
+/// let kv = KVStore::new(db);
+/// let run_id = RunId::new();
+///
+/// // Simple operations
+/// kv.put(&run_id, "key", Value::String("value".into()))?;
+/// let value = kv.get(&run_id, "key")?;
+/// kv.delete(&run_id, "key")?;
+/// ```
+#[derive(Clone)]
+pub struct KVStore {
+    db: Arc<Database>,
+}
+
+impl KVStore {
+    /// Create new KVStore instance
+    pub fn new(db: Arc<Database>) -> Self {
+        Self { db }
+    }
+
+    /// Get the underlying database reference
+    pub fn database(&self) -> &Arc<Database> {
+        &self.db
+    }
+
+    /// Build namespace for run-scoped operations
+    fn namespace_for_run(&self, run_id: &RunId) -> Namespace {
+        Namespace::for_run(*run_id)
+    }
+
+    /// Build key for KV operation
+    fn key_for(&self, run_id: &RunId, user_key: &str) -> Key {
+        Key::new_kv(self.namespace_for_run(run_id), user_key)
+    }
+
+    // ========== Single-Operation API (Implicit Transactions) ==========
+
+    /// Get a value by key
+    ///
+    /// Returns `None` if the key doesn't exist.
+    pub fn get(&self, run_id: &RunId, key: &str) -> Result<Option<Value>> {
+        self.db.transaction(*run_id, |txn| {
+            let storage_key = self.key_for(run_id, key);
+            txn.get(&storage_key)
+        })
+    }
+
+    /// Put a value
+    ///
+    /// Creates the key if it doesn't exist, overwrites if it does.
+    pub fn put(&self, run_id: &RunId, key: &str, value: Value) -> Result<()> {
+        self.db.transaction(*run_id, |txn| {
+            let storage_key = self.key_for(run_id, key);
+            txn.put(storage_key, value)
+        })
+    }
+
+    /// Put a value with TTL
+    ///
+    /// Note: TTL metadata is stored but cleanup is deferred to M4 background tasks.
+    /// Reads will return expired values until cleanup runs.
+    pub fn put_with_ttl(
+        &self,
+        run_id: &RunId,
+        key: &str,
+        value: Value,
+        ttl: Duration,
+    ) -> Result<()> {
+        self.db.transaction(*run_id, |txn| {
+            let storage_key = self.key_for(run_id, key);
+            let expires_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64
+                + ttl.as_millis() as i64;
+
+            // Store value with expiration metadata
+            let value_with_ttl = Value::Map(std::collections::HashMap::from([
+                ("value".to_string(), value),
+                ("expires_at".to_string(), Value::I64(expires_at)),
+            ]));
+
+            txn.put(storage_key, value_with_ttl)
+        })
+    }
+
+    /// Delete a key
+    ///
+    /// Returns `true` if the key existed and was deleted.
+    pub fn delete(&self, run_id: &RunId, key: &str) -> Result<bool> {
+        self.db.transaction(*run_id, |txn| {
+            let storage_key = self.key_for(run_id, key);
+            // Check if key exists before deleting
+            let exists = txn.get(&storage_key)?.is_some();
+            if exists {
+                txn.delete(storage_key)?;
+            }
+            Ok(exists)
+        })
+    }
+
+    /// Check if a key exists
+    pub fn exists(&self, run_id: &RunId, key: &str) -> Result<bool> {
+        Ok(self.get(run_id, key)?.is_some())
+    }
+
+    // ========== List Operations ==========
+
+    /// List keys with optional prefix filter
+    ///
+    /// Returns all keys matching the prefix (or all keys if prefix is None).
+    pub fn list(&self, run_id: &RunId, prefix: Option<&str>) -> Result<Vec<String>> {
+        self.db.transaction(*run_id, |txn| {
+            let ns = self.namespace_for_run(run_id);
+            let scan_prefix = Key::new_kv(ns, prefix.unwrap_or(""));
+
+            let results = txn.scan_prefix(&scan_prefix)?;
+
+            Ok(results
+                .into_iter()
+                .filter_map(|(key, _)| key.user_key_string())
+                .collect())
+        })
+    }
+
+    /// List key-value pairs with optional prefix filter
+    ///
+    /// Returns all key-value pairs matching the prefix (or all if prefix is None).
+    pub fn list_with_values(
+        &self,
+        run_id: &RunId,
+        prefix: Option<&str>,
+    ) -> Result<Vec<(String, Value)>> {
+        self.db.transaction(*run_id, |txn| {
+            let ns = self.namespace_for_run(run_id);
+            let scan_prefix = Key::new_kv(ns, prefix.unwrap_or(""));
+
+            let results = txn.scan_prefix(&scan_prefix)?;
+
+            Ok(results
+                .into_iter()
+                .filter_map(|(key, value)| key.user_key_string().map(|k| (k, value)))
+                .collect())
+        })
+    }
+
+    // ========== Multi-Operation API (Explicit Transactions) ==========
+
+    /// Execute multiple KV operations atomically
+    ///
+    /// All operations within the closure are part of a single transaction.
+    /// Either all succeed or all are rolled back.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// kv.transaction(&run_id, |txn| {
+    ///     txn.put("key1", Value::I64(1))?;
+    ///     txn.put("key2", Value::I64(2))?;
+    ///     let val = txn.get("key1")?;
+    ///     Ok(val)
+    /// })?;
+    /// ```
+    pub fn transaction<F, T>(&self, run_id: &RunId, f: F) -> Result<T>
+    where
+        F: FnOnce(&mut KVTransaction<'_>) -> Result<T>,
+    {
+        self.db.transaction(*run_id, |txn| {
+            let mut kv_txn = KVTransaction {
+                txn,
+                run_id: *run_id,
+            };
+            f(&mut kv_txn)
+        })
+    }
+}
+
+/// Transaction handle for multi-key KV operations
+///
+/// Provides get/put/delete/list operations within an atomic transaction.
+/// Changes are only visible after the transaction commits successfully.
+pub struct KVTransaction<'a> {
+    txn: &'a mut TransactionContext,
+    run_id: RunId,
+}
+
+impl<'a> KVTransaction<'a> {
+    /// Get a value within the transaction
+    pub fn get(&mut self, key: &str) -> Result<Option<Value>> {
+        let storage_key = Key::new_kv(Namespace::for_run(self.run_id), key);
+        self.txn.get(&storage_key)
+    }
+
+    /// Put a value within the transaction
+    pub fn put(&mut self, key: &str, value: Value) -> Result<()> {
+        let storage_key = Key::new_kv(Namespace::for_run(self.run_id), key);
+        self.txn.put(storage_key, value)
+    }
+
+    /// Delete a key within the transaction
+    pub fn delete(&mut self, key: &str) -> Result<bool> {
+        let storage_key = Key::new_kv(Namespace::for_run(self.run_id), key);
+        let exists = self.txn.get(&storage_key)?.is_some();
+        if exists {
+            self.txn.delete(storage_key)?;
+        }
+        Ok(exists)
+    }
+
+    /// List keys within the transaction
+    pub fn list(&mut self, prefix: Option<&str>) -> Result<Vec<String>> {
+        let ns = Namespace::for_run(self.run_id);
+        let scan_prefix = Key::new_kv(ns, prefix.unwrap_or(""));
+
+        let results = self.txn.scan_prefix(&scan_prefix)?;
+
+        Ok(results
+            .into_iter()
+            .filter_map(|(key, _)| key.user_key_string())
+            .collect())
+    }
+}
+
+// ========== KVStoreExt Implementation ==========
+
+impl KVStoreExt for TransactionContext {
+    fn kv_get(&mut self, key: &str) -> Result<Option<Value>> {
+        let storage_key = Key::new_kv(Namespace::for_run(self.run_id), key);
+        self.get(&storage_key)
+    }
+
+    fn kv_put(&mut self, key: &str, value: Value) -> Result<()> {
+        let storage_key = Key::new_kv(Namespace::for_run(self.run_id), key);
+        self.put(storage_key, value)
+    }
+
+    fn kv_delete(&mut self, key: &str) -> Result<()> {
+        let storage_key = Key::new_kv(Namespace::for_run(self.run_id), key);
+        self.delete(storage_key)?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use in_mem_core::types::TypeTag;
+    use tempfile::TempDir;
+
+    fn setup() -> (TempDir, Arc<Database>, KVStore) {
+        let temp_dir = TempDir::new().unwrap();
+        let db = Arc::new(Database::open(temp_dir.path()).unwrap());
+        let kv = KVStore::new(db.clone());
+        (temp_dir, db, kv)
+    }
+
+    // ========== Core Structure Tests (Story #169) ==========
+
+    #[test]
+    fn test_kvstore_creation() {
+        let (_temp, _db, kv) = setup();
+        assert!(Arc::strong_count(kv.database()) >= 1);
+    }
+
+    #[test]
+    fn test_kvstore_is_clone() {
+        let (_temp, _db, kv1) = setup();
+        let kv2 = kv1.clone();
+        // Both point to same database
+        assert!(Arc::ptr_eq(kv1.database(), kv2.database()));
+    }
+
+    #[test]
+    fn test_kvstore_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<KVStore>();
+    }
+
+    #[test]
+    fn test_key_construction() {
+        let (_temp, _db, kv) = setup();
+        let run_id = RunId::new();
+        let key = kv.key_for(&run_id, "test-key");
+        assert_eq!(key.type_tag, TypeTag::KV);
+    }
+
+    // ========== Single-Operation API Tests (Story #170) ==========
+
+    #[test]
+    fn test_put_and_get() {
+        let (_temp, _db, kv) = setup();
+        let run_id = RunId::new();
+
+        kv.put(&run_id, "key1", Value::String("value1".into()))
+            .unwrap();
+        let result = kv.get(&run_id, "key1").unwrap();
+        assert_eq!(result, Some(Value::String("value1".into())));
+    }
+
+    #[test]
+    fn test_get_nonexistent() {
+        let (_temp, _db, kv) = setup();
+        let run_id = RunId::new();
+
+        let result = kv.get(&run_id, "nonexistent").unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_put_overwrite() {
+        let (_temp, _db, kv) = setup();
+        let run_id = RunId::new();
+
+        kv.put(&run_id, "key1", Value::String("value1".into()))
+            .unwrap();
+        kv.put(&run_id, "key1", Value::String("value2".into()))
+            .unwrap();
+
+        let result = kv.get(&run_id, "key1").unwrap();
+        assert_eq!(result, Some(Value::String("value2".into())));
+    }
+
+    #[test]
+    fn test_delete() {
+        let (_temp, _db, kv) = setup();
+        let run_id = RunId::new();
+
+        kv.put(&run_id, "key1", Value::String("value1".into()))
+            .unwrap();
+        assert!(kv.exists(&run_id, "key1").unwrap());
+
+        let deleted = kv.delete(&run_id, "key1").unwrap();
+        assert!(deleted);
+        assert!(!kv.exists(&run_id, "key1").unwrap());
+    }
+
+    #[test]
+    fn test_delete_nonexistent() {
+        let (_temp, _db, kv) = setup();
+        let run_id = RunId::new();
+
+        let deleted = kv.delete(&run_id, "nonexistent").unwrap();
+        assert!(!deleted);
+    }
+
+    #[test]
+    fn test_exists() {
+        let (_temp, _db, kv) = setup();
+        let run_id = RunId::new();
+
+        assert!(!kv.exists(&run_id, "key1").unwrap());
+        kv.put(&run_id, "key1", Value::I64(42)).unwrap();
+        assert!(kv.exists(&run_id, "key1").unwrap());
+    }
+
+    #[test]
+    fn test_run_isolation() {
+        let (_temp, _db, kv) = setup();
+        let run1 = RunId::new();
+        let run2 = RunId::new();
+
+        kv.put(&run1, "shared-key", Value::String("run1-value".into()))
+            .unwrap();
+        kv.put(&run2, "shared-key", Value::String("run2-value".into()))
+            .unwrap();
+
+        // Each run sees its own value
+        assert_eq!(
+            kv.get(&run1, "shared-key").unwrap(),
+            Some(Value::String("run1-value".into()))
+        );
+        assert_eq!(
+            kv.get(&run2, "shared-key").unwrap(),
+            Some(Value::String("run2-value".into()))
+        );
+    }
+
+    #[test]
+    fn test_put_with_ttl() {
+        let (_temp, _db, kv) = setup();
+        let run_id = RunId::new();
+
+        kv.put_with_ttl(
+            &run_id,
+            "expiring-key",
+            Value::String("temp".into()),
+            Duration::from_secs(3600),
+        )
+        .unwrap();
+
+        // Value is stored with metadata
+        let result = kv.get(&run_id, "expiring-key").unwrap();
+        assert!(result.is_some());
+
+        // Verify the value is wrapped with TTL metadata
+        if let Some(Value::Map(map)) = result {
+            assert!(map.contains_key("value"));
+            assert!(map.contains_key("expires_at"));
+        } else {
+            panic!("Expected Value::Map with TTL metadata");
+        }
+    }
+
+    // ========== Multi-Operation API Tests (Story #171) ==========
+
+    #[test]
+    fn test_multi_key_atomic() {
+        let (_temp, _db, kv) = setup();
+        let run_id = RunId::new();
+
+        kv.transaction(&run_id, |txn| {
+            txn.put("key1", Value::String("val1".into()))?;
+            txn.put("key2", Value::String("val2".into()))?;
+            txn.put("key3", Value::String("val3".into()))?;
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(
+            kv.get(&run_id, "key1").unwrap(),
+            Some(Value::String("val1".into()))
+        );
+        assert_eq!(
+            kv.get(&run_id, "key2").unwrap(),
+            Some(Value::String("val2".into()))
+        );
+        assert_eq!(
+            kv.get(&run_id, "key3").unwrap(),
+            Some(Value::String("val3".into()))
+        );
+    }
+
+    #[test]
+    fn test_transaction_read_your_writes() {
+        let (_temp, _db, kv) = setup();
+        let run_id = RunId::new();
+
+        kv.transaction(&run_id, |txn| {
+            txn.put("key", Value::I64(1))?;
+            let val = txn.get("key")?;
+            assert_eq!(val, Some(Value::I64(1)));
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn test_transaction_delete() {
+        let (_temp, _db, kv) = setup();
+        let run_id = RunId::new();
+
+        // Setup: create a key
+        kv.put(&run_id, "key", Value::I64(1)).unwrap();
+
+        // Delete in transaction
+        kv.transaction(&run_id, |txn| {
+            let deleted = txn.delete("key")?;
+            assert!(deleted);
+            // Read-your-deletes: should see None
+            let val = txn.get("key")?;
+            assert_eq!(val, None);
+            Ok(())
+        })
+        .unwrap();
+
+        // Verify deleted
+        assert!(!kv.exists(&run_id, "key").unwrap());
+    }
+
+    // ========== List Operations Tests (Story #172) ==========
+
+    #[test]
+    fn test_list_all() {
+        let (_temp, _db, kv) = setup();
+        let run_id = RunId::new();
+
+        kv.put(&run_id, "a", Value::I64(1)).unwrap();
+        kv.put(&run_id, "b", Value::I64(2)).unwrap();
+        kv.put(&run_id, "c", Value::I64(3)).unwrap();
+
+        let keys = kv.list(&run_id, None).unwrap();
+        assert_eq!(keys.len(), 3);
+        assert!(keys.contains(&"a".to_string()));
+        assert!(keys.contains(&"b".to_string()));
+        assert!(keys.contains(&"c".to_string()));
+    }
+
+    #[test]
+    fn test_list_with_prefix() {
+        let (_temp, _db, kv) = setup();
+        let run_id = RunId::new();
+
+        kv.put(&run_id, "user:1", Value::I64(1)).unwrap();
+        kv.put(&run_id, "user:2", Value::I64(2)).unwrap();
+        kv.put(&run_id, "task:1", Value::I64(3)).unwrap();
+
+        let user_keys = kv.list(&run_id, Some("user:")).unwrap();
+        assert_eq!(user_keys.len(), 2);
+        assert!(user_keys.contains(&"user:1".to_string()));
+        assert!(user_keys.contains(&"user:2".to_string()));
+
+        let task_keys = kv.list(&run_id, Some("task:")).unwrap();
+        assert_eq!(task_keys.len(), 1);
+        assert!(task_keys.contains(&"task:1".to_string()));
+    }
+
+    #[test]
+    fn test_list_empty_prefix() {
+        let (_temp, _db, kv) = setup();
+        let run_id = RunId::new();
+
+        kv.put(&run_id, "key1", Value::I64(1)).unwrap();
+        kv.put(&run_id, "key2", Value::I64(2)).unwrap();
+
+        let keys = kv.list(&run_id, Some("nonexistent:")).unwrap();
+        assert!(keys.is_empty());
+    }
+
+    #[test]
+    fn test_list_with_values() {
+        let (_temp, _db, kv) = setup();
+        let run_id = RunId::new();
+
+        kv.put(&run_id, "key1", Value::String("val1".into()))
+            .unwrap();
+        kv.put(&run_id, "key2", Value::String("val2".into()))
+            .unwrap();
+
+        let pairs = kv.list_with_values(&run_id, None).unwrap();
+        assert_eq!(pairs.len(), 2);
+
+        let pairs_map: std::collections::HashMap<_, _> = pairs.into_iter().collect();
+        assert_eq!(pairs_map.get("key1"), Some(&Value::String("val1".into())));
+        assert_eq!(pairs_map.get("key2"), Some(&Value::String("val2".into())));
+    }
+
+    #[test]
+    fn test_list_run_isolation() {
+        let (_temp, _db, kv) = setup();
+        let run1 = RunId::new();
+        let run2 = RunId::new();
+
+        kv.put(&run1, "run1-key", Value::I64(1)).unwrap();
+        kv.put(&run2, "run2-key", Value::I64(2)).unwrap();
+
+        // Each run only sees its own keys
+        let run1_keys = kv.list(&run1, None).unwrap();
+        assert_eq!(run1_keys.len(), 1);
+        assert!(run1_keys.contains(&"run1-key".to_string()));
+
+        let run2_keys = kv.list(&run2, None).unwrap();
+        assert_eq!(run2_keys.len(), 1);
+        assert!(run2_keys.contains(&"run2-key".to_string()));
+    }
+
+    // ========== KVStoreExt Tests (Story #173) ==========
+
+    #[test]
+    fn test_kvstore_ext_in_transaction() {
+        use crate::extensions::KVStoreExt;
+
+        let (_temp, db, _kv) = setup();
+        let run_id = RunId::new();
+
+        db.transaction(run_id, |txn| {
+            txn.kv_put("ext-key", Value::String("ext-value".into()))?;
+            let val = txn.kv_get("ext-key")?;
+            assert_eq!(val, Some(Value::String("ext-value".into())));
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn test_kvstore_ext_delete() {
+        use crate::extensions::KVStoreExt;
+
+        let (_temp, db, kv) = setup();
+        let run_id = RunId::new();
+
+        // Setup
+        kv.put(&run_id, "key", Value::I64(42)).unwrap();
+
+        // Delete via extension trait
+        db.transaction(run_id, |txn| {
+            txn.kv_delete("key")?;
+            let val = txn.kv_get("key")?;
+            assert_eq!(val, None);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    // ========== Value Type Tests ==========
+
+    #[test]
+    fn test_various_value_types() {
+        let (_temp, _db, kv) = setup();
+        let run_id = RunId::new();
+
+        // String
+        kv.put(&run_id, "string", Value::String("hello".into()))
+            .unwrap();
+        assert_eq!(
+            kv.get(&run_id, "string").unwrap(),
+            Some(Value::String("hello".into()))
+        );
+
+        // Integer
+        kv.put(&run_id, "int", Value::I64(42)).unwrap();
+        assert_eq!(kv.get(&run_id, "int").unwrap(), Some(Value::I64(42)));
+
+        // Float
+        kv.put(&run_id, "float", Value::F64(3.14)).unwrap();
+        assert_eq!(kv.get(&run_id, "float").unwrap(), Some(Value::F64(3.14)));
+
+        // Boolean
+        kv.put(&run_id, "bool", Value::Bool(true)).unwrap();
+        assert_eq!(kv.get(&run_id, "bool").unwrap(), Some(Value::Bool(true)));
+
+        // Null
+        kv.put(&run_id, "null", Value::Null).unwrap();
+        assert_eq!(kv.get(&run_id, "null").unwrap(), Some(Value::Null));
+
+        // Bytes
+        kv.put(&run_id, "bytes", Value::Bytes(vec![1, 2, 3]))
+            .unwrap();
+        assert_eq!(
+            kv.get(&run_id, "bytes").unwrap(),
+            Some(Value::Bytes(vec![1, 2, 3]))
+        );
+
+        // Array
+        kv.put(
+            &run_id,
+            "array",
+            Value::Array(vec![Value::I64(1), Value::I64(2)]),
+        )
+        .unwrap();
+        assert_eq!(
+            kv.get(&run_id, "array").unwrap(),
+            Some(Value::Array(vec![Value::I64(1), Value::I64(2)]))
+        );
+    }
+}

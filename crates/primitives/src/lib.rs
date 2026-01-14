@@ -48,8 +48,8 @@ pub mod run_index;
 pub mod state_cell;
 pub mod trace;
 
-// Re-exports will be added as primitives are implemented
-// pub use kv::KVStore;
+// Re-exports - primitives are exported as they're implemented
+pub use kv::{KVStore, KVTransaction};
 // pub use event_log::{EventLog, Event};
 // pub use state_cell::{StateCell, State};
 // pub use trace::{TraceStore, Trace, TraceType};
