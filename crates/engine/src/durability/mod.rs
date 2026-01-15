@@ -61,15 +61,15 @@
 //!   └─────────────────┘
 //! ```
 
-mod traits;
+mod buffered;
 mod inmemory;
 mod strict;
-mod buffered;
+mod traits;
 
-pub use traits::{CommitData, Durability, DurabilityExt};
+pub use buffered::BufferedDurability;
 pub use inmemory::InMemoryDurability;
 pub use strict::StrictDurability;
-pub use buffered::BufferedDurability;
+pub use traits::{CommitData, Durability, DurabilityExt};
 
 // Re-export DurabilityMode from durability crate for convenience
 pub use in_mem_durability::wal::DurabilityMode;

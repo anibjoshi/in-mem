@@ -23,8 +23,8 @@
 //! - `Drop` implementation ensures clean shutdown
 
 use super::Durability;
-use in_mem_concurrency::TransactionWALWriter;
 use in_mem_concurrency::TransactionContext;
+use in_mem_concurrency::TransactionWALWriter;
 use in_mem_core::error::Result;
 use in_mem_durability::wal::WAL;
 use parking_lot::{Condvar, Mutex};
@@ -228,7 +228,11 @@ impl Durability for BufferedDurability {
 
             // Write CAS operations
             for cas_op in &txn.cas_set {
-                wal_writer.write_put(cas_op.key.clone(), cas_op.new_value.clone(), commit_version)?;
+                wal_writer.write_put(
+                    cas_op.key.clone(),
+                    cas_op.new_value.clone(),
+                    commit_version,
+                )?;
             }
 
             // Write CommitTxn
@@ -307,7 +311,10 @@ impl std::fmt::Debug for BufferedDurability {
         f.debug_struct("BufferedDurability")
             .field("flush_interval", &self.flush_interval)
             .field("max_pending_writes", &self.max_pending_writes)
-            .field("pending_writes", &self.pending_writes.load(Ordering::Relaxed))
+            .field(
+                "pending_writes",
+                &self.pending_writes.load(Ordering::Relaxed),
+            )
             .field("shutdown", &self.shutdown_flag.load(Ordering::Relaxed))
             .finish()
     }

@@ -82,10 +82,9 @@ impl Durability for StrictDurability {
     /// Returns error if WAL write or fsync fails.
     fn persist(&self, txn: &TransactionContext, commit_version: u64) -> Result<()> {
         // Acquire WAL lock
-        let mut wal = self
-            .wal
-            .lock()
-            .map_err(|e| in_mem_core::error::Error::InvalidOperation(format!("WAL lock poisoned: {}", e)))?;
+        let mut wal = self.wal.lock().map_err(|e| {
+            in_mem_core::error::Error::InvalidOperation(format!("WAL lock poisoned: {}", e))
+        })?;
 
         // Write transaction to WAL in a scoped block
         // This ensures wal_writer's mutable borrow ends before fsync
@@ -107,7 +106,11 @@ impl Durability for StrictDurability {
 
             // Write CAS operations (they become puts after validation)
             for cas_op in &txn.cas_set {
-                wal_writer.write_put(cas_op.key.clone(), cas_op.new_value.clone(), commit_version)?;
+                wal_writer.write_put(
+                    cas_op.key.clone(),
+                    cas_op.new_value.clone(),
+                    commit_version,
+                )?;
             }
 
             // Write CommitTxn (this flushes the buffer)
@@ -127,10 +130,9 @@ impl Durability for StrictDurability {
     /// already fsyncs. We still call fsync one more time to ensure
     /// any buffered filesystem data is persisted.
     fn shutdown(&self) -> Result<()> {
-        let wal = self
-            .wal
-            .lock()
-            .map_err(|e| in_mem_core::error::Error::InvalidOperation(format!("WAL lock poisoned: {}", e)))?;
+        let wal = self.wal.lock().map_err(|e| {
+            in_mem_core::error::Error::InvalidOperation(format!("WAL lock poisoned: {}", e))
+        })?;
         // Final fsync to ensure any buffered data is persisted
         wal.fsync()
     }
