@@ -111,6 +111,178 @@ impl RetryConfig {
     }
 }
 
+// ============================================================================
+// M4: Database Builder Pattern
+// ============================================================================
+
+/// Builder for Database configuration (M4)
+///
+/// Provides a fluent API for configuring and opening databases with
+/// different durability modes.
+///
+/// # Example
+///
+/// ```ignore
+/// use in_mem_engine::{Database, DatabaseBuilder};
+/// use in_mem_durability::wal::DurabilityMode;
+///
+/// // InMemory mode for tests (fastest)
+/// let db = Database::builder()
+///     .in_memory()
+///     .open_temp()?;
+///
+/// // Buffered mode for production (balanced)
+/// let db = Database::builder()
+///     .path("/var/data/mydb")
+///     .buffered()
+///     .open()?;
+///
+/// // Strict mode with explicit path
+/// let db = Database::builder()
+///     .path("/var/data/mydb")
+///     .strict()
+///     .open()?;
+///
+/// // Custom durability mode
+/// let db = Database::builder()
+///     .path("/var/data/mydb")
+///     .durability(DurabilityMode::Batched {
+///         interval_ms: 50,
+///         max_pending_writes: 500,
+///     })
+///     .open()?;
+/// ```
+///
+/// # M4 Performance Targets
+///
+/// | Mode | Target Latency | Throughput |
+/// |------|----------------|------------|
+/// | InMemory | <3µs put | 250K+ ops/sec |
+/// | Buffered | <30µs put | 50K+ ops/sec |
+/// | Strict | ~2ms put | ~500 ops/sec |
+#[derive(Debug, Clone)]
+pub struct DatabaseBuilder {
+    /// Database path (None for temporary)
+    path: Option<PathBuf>,
+    /// Durability mode
+    durability: DurabilityMode,
+}
+
+impl DatabaseBuilder {
+    /// Create new builder with defaults
+    ///
+    /// Defaults to Strict durability mode for backwards compatibility.
+    pub fn new() -> Self {
+        Self {
+            path: None,
+            durability: DurabilityMode::Strict, // M3 default for backwards compatibility
+        }
+    }
+
+    /// Set database path
+    ///
+    /// If not set, `open_temp()` will generate a temporary path.
+    pub fn path<P: Into<PathBuf>>(mut self, path: P) -> Self {
+        self.path = Some(path.into());
+        self
+    }
+
+    /// Set durability mode explicitly
+    pub fn durability(mut self, mode: DurabilityMode) -> Self {
+        self.durability = mode;
+        self
+    }
+
+    /// Use InMemory mode (M4: fastest, no persistence)
+    ///
+    /// Target latency: <3µs for engine/put_direct
+    /// Throughput: 250K+ ops/sec
+    ///
+    /// All data lost on crash. Use for tests, caches, ephemeral data.
+    pub fn in_memory(mut self) -> Self {
+        self.durability = DurabilityMode::InMemory;
+        self
+    }
+
+    /// Use Buffered mode with defaults (M4: balanced)
+    ///
+    /// Target latency: <30µs for kvstore/put
+    /// Throughput: 50K+ ops/sec
+    ///
+    /// Recommended for production workloads.
+    pub fn buffered(mut self) -> Self {
+        self.durability = DurabilityMode::buffered_default();
+        self
+    }
+
+    /// Use Buffered mode with custom parameters
+    ///
+    /// # Arguments
+    ///
+    /// * `flush_interval_ms` - Maximum time between fsyncs
+    /// * `max_pending_writes` - Maximum writes before forced fsync
+    pub fn buffered_with(mut self, flush_interval_ms: u64, max_pending_writes: usize) -> Self {
+        self.durability = DurabilityMode::Batched {
+            interval_ms: flush_interval_ms,
+            batch_size: max_pending_writes,
+        };
+        self
+    }
+
+    /// Use Strict mode (M3 default, safest)
+    ///
+    /// fsync on every commit. Zero data loss on crash.
+    /// Slowest mode - use for checkpoints, metadata, audit logs.
+    pub fn strict(mut self) -> Self {
+        self.durability = DurabilityMode::Strict;
+        self
+    }
+
+    /// Get configured path (if any)
+    pub fn get_path(&self) -> Option<&PathBuf> {
+        self.path.as_ref()
+    }
+
+    /// Get configured durability mode
+    pub fn get_durability(&self) -> DurabilityMode {
+        self.durability
+    }
+
+    /// Open the database
+    ///
+    /// Uses the configured path, or generates a temporary path if none set.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if directory creation, WAL opening, or recovery fails.
+    pub fn open(self) -> Result<Database> {
+        let path = self.path.unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("inmem-{}", uuid::Uuid::new_v4()))
+        });
+
+        Database::open_with_mode(path, self.durability)
+    }
+
+    /// Open a temporary database
+    ///
+    /// Always generates a unique temporary path, ignoring any configured path.
+    /// Useful for tests.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if directory creation, WAL opening, or recovery fails.
+    pub fn open_temp(self) -> Result<Database> {
+        let path = std::env::temp_dir().join(format!("inmem-test-{}", uuid::Uuid::new_v4()));
+        Database::open_with_mode(path, self.durability)
+    }
+}
+
+impl Default for DatabaseBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Main database struct with transaction support
 ///
 /// Orchestrates storage, WAL, recovery, and transactions.
@@ -161,6 +333,21 @@ pub struct Database {
 }
 
 impl Database {
+    /// Create a new database builder (M4)
+    ///
+    /// Returns a `DatabaseBuilder` for configuring the database before opening.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let db = Database::builder()
+    ///     .in_memory()
+    ///     .open_temp()?;
+    /// ```
+    pub fn builder() -> DatabaseBuilder {
+        DatabaseBuilder::new()
+    }
+
     /// Open database at given path with automatic recovery
     ///
     /// This is the main entry point for database initialization.
@@ -1910,5 +2097,116 @@ mod tests {
         let after = txn.elapsed();
         assert!(after >= Duration::from_millis(50));
         assert!(after > initial);
+    }
+
+    // ========================================================================
+    // M4: DatabaseBuilder Tests
+    // ========================================================================
+
+    #[test]
+    fn test_database_builder_default() {
+        let builder = DatabaseBuilder::new();
+        assert!(builder.get_path().is_none());
+        assert_eq!(builder.get_durability(), DurabilityMode::Strict);
+    }
+
+    #[test]
+    fn test_database_builder_path() {
+        let builder = DatabaseBuilder::new().path("/tmp/test");
+        assert_eq!(
+            builder.get_path(),
+            Some(&std::path::PathBuf::from("/tmp/test"))
+        );
+    }
+
+    #[test]
+    fn test_database_builder_in_memory() {
+        let builder = DatabaseBuilder::new().in_memory();
+        assert_eq!(builder.get_durability(), DurabilityMode::InMemory);
+    }
+
+    #[test]
+    fn test_database_builder_buffered() {
+        let builder = DatabaseBuilder::new().buffered();
+        match builder.get_durability() {
+            DurabilityMode::Batched {
+                interval_ms,
+                batch_size,
+            } => {
+                assert_eq!(interval_ms, 100);
+                assert_eq!(batch_size, 1000);
+            }
+            _ => panic!("Expected Batched mode from buffered()"),
+        }
+    }
+
+    #[test]
+    fn test_database_builder_buffered_custom() {
+        let builder = DatabaseBuilder::new().buffered_with(50, 500);
+        match builder.get_durability() {
+            DurabilityMode::Batched {
+                interval_ms,
+                batch_size,
+            } => {
+                assert_eq!(interval_ms, 50);
+                assert_eq!(batch_size, 500);
+            }
+            _ => panic!("Expected Batched mode from buffered_with()"),
+        }
+    }
+
+    #[test]
+    fn test_database_builder_strict() {
+        let builder = DatabaseBuilder::new().strict();
+        assert_eq!(builder.get_durability(), DurabilityMode::Strict);
+    }
+
+    #[test]
+    fn test_database_builder_chaining() {
+        // Last mode wins
+        let builder = DatabaseBuilder::new()
+            .path("/tmp/test")
+            .in_memory()
+            .buffered()
+            .strict();
+
+        assert_eq!(builder.get_durability(), DurabilityMode::Strict);
+        assert_eq!(
+            builder.get_path(),
+            Some(&std::path::PathBuf::from("/tmp/test"))
+        );
+    }
+
+    #[test]
+    fn test_database_builder_open_temp() {
+        let db = Database::builder().in_memory().open_temp().unwrap();
+
+        // Should have a temp path
+        assert!(db.data_dir().exists());
+        assert!(db.data_dir().to_string_lossy().contains("inmem-test-"));
+    }
+
+    #[test]
+    fn test_database_builder_open_with_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("builder_test");
+
+        let db = Database::builder().path(&db_path).strict().open().unwrap();
+
+        assert_eq!(db.data_dir(), db_path);
+    }
+
+    #[test]
+    fn test_database_builder_convenience_method() {
+        // Test Database::builder() static method
+        let builder = Database::builder();
+        assert!(builder.get_path().is_none());
+        assert_eq!(builder.get_durability(), DurabilityMode::Strict);
+    }
+
+    #[test]
+    fn test_database_builder_default_trait() {
+        let builder = DatabaseBuilder::default();
+        assert_eq!(builder.get_durability(), DurabilityMode::Strict);
     }
 }

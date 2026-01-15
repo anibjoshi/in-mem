@@ -29,7 +29,7 @@ pub mod instrumentation;
 // pub mod run;          // Story #29
 
 pub use coordinator::{TransactionCoordinator, TransactionMetrics};
-pub use database::{Database, RetryConfig};
+pub use database::{Database, DatabaseBuilder, RetryConfig};
 pub use instrumentation::PerfTrace;
 
 #[cfg(feature = "perf-trace")]

@@ -149,6 +149,9 @@ macro_rules! perf_time {
     }};
 }
 
+/// No-op version of perf_time! macro when `perf-trace` feature is disabled.
+///
+/// Simply evaluates the expression with zero overhead.
 #[cfg(not(feature = "perf-trace"))]
 #[macro_export]
 macro_rules! perf_time {
