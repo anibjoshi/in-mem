@@ -25,11 +25,13 @@
 
 pub mod coordinator;
 pub mod database;
+pub mod durability;
 pub mod instrumentation;
 // pub mod run;          // Story #29
 
 pub use coordinator::{TransactionCoordinator, TransactionMetrics};
 pub use database::{Database, DatabaseBuilder, RetryConfig};
+pub use durability::{CommitData, Durability, DurabilityMode};
 pub use instrumentation::PerfTrace;
 
 #[cfg(feature = "perf-trace")]
