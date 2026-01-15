@@ -7,6 +7,10 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+perf-trace = []  # Enable per-layer timing instrumentation for M4
+
 [dependencies]
 in-mem-core = { path = "../core" }
 in-mem-storage = { path = "../storage" }
