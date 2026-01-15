@@ -27,6 +27,7 @@ pub mod coordinator;
 pub mod database;
 pub mod durability;
 pub mod instrumentation;
+pub mod transaction;
 // pub mod run;          // Story #29
 
 pub use coordinator::{TransactionCoordinator, TransactionMetrics};
@@ -36,6 +37,7 @@ pub use durability::{
     StrictDurability,
 };
 pub use instrumentation::PerfTrace;
+pub use transaction::{TransactionPool, MAX_POOL_SIZE};
 
 #[cfg(feature = "perf-trace")]
 pub use instrumentation::{PerfBreakdown, PerfStats};
