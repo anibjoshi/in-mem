@@ -9,9 +9,12 @@
 Epic-end validation ensures:
 1. All stories in the epic are complete and correct
 2. Code quality meets standards
-3. Implementation matches M3 architecture spec
+3. Implementation matches architecture spec (M3 or M4)
 4. Tests are comprehensive and passing
 5. No regressions introduced
+
+**Note**: This document covers validation for both M3 (Epics 13-19) and M4 (Epics 20-25).
+For M4-specific validation, see [Phase 6b: M4 Performance Validation](#phase-6b-m4-performance-validation-m4-only).
 
 ---
 
@@ -93,7 +96,12 @@ ls -la crates/primitives/src/<expected_files>
 
 ### 3.1 Architecture Spec Compliance
 
-Open `docs/architecture/M3_ARCHITECTURE.md` and verify implementation matches:
+**For M3 (Epics 13-19)**: Open `docs/architecture/M3_ARCHITECTURE.md`
+**For M4 (Epics 20-25)**: Open `docs/architecture/M4_ARCHITECTURE.md`
+
+Verify implementation matches:
+
+#### M3 Spec Compliance (Epics 13-19)
 
 | Section | Requirement | Implemented Correctly |
 |---------|-------------|----------------------|
@@ -102,6 +110,17 @@ Open `docs/architecture/M3_ARCHITECTURE.md` and verify implementation matches:
 | Section 9 | Key design | [ ] TypeTags and key formats correct |
 | Section 10 | Transaction integration | [ ] Extension traits work |
 | Section 12 | Invariant enforcement | [ ] Primitives enforce their invariants |
+
+#### M4 Spec Compliance (Epics 20-25)
+
+| Section | Requirement | Implemented Correctly |
+|---------|-------------|----------------------|
+| Section 2 | Key Design Decisions | [ ] DurabilityMode enum, DashMap + HashMap, pooling |
+| Section 3 | Durability Modes | [ ] InMemory, Buffered, Strict implementations |
+| Section 4 | Sharded Storage | [ ] ShardedStore, per-RunId sharding |
+| Section 5 | Transaction Pooling | [ ] Thread-local pools, reset() method |
+| Section 6 | Read Path Optimization | [ ] Fast path reads, snapshot-based |
+| Section 7 | Red Flag Thresholds | [ ] All hard stops respected |
 
 ### 3.2 Spec Deviation Check
 
@@ -269,6 +288,173 @@ grep -r "purity\|pure\|Purity" crates/primitives/src/state_cell.rs
 
 ---
 
+## Phase 6b: M4 Performance Validation (M4 Only)
+
+**This phase is REQUIRED for all M4 epics (20-25).**
+
+### 6b.1 Performance Benchmarks
+
+```bash
+# Run M4 performance benchmarks
+~/.cargo/bin/cargo bench --bench m4_performance
+
+# Run facade tax benchmarks
+~/.cargo/bin/cargo bench --bench m4_facade_tax
+
+# Expected results (InMemory mode):
+# - engine/put_direct: < 3µs (red flag: > 10µs)
+# - kvstore/put: < 8µs (red flag: > 20µs)
+# - kvstore/get: < 5µs (red flag: > 10µs)
+```
+
+### 6b.2 Red Flag Tests
+
+```bash
+# Run red flag verification tests
+~/.cargo/bin/cargo test --test m4_red_flags
+
+# All red flag thresholds must pass:
+# - Snapshot acquisition: < 2µs
+# - A1/A0 ratio: < 20×
+# - B/A1 ratio: < 8×
+# - Disjoint scaling (4T): > 2.5×
+# - p99 latency: < 20× mean
+# - Hot-path allocations: 0
+```
+
+**CRITICAL**: If ANY red flag test fails, STOP and REDESIGN before proceeding.
+
+### 6b.3 Facade Tax Verification
+
+| Layer | Description | Target | Red Flag |
+|-------|-------------|--------|----------|
+| A0 | Raw HashMap | baseline | - |
+| A1 | Engine/Storage | < 10× A0 | > 20× A0 |
+| B | Primitive facade | < 5× A1 | > 8× A1 |
+
+```bash
+# Verify facade tax is within limits
+~/.cargo/bin/cargo bench --bench m4_facade_tax -- --save-baseline m4-facade
+
+# Expected output should show:
+# A1/A0: < 10× (target), definitely < 20× (red flag)
+# B/A1: < 5× (target), definitely < 8× (red flag)
+```
+
+### 6b.4 Scaling Verification
+
+```bash
+# Run scaling tests
+~/.cargo/bin/cargo test --test m4_scaling
+
+# Verify disjoint workload scaling:
+# - 1 thread: baseline
+# - 2 threads: > 1.8× improvement
+# - 4 threads: > 2.5× improvement (red flag: < 2.5×)
+```
+
+### 6b.5 Durability Mode Verification (Epic 21+)
+
+```bash
+# Test each durability mode
+~/.cargo/bin/cargo test --test m4_durability_modes
+
+# Verify latency targets:
+# - InMemory: < 3µs (no persistence)
+# - Buffered: < 30µs (async fsync)
+# - Strict: ~2ms (sync fsync, matches M3)
+```
+
+### 6b.6 M4 Epic-Specific Validation
+
+#### Epic 20: Performance Foundation
+```bash
+# Verify baseline tag exists
+git tag -l | grep "m4-baseline"
+
+# Verify DurabilityMode enum
+grep -r "enum DurabilityMode" crates/core/src/
+
+# Verify instrumentation
+~/.cargo/bin/cargo test --package in-mem-core perf_trace
+```
+
+#### Epic 21: Durability Modes
+```bash
+# Verify all three modes work
+~/.cargo/bin/cargo test --package in-mem-core durability
+
+# Verify graceful shutdown
+~/.cargo/bin/cargo test --package in-mem-core test_shutdown
+
+# Verify per-operation override
+~/.cargo/bin/cargo test --package in-mem-core test_override
+```
+
+#### Epic 22: Sharded Storage
+```bash
+# Verify ShardedStore implementation
+~/.cargo/bin/cargo test --package in-mem-core sharded
+
+# Verify snapshot acquisition time < 2µs
+~/.cargo/bin/cargo bench --bench m4_performance -- snapshot
+
+# Verify migration from old storage
+~/.cargo/bin/cargo test --package in-mem-core test_migration
+```
+
+#### Epic 23: Transaction Pooling
+```bash
+# Verify pool implementation
+~/.cargo/bin/cargo test --package in-mem-core transaction_pool
+
+# Verify reset() preserves capacity
+~/.cargo/bin/cargo test --package in-mem-core test_reset_capacity
+
+# Verify no pool exhaustion under load
+~/.cargo/bin/cargo test --package in-mem-core test_pool_stress
+```
+
+#### Epic 24: Read Path Optimization
+```bash
+# Verify fast path reads
+~/.cargo/bin/cargo test --package primitives fast_path
+
+# Verify observational equivalence
+~/.cargo/bin/cargo test --test m4_fast_path_equivalence
+
+# Verify batch operations use single snapshot
+~/.cargo/bin/cargo test --package primitives test_get_many
+```
+
+#### Epic 25: Validation & Red Flags
+```bash
+# Run complete validation suite
+~/.cargo/bin/cargo bench --bench m4_performance
+~/.cargo/bin/cargo test --test m4_red_flags
+~/.cargo/bin/cargo test --test m4_contention
+
+# Generate performance report
+~/.cargo/bin/cargo bench --bench m4_performance -- --save-baseline m4-final
+```
+
+### 6b.7 M4 Performance Checklist
+
+| Metric | Target | Red Flag | Actual | Status |
+|--------|--------|----------|--------|--------|
+| `engine/put_direct` (InMemory) | < 3µs | > 10µs | ___ | [ ] |
+| `kvstore/put` (InMemory) | < 8µs | > 20µs | ___ | [ ] |
+| `kvstore/get` | < 5µs | > 10µs | ___ | [ ] |
+| Throughput (1T InMemory) | 250K ops/sec | < 100K | ___ | [ ] |
+| Throughput (4T disjoint) | 800K ops/sec | < 400K | ___ | [ ] |
+| Snapshot acquisition | < 500ns | > 2µs | ___ | [ ] |
+| A1/A0 ratio | < 10× | > 20× | ___ | [ ] |
+| B/A1 ratio | < 5× | > 8× | ___ | [ ] |
+| Disjoint scaling (4T) | > 3× | < 2.5× | ___ | [ ] |
+| p99/mean latency | < 10× | > 20× | ___ | [ ] |
+
+---
+
 ## Phase 7: Final Sign-Off
 
 ### 7.1 Completion Checklist
@@ -281,6 +467,8 @@ grep -r "purity\|pure\|Purity" crates/primitives/src/state_cell.rs
 | Code review complete (Phase 4) | [ ] |
 | Best practices verified (Phase 5) | [ ] |
 | Epic-specific validation done (Phase 6) | [ ] |
+| **M4 Only**: Performance validation (Phase 6b) | [ ] |
+| **M4 Only**: All red flags pass | [ ] |
 
 ### 7.2 Sign-Off
 
@@ -332,6 +520,8 @@ git push origin develop
 
 ## Validation Prompt Template
 
+### M3 Epic Validation (Epics 13-19)
+
 Use this prompt to run epic-end validation:
 
 ```
@@ -359,9 +549,47 @@ Run the complete epic-end validation for Epic <N>: <Epic Name>.
 - Stories: #XXX - #XXX
 ```
 
+### M4 Epic Validation (Epics 20-25)
+
+Use this prompt for M4 performance milestone validation:
+
+```
+## Task: M4 Epic End Validation
+
+Run the complete epic-end validation for Epic <N>: <Epic Name>.
+
+**Steps**:
+1. Run Phase 1 automated checks
+2. Verify all <X> stories are complete (Phase 2)
+3. Verify spec compliance against M4_ARCHITECTURE.md (Phase 3)
+4. Perform code review checklist (Phase 4)
+5. Verify best practices (Phase 5)
+6. Run epic-specific validation (Phase 6)
+7. Run M4 performance validation (Phase 6b) - CRITICAL
+8. Verify ALL red flag thresholds pass
+9. Provide final sign-off summary (Phase 7)
+
+**Expected Output**:
+- Pass/fail status for each phase
+- Performance benchmark results vs targets
+- Red flag test results (ALL must pass)
+- Any issues found with recommendations
+- Final sign-off or list of blockers
+
+**Reference**:
+- Epic prompt: docs/prompts/epic-<N>-claude-prompts.md
+- M4 Architecture: docs/architecture/M4_ARCHITECTURE.md
+- M4 Prompt Header: docs/prompts/M4_PROMPT_HEADER.md
+- Stories: #XXX - #XXX
+
+**CRITICAL**: If ANY red flag fails, STOP and REDESIGN. Do NOT proceed.
+```
+
 ---
 
 ## Quick Reference: Validation Commands
+
+### M3 Quick Validation
 
 ```bash
 # One-liner for Phase 1
@@ -377,6 +605,83 @@ echo "Phase 1: PASS"
 # Check for spec deviations
 grep -r "TODO\|FIXME\|HACK" crates/primitives/src/
 ```
+
+### M4 Quick Validation
+
+```bash
+# One-liner for Phase 1 + M4 performance
+~/.cargo/bin/cargo build --workspace && \
+~/.cargo/bin/cargo test --workspace && \
+~/.cargo/bin/cargo clippy --workspace -- -D warnings && \
+~/.cargo/bin/cargo fmt --check && \
+~/.cargo/bin/cargo bench --bench m4_performance && \
+~/.cargo/bin/cargo test --test m4_red_flags && \
+echo "Phase 1 + M4 Performance: PASS"
+
+# Run all M4 benchmarks
+~/.cargo/bin/cargo bench --bench m4_performance
+~/.cargo/bin/cargo bench --bench m4_facade_tax
+
+# Run all M4 tests
+~/.cargo/bin/cargo test --test m4_red_flags
+~/.cargo/bin/cargo test --test m4_fast_path_equivalence
+~/.cargo/bin/cargo test --test m4_scaling
+~/.cargo/bin/cargo test --test m4_contention
+
+# Check red flag compliance
+~/.cargo/bin/cargo test --test m4_red_flags -- --nocapture
+```
+
+### M4 Red Flag Quick Check
+
+```bash
+# Quick red flag verification (run after any M4 change)
+~/.cargo/bin/cargo test --test m4_red_flags -- \
+  test_snapshot_acquisition_time \
+  test_facade_tax_a1_a0 \
+  test_facade_tax_b_a1 \
+  test_disjoint_scaling \
+  test_p99_latency \
+  test_zero_allocations
+```
+
+---
+
+## M4 Milestone Completion Checklist
+
+**Use this checklist when completing ALL M4 epics (Epic 25 final validation):**
+
+| Category | Requirement | Status |
+|----------|-------------|--------|
+| **Durability** | | |
+| | InMemory mode: < 3µs | [ ] |
+| | Buffered mode: < 30µs | [ ] |
+| | Strict mode: ~2ms (M3 compatible) | [ ] |
+| | Per-operation override works | [ ] |
+| | Graceful shutdown flushes all | [ ] |
+| **Sharding** | | |
+| | ShardedStore with DashMap | [ ] |
+| | Snapshot acquisition < 2µs | [ ] |
+| | Zero-allocation snapshots | [ ] |
+| **Pooling** | | |
+| | Thread-local transaction pools | [ ] |
+| | reset() preserves capacity | [ ] |
+| | No pool exhaustion | [ ] |
+| **Read Path** | | |
+| | Fast path get() < 5µs | [ ] |
+| | Batch get uses single snapshot | [ ] |
+| | Observational equivalence | [ ] |
+| **Red Flags** | | |
+| | Snapshot: < 2µs | [ ] |
+| | A1/A0: < 20× | [ ] |
+| | B/A1: < 8× | [ ] |
+| | Scaling (4T): > 2.5× | [ ] |
+| | p99: < 20× mean | [ ] |
+| | Hot-path allocations: 0 | [ ] |
+| **Documentation** | | |
+| | M4_ARCHITECTURE.md complete | [ ] |
+| | All story PRs merged | [ ] |
+| | Benchmark results documented | [ ] |
 
 ---
 
