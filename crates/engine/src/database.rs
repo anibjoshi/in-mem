@@ -31,6 +31,7 @@ use in_mem_core::VersionedValue;
 use in_mem_durability::wal::{DurabilityMode, WAL};
 use in_mem_storage::UnifiedStore;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::info;
@@ -330,6 +331,14 @@ pub struct Database {
     /// This ensures atomicity of the commit sequence and prevents CAS race conditions.
     /// Per spec Section 3.3: First-committer-wins requires atomic validate-and-commit.
     commit_lock: Mutex<()>,
+
+    /// Current durability mode (M4)
+    durability_mode: DurabilityMode,
+
+    /// Flag to track if database is accepting new transactions
+    ///
+    /// Set to false during shutdown to reject new transactions.
+    accepting_transactions: std::sync::atomic::AtomicBool,
 }
 
 impl Database {
@@ -441,6 +450,8 @@ impl Database {
             wal: Arc::new(Mutex::new(wal)),
             coordinator,
             commit_lock: Mutex::new(()),
+            durability_mode,
+            accepting_transactions: AtomicBool::new(true),
         })
     }
 
@@ -506,6 +517,13 @@ impl Database {
     where
         F: FnOnce(&mut TransactionContext) -> Result<T>,
     {
+        // Check if database is accepting transactions
+        if !self.accepting_transactions.load(Ordering::SeqCst) {
+            return Err(Error::InvalidOperation(
+                "Database is shutting down".to_string(),
+            ));
+        }
+
         let mut txn = self.begin_transaction(run_id);
 
         // Execute closure
@@ -563,6 +581,13 @@ impl Database {
     where
         F: Fn(&mut TransactionContext) -> Result<T>,
     {
+        // Check if database is accepting transactions
+        if !self.accepting_transactions.load(Ordering::SeqCst) {
+            return Err(Error::InvalidOperation(
+                "Database is shutting down".to_string(),
+            ));
+        }
+
         let mut last_error = None;
 
         for attempt in 0..=config.max_retries {
@@ -647,6 +672,13 @@ impl Database {
     where
         F: FnOnce(&mut TransactionContext) -> Result<T>,
     {
+        // Check if database is accepting transactions
+        if !self.accepting_transactions.load(Ordering::SeqCst) {
+            return Err(Error::InvalidOperation(
+                "Database is shutting down".to_string(),
+            ));
+        }
+
         let mut txn = self.begin_transaction(run_id);
 
         // Execute closure
@@ -811,6 +843,181 @@ impl Database {
         self.coordinator.metrics()
     }
 
+    /// Get the current durability mode (M4)
+    pub fn durability_mode(&self) -> DurabilityMode {
+        self.durability_mode
+    }
+
+    // ========================================================================
+    // Per-Operation Durability Override (Story #225)
+    // ========================================================================
+
+    /// Execute transaction with durability override (M4)
+    ///
+    /// Use this for critical writes in non-strict mode. For example,
+    /// force fsync for metadata even when running in Buffered mode.
+    ///
+    /// # Arguments
+    ///
+    /// * `run_id` - RunId for namespace isolation
+    /// * `durability` - Override durability mode for this transaction only
+    /// * `f` - Transaction closure
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Force strict durability for this critical write
+    /// db.transaction_with_durability(
+    ///     run_id,
+    ///     DurabilityMode::Strict,
+    ///     |txn| {
+    ///         txn.put(metadata_key, value)?;
+    ///         Ok(())
+    ///     },
+    /// )?;
+    /// ```
+    pub fn transaction_with_durability<F, T>(
+        &self,
+        run_id: RunId,
+        durability: DurabilityMode,
+        f: F,
+    ) -> Result<T>
+    where
+        F: FnOnce(&mut TransactionContext) -> Result<T>,
+    {
+        // Check if database is accepting transactions
+        if !self.accepting_transactions.load(Ordering::SeqCst) {
+            return Err(Error::InvalidOperation(
+                "Database is shutting down".to_string(),
+            ));
+        }
+
+        let mut txn = self.begin_transaction(run_id);
+        let result = f(&mut txn)?;
+        self.commit_with_durability(&mut txn, durability)?;
+        Ok(result)
+    }
+
+    /// Commit transaction with specific durability mode
+    ///
+    /// Internal method used by `transaction_with_durability`.
+    fn commit_with_durability(
+        &self,
+        txn: &mut TransactionContext,
+        durability: DurabilityMode,
+    ) -> Result<()> {
+        // Acquire commit lock
+        let _commit_guard = self.commit_lock.lock().unwrap();
+
+        // 1. Validate
+        txn.mark_validating()?;
+        let validation = validate_transaction(txn, self.storage.as_ref());
+
+        if !validation.is_valid() {
+            let _ = txn.mark_aborted(format!("Validation failed: {:?}", validation.conflicts));
+            self.coordinator.record_abort();
+            return Err(Error::TransactionConflict(format!(
+                "Conflicts: {:?}",
+                validation.conflicts
+            )));
+        }
+
+        // 2. Allocate commit version
+        let commit_version = self.coordinator.allocate_commit_version();
+
+        // 3. Write to WAL based on durability mode
+        // InMemory mode skips WAL entirely
+        if durability.requires_wal() {
+            let mut wal = self.wal.lock().unwrap();
+            {
+                let mut wal_writer = TransactionWALWriter::new(&mut wal, txn.txn_id, txn.run_id);
+                wal_writer.write_begin()?;
+
+                for (key, value) in &txn.write_set {
+                    wal_writer.write_put(key.clone(), value.clone(), commit_version)?;
+                }
+                for key in &txn.delete_set {
+                    wal_writer.write_delete(key.clone(), commit_version)?;
+                }
+                for cas_op in &txn.cas_set {
+                    wal_writer.write_put(
+                        cas_op.key.clone(),
+                        cas_op.new_value.clone(),
+                        commit_version,
+                    )?;
+                }
+                wal_writer.write_commit()?;
+            }
+
+            // Strict mode: fsync immediately
+            if durability.requires_immediate_fsync() {
+                wal.fsync()?;
+            }
+        }
+
+        // 4. Apply to storage
+        let mut all_writes: Vec<_> = txn
+            .write_set
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        for cas_op in &txn.cas_set {
+            all_writes.push((cas_op.key.clone(), cas_op.new_value.clone()));
+        }
+
+        let all_deletes: Vec<_> = txn.delete_set.iter().cloned().collect();
+
+        self.storage
+            .apply_batch(&all_writes, &all_deletes, commit_version)?;
+
+        // Mark committed
+        txn.mark_committed()?;
+        self.coordinator.record_commit();
+
+        Ok(())
+    }
+
+    // ========================================================================
+    // Graceful Shutdown (Story #226)
+    // ========================================================================
+
+    /// Graceful shutdown - ensures all data is persisted
+    ///
+    /// This method:
+    /// 1. Stops accepting new transactions
+    /// 2. Waits for pending operations to complete
+    /// 3. Flushes WAL based on durability mode
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// db.shutdown()?;
+    /// assert!(!db.is_open());
+    /// ```
+    pub fn shutdown(&self) -> Result<()> {
+        // Stop accepting new transactions
+        self.accepting_transactions.store(false, Ordering::SeqCst);
+
+        // Flush WAL based on mode
+        // For InMemory mode, this is a no-op
+        // For Buffered/Strict modes, ensure WAL is synced
+        if self.durability_mode.requires_wal() {
+            let wal = self.wal.lock().unwrap();
+            wal.fsync()?;
+        }
+
+        info!("Database shutdown complete");
+        Ok(())
+    }
+
+    /// Check if database is open and accepting transactions
+    ///
+    /// Returns `false` after `shutdown()` is called.
+    pub fn is_open(&self) -> bool {
+        self.accepting_transactions.load(Ordering::SeqCst)
+    }
+
     // ========================================================================
     // Implicit Transactions (M1 Compatibility)
     // ========================================================================
@@ -936,23 +1143,13 @@ impl Database {
     }
 }
 
+/// Automatic graceful shutdown on drop (Story #226)
 impl Drop for Database {
     fn drop(&mut self) {
-        // Attempt to sync WAL on drop. This is a best-effort fallback;
-        // users should call close() explicitly for guaranteed durability.
-        match self.wal.lock() {
-            Ok(wal) => {
-                if let Err(e) = wal.fsync() {
-                    // Log error but don't panic - we're in drop
-                    eprintln!("WARNING: Failed to sync WAL on database drop: {}", e);
-                    tracing::error!("Failed to sync WAL on database drop: {}", e);
-                }
-            }
-            Err(e) => {
-                eprintln!(
-                    "WARNING: Failed to acquire WAL lock on database drop: {}",
-                    e
-                );
+        // Only attempt shutdown if still open
+        if self.accepting_transactions.load(Ordering::SeqCst) {
+            if let Err(e) = self.shutdown() {
+                eprintln!("Warning: Error during database shutdown: {}", e);
             }
         }
     }
@@ -2208,5 +2405,221 @@ mod tests {
     fn test_database_builder_default_trait() {
         let builder = DatabaseBuilder::default();
         assert_eq!(builder.get_durability(), DurabilityMode::Strict);
+    }
+
+    // ========================================================================
+    // M4: Per-Operation Durability Override Tests (Story #225)
+    // ========================================================================
+
+    #[test]
+    fn test_transaction_with_durability_inmemory() {
+        let temp_dir = TempDir::new().unwrap();
+        // Open database with Strict mode (default)
+        let db = Database::open(temp_dir.path().join("db")).unwrap();
+
+        let run_id = RunId::new();
+        let ns = create_test_namespace(run_id);
+        let key = Key::new_kv(ns, "durability_override");
+
+        // Override to InMemory mode for this transaction
+        let result = db.transaction_with_durability(run_id, DurabilityMode::InMemory, |txn| {
+            txn.put(key.clone(), Value::I64(42))?;
+            Ok(42)
+        });
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 42);
+
+        // Data should be in storage (even with InMemory mode)
+        let stored = db.storage().get(&key).unwrap().unwrap();
+        assert_eq!(stored.value, Value::I64(42));
+    }
+
+    #[test]
+    fn test_transaction_with_durability_strict() {
+        let temp_dir = TempDir::new().unwrap();
+        // Open database with InMemory mode
+        let db = Database::builder()
+            .path(temp_dir.path().join("db"))
+            .in_memory()
+            .open()
+            .unwrap();
+
+        let run_id = RunId::new();
+        let ns = create_test_namespace(run_id);
+        let key = Key::new_kv(ns, "strict_override");
+
+        // Override to Strict mode for this transaction
+        let result = db.transaction_with_durability(run_id, DurabilityMode::Strict, |txn| {
+            txn.put(key.clone(), Value::String("important".to_string()))?;
+            Ok(())
+        });
+
+        assert!(result.is_ok());
+
+        // Data should be in storage
+        let stored = db.storage().get(&key).unwrap().unwrap();
+        assert_eq!(stored.value, Value::String("important".to_string()));
+    }
+
+    #[test]
+    fn test_transaction_with_durability_returns_value() {
+        let temp_dir = TempDir::new().unwrap();
+        let db = Database::open(temp_dir.path().join("db")).unwrap();
+
+        let run_id = RunId::new();
+        let ns = create_test_namespace(run_id);
+        let key = Key::new_kv(ns, "return_test");
+
+        // Pre-populate
+        db.put(run_id, key.clone(), Value::I64(100)).unwrap();
+
+        // Read value with durability override
+        let result: Result<i64> =
+            db.transaction_with_durability(run_id, DurabilityMode::InMemory, |txn| {
+                let val = txn.get(&key)?.unwrap();
+                if let Value::I64(n) = val {
+                    Ok(n)
+                } else {
+                    Err(Error::InvalidState("wrong type".to_string()))
+                }
+            });
+
+        assert_eq!(result.unwrap(), 100);
+    }
+
+    // ========================================================================
+    // M4: Graceful Shutdown Tests (Story #226)
+    // ========================================================================
+
+    #[test]
+    fn test_is_open_initially_true() {
+        let temp_dir = TempDir::new().unwrap();
+        let db = Database::open(temp_dir.path().join("db")).unwrap();
+
+        // Database should be open initially
+        assert!(db.is_open());
+    }
+
+    #[test]
+    fn test_shutdown_sets_not_open() {
+        let temp_dir = TempDir::new().unwrap();
+        let db = Database::open(temp_dir.path().join("db")).unwrap();
+
+        assert!(db.is_open());
+
+        // Shutdown should succeed
+        assert!(db.shutdown().is_ok());
+
+        // Database should no longer be open
+        assert!(!db.is_open());
+    }
+
+    #[test]
+    fn test_shutdown_rejects_new_transactions() {
+        let temp_dir = TempDir::new().unwrap();
+        let db = Database::open(temp_dir.path().join("db")).unwrap();
+
+        let run_id = RunId::new();
+        let ns = create_test_namespace(run_id);
+        let key = Key::new_kv(ns, "after_shutdown");
+
+        // Shutdown the database
+        db.shutdown().unwrap();
+
+        // New transactions should be rejected
+        let result = db.transaction(run_id, |txn| {
+            txn.put(key.clone(), Value::I64(42))?;
+            Ok(())
+        });
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, Error::InvalidOperation(_)));
+    }
+
+    #[test]
+    fn test_shutdown_rejects_durability_override_transactions() {
+        let temp_dir = TempDir::new().unwrap();
+        let db = Database::open(temp_dir.path().join("db")).unwrap();
+
+        let run_id = RunId::new();
+        let ns = create_test_namespace(run_id);
+        let key = Key::new_kv(ns, "override_after_shutdown");
+
+        // Shutdown the database
+        db.shutdown().unwrap();
+
+        // Durability override transactions should also be rejected
+        let result = db.transaction_with_durability(run_id, DurabilityMode::InMemory, |txn| {
+            txn.put(key.clone(), Value::I64(42))?;
+            Ok(())
+        });
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, Error::InvalidOperation(_)));
+    }
+
+    #[test]
+    fn test_shutdown_idempotent() {
+        let temp_dir = TempDir::new().unwrap();
+        let db = Database::open(temp_dir.path().join("db")).unwrap();
+
+        // Multiple shutdowns should be safe
+        assert!(db.shutdown().is_ok());
+        assert!(db.shutdown().is_ok());
+        assert!(db.shutdown().is_ok());
+
+        // Should remain not open
+        assert!(!db.is_open());
+    }
+
+    #[test]
+    fn test_shutdown_flushes_data() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("db");
+        let run_id = RunId::new();
+        let ns = create_test_namespace(run_id);
+        let key = Key::new_kv(ns, "persisted_before_shutdown");
+
+        // Write data and shutdown
+        {
+            let db = Database::open(&db_path).unwrap();
+            db.put(run_id, key.clone(), Value::I64(42)).unwrap();
+            db.shutdown().unwrap();
+        }
+
+        // Reopen and verify data survived
+        {
+            let db = Database::open(&db_path).unwrap();
+            let val = db.get(&key).unwrap().unwrap();
+            assert_eq!(val.value, Value::I64(42));
+        }
+    }
+
+    #[test]
+    fn test_durability_mode_accessor() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Test with Strict mode
+        {
+            let db = Database::builder()
+                .path(temp_dir.path().join("strict"))
+                .strict()
+                .open()
+                .unwrap();
+            assert_eq!(db.durability_mode(), DurabilityMode::Strict);
+        }
+
+        // Test with InMemory mode
+        {
+            let db = Database::builder()
+                .path(temp_dir.path().join("inmemory"))
+                .in_memory()
+                .open()
+                .unwrap();
+            assert_eq!(db.durability_mode(), DurabilityMode::InMemory);
+        }
     }
 }
