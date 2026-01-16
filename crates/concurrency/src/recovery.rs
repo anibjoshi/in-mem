@@ -420,7 +420,7 @@ mod tests {
                 .unwrap();
                 wal.append(&WALEntry::Write {
                     run_id,
-                    key: Key::new_kv(ns.clone(), &format!("key{}", i)),
+                    key: Key::new_kv(ns.clone(), format!("key{}", i)),
                     value: Value::I64(i as i64 * 10),
                     version: i * 100,
                 })
@@ -444,7 +444,7 @@ mod tests {
 
         // Verify storage state is identical
         for i in 1..=5u64 {
-            let key = Key::new_kv(ns.clone(), &format!("key{}", i));
+            let key = Key::new_kv(ns.clone(), format!("key{}", i));
             let v1 = result1.storage.get(&key).unwrap().unwrap();
             let v2 = result2.storage.get(&key).unwrap().unwrap();
             assert_eq!(v1.value, v2.value);
@@ -639,7 +639,7 @@ mod tests {
 
         // Should still work (snapshot not used in M2)
         let result = coordinator.recover().unwrap();
-        assert_eq!(result.stats.from_checkpoint, false);
+        assert!(!result.stats.from_checkpoint);
     }
 
     // ========================================
@@ -1297,7 +1297,7 @@ mod tests {
                 .unwrap();
                 wal.append(&WALEntry::Write {
                     run_id,
-                    key: Key::new_kv(ns.clone(), &format!("key{}", i)),
+                    key: Key::new_kv(ns.clone(), format!("key{}", i)),
                     value: Value::I64(i as i64 * 10),
                     version: commit_version,
                 })
@@ -1307,7 +1307,7 @@ mod tests {
                 // Apply to storage (simulating what would happen in normal operation)
                 storage
                     .put_with_version(
-                        Key::new_kv(ns.clone(), &format!("key{}", i)),
+                        Key::new_kv(ns.clone(), format!("key{}", i)),
                         Value::I64(i as i64 * 10),
                         commit_version,
                         None,
@@ -1331,7 +1331,7 @@ mod tests {
         assert_eq!(result.txn_manager.current_version(), 10);
 
         for i in 1..=10u64 {
-            let key = Key::new_kv(ns.clone(), &format!("key{}", i));
+            let key = Key::new_kv(ns.clone(), format!("key{}", i));
             let stored = result.storage.get(&key).unwrap().unwrap();
             assert_eq!(stored.value, Value::I64(i as i64 * 10));
             assert_eq!(stored.version, i);
@@ -1575,7 +1575,7 @@ mod tests {
                 .unwrap();
                 wal.append(&WALEntry::Write {
                     run_id,
-                    key: Key::new_kv(ns.clone(), &format!("key_{}", i)),
+                    key: Key::new_kv(ns.clone(), format!("key_{}", i)),
                     value: Value::I64(i as i64),
                     version: i,
                 })
@@ -1594,7 +1594,7 @@ mod tests {
 
         // Verify a few random keys
         for i in [1, 50, 100] {
-            let key = Key::new_kv(ns.clone(), &format!("key_{}", i));
+            let key = Key::new_kv(ns.clone(), format!("key_{}", i));
             let stored = result.storage.get(&key).unwrap().unwrap();
             assert_eq!(stored.value, Value::I64(i as i64));
         }

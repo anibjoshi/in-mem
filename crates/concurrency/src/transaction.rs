@@ -267,6 +267,23 @@ pub struct TransactionContext {
     /// version, independent of the read_set.
     pub cas_set: Vec<CASOperation>,
 
+    // JSON Operations (M5 - lazy allocation for zero overhead when not using JSON)
+    /// JSON path reads for fine-grained conflict detection
+    ///
+    /// Only allocated when JSON operations are performed.
+    json_reads: Option<Vec<JsonPathRead>>,
+
+    /// JSON patches to apply at commit
+    ///
+    /// Only allocated when JSON operations are performed.
+    json_writes: Option<Vec<JsonPatchEntry>>,
+
+    /// Snapshot versions of JSON documents at read time
+    ///
+    /// Maps document key to the version observed during read.
+    /// Only allocated when JSON operations are performed.
+    json_snapshot_versions: Option<HashMap<Key, u64>>,
+
     // State
     /// Current transaction status
     pub status: TransactionStatus,
@@ -309,6 +326,9 @@ impl TransactionContext {
             write_set: HashMap::new(),
             delete_set: HashSet::new(),
             cas_set: Vec::new(),
+            json_reads: None,
+            json_writes: None,
+            json_snapshot_versions: None,
             status: TransactionStatus::Active,
             start_time: Instant::now(),
         }
@@ -348,6 +368,9 @@ impl TransactionContext {
             write_set: HashMap::new(),
             delete_set: HashSet::new(),
             cas_set: Vec::new(),
+            json_reads: None,
+            json_writes: None,
+            json_snapshot_versions: None,
             status: TransactionStatus::Active,
             start_time: Instant::now(),
         }
@@ -598,12 +621,88 @@ impl TransactionContext {
         Ok(())
     }
 
+    // === JSON Operations (M5 Epic 30) ===
+
+    /// Check if this transaction has any JSON operations
+    ///
+    /// Returns true if any JSON reads, writes, or snapshot versions are recorded.
+    /// Useful for determining if JSON-specific validation is needed.
+    pub fn has_json_ops(&self) -> bool {
+        self.json_reads.is_some() || self.json_writes.is_some() || self.json_snapshot_versions.is_some()
+    }
+
+    /// Get JSON path reads (immutable)
+    ///
+    /// Returns an empty slice if no JSON reads have been recorded.
+    pub fn json_reads(&self) -> &[JsonPathRead] {
+        self.json_reads.as_deref().unwrap_or(&[])
+    }
+
+    /// Get JSON patch writes (immutable)
+    ///
+    /// Returns an empty slice if no JSON writes have been recorded.
+    pub fn json_writes(&self) -> &[JsonPatchEntry] {
+        self.json_writes.as_deref().unwrap_or(&[])
+    }
+
+    /// Get JSON snapshot versions (immutable)
+    ///
+    /// Returns None if no JSON snapshot versions have been recorded.
+    pub fn json_snapshot_versions(&self) -> Option<&HashMap<Key, u64>> {
+        self.json_snapshot_versions.as_ref()
+    }
+
+    /// Ensure json_reads is initialized and return mutable reference
+    ///
+    /// Lazily allocates the Vec on first use.
+    pub fn ensure_json_reads(&mut self) -> &mut Vec<JsonPathRead> {
+        self.json_reads.get_or_insert_with(Vec::new)
+    }
+
+    /// Ensure json_writes is initialized and return mutable reference
+    ///
+    /// Lazily allocates the Vec on first use.
+    pub fn ensure_json_writes(&mut self) -> &mut Vec<JsonPatchEntry> {
+        self.json_writes.get_or_insert_with(Vec::new)
+    }
+
+    /// Ensure json_snapshot_versions is initialized and return mutable reference
+    ///
+    /// Lazily allocates the HashMap on first use.
+    pub fn ensure_json_snapshot_versions(&mut self) -> &mut HashMap<Key, u64> {
+        self.json_snapshot_versions.get_or_insert_with(HashMap::new)
+    }
+
+    /// Record a JSON path read for conflict detection
+    ///
+    /// This should be called when reading a specific path from a JSON document.
+    /// The read will be validated at commit time to detect conflicts.
+    pub fn record_json_read(&mut self, key: Key, path: JsonPath, version: u64) {
+        self.ensure_json_reads().push(JsonPathRead::new(key, path, version));
+    }
+
+    /// Record a JSON patch for commit
+    ///
+    /// This should be called when modifying a JSON document via patch.
+    /// The patch will be applied at commit time.
+    pub fn record_json_write(&mut self, key: Key, patch: JsonPatch, resulting_version: u64) {
+        self.ensure_json_writes().push(JsonPatchEntry::new(key, patch, resulting_version));
+    }
+
+    /// Record JSON document snapshot version
+    ///
+    /// Tracks the version of a JSON document when it was first read.
+    /// Used for document-level conflict detection.
+    pub fn record_json_snapshot_version(&mut self, key: Key, version: u64) {
+        self.ensure_json_snapshot_versions().insert(key, version);
+    }
+
     /// Clear all buffered operations
     ///
     /// This is useful for retry scenarios where you want to restart
     /// a transaction's operations without creating a new transaction.
     ///
-    /// Clears: read_set, write_set, delete_set, cas_set
+    /// Clears: read_set, write_set, delete_set, cas_set, and all JSON operation sets
     ///
     /// Note: Does not change transaction state or snapshot.
     ///
@@ -616,6 +715,10 @@ impl TransactionContext {
         self.write_set.clear();
         self.delete_set.clear();
         self.cas_set.clear();
+        // Clear JSON sets (set to None to deallocate)
+        self.json_reads = None;
+        self.json_writes = None;
+        self.json_snapshot_versions = None;
         Ok(())
     }
 
@@ -1168,7 +1271,7 @@ mod tests {
     #[test]
     fn test_new_transaction_preserves_run_id() {
         let run_id = RunId::new();
-        let txn = TransactionContext::new(42, run_id.clone(), 500);
+        let txn = TransactionContext::new(42, run_id, 500);
         assert_eq!(txn.run_id, run_id);
         assert_eq!(txn.txn_id, 42);
         assert_eq!(txn.start_version, 500);
@@ -3383,6 +3486,144 @@ mod tests {
 
             assert_eq!(entry.key, cloned.key);
             assert_eq!(entry.resulting_version, cloned.resulting_version);
+        }
+
+        // === Lazy JSON Fields Tests (Story #283) ===
+
+        #[test]
+        fn test_json_fields_lazy_allocation() {
+            // New transaction should have no JSON fields allocated
+            let txn = create_test_txn();
+            assert!(!txn.has_json_ops());
+            assert!(txn.json_reads().is_empty());
+            assert!(txn.json_writes().is_empty());
+            assert!(txn.json_snapshot_versions().is_none());
+        }
+
+        #[test]
+        fn test_json_reads_lazy_init() {
+            let mut txn = create_test_txn();
+            let run_id = RunId::new();
+            let doc_id = JsonDocId::new();
+            let key = create_json_key(run_id, &doc_id);
+            let path = "data.field".parse::<JsonPath>().unwrap();
+
+            // Initially not allocated
+            assert!(!txn.has_json_ops());
+
+            // Record a JSON read
+            txn.record_json_read(key.clone(), path.clone(), 1);
+
+            // Now has JSON ops
+            assert!(txn.has_json_ops());
+            assert_eq!(txn.json_reads().len(), 1);
+            assert_eq!(txn.json_reads()[0].key, key);
+            assert_eq!(txn.json_reads()[0].version, 1);
+        }
+
+        #[test]
+        fn test_json_writes_lazy_init() {
+            use in_mem_core::json::JsonValue;
+
+            let mut txn = create_test_txn();
+            let run_id = RunId::new();
+            let doc_id = JsonDocId::new();
+            let key = create_json_key(run_id, &doc_id);
+            let path = "data.value".parse::<JsonPath>().unwrap();
+            let patch = JsonPatch::set_at(path, JsonValue::from(42));
+
+            // Initially not allocated
+            assert!(!txn.has_json_ops());
+
+            // Record a JSON write
+            txn.record_json_write(key.clone(), patch, 2);
+
+            // Now has JSON ops
+            assert!(txn.has_json_ops());
+            assert_eq!(txn.json_writes().len(), 1);
+            assert_eq!(txn.json_writes()[0].key, key);
+            assert_eq!(txn.json_writes()[0].resulting_version, 2);
+        }
+
+        #[test]
+        fn test_json_snapshot_versions_lazy_init() {
+            let mut txn = create_test_txn();
+            let run_id = RunId::new();
+            let doc_id = JsonDocId::new();
+            let key = create_json_key(run_id, &doc_id);
+
+            // Initially not allocated
+            assert!(txn.json_snapshot_versions().is_none());
+
+            // Record a snapshot version
+            txn.record_json_snapshot_version(key.clone(), 100);
+
+            // Now allocated
+            assert!(txn.has_json_ops());
+            let versions = txn.json_snapshot_versions().unwrap();
+            assert_eq!(versions.len(), 1);
+            assert_eq!(*versions.get(&key).unwrap(), 100);
+        }
+
+        #[test]
+        fn test_multiple_json_reads() {
+            let mut txn = create_test_txn();
+            let run_id = RunId::new();
+
+            for i in 0..3 {
+                let doc_id = JsonDocId::new();
+                let key = create_json_key(run_id, &doc_id);
+                let path_str = format!("field{}", i);
+                let path = path_str.parse::<JsonPath>().unwrap();
+                txn.record_json_read(key, path, i as u64);
+            }
+
+            assert_eq!(txn.json_reads().len(), 3);
+        }
+
+        #[test]
+        fn test_clear_operations_clears_json() {
+            use in_mem_core::json::JsonValue;
+
+            let mut txn = create_test_txn();
+            let run_id = RunId::new();
+            let doc_id = JsonDocId::new();
+            let key = create_json_key(run_id, &doc_id);
+            let path = "test".parse::<JsonPath>().unwrap();
+
+            // Add various JSON operations
+            txn.record_json_read(key.clone(), path.clone(), 1);
+            txn.record_json_write(key.clone(), JsonPatch::set_at(path.clone(), JsonValue::from("x")), 2);
+            txn.record_json_snapshot_version(key, 1);
+
+            assert!(txn.has_json_ops());
+
+            // Clear operations
+            txn.clear_operations().unwrap();
+
+            // JSON fields should be deallocated (None)
+            assert!(!txn.has_json_ops());
+            assert!(txn.json_reads().is_empty());
+            assert!(txn.json_writes().is_empty());
+            assert!(txn.json_snapshot_versions().is_none());
+        }
+
+        #[test]
+        fn test_ensure_methods_return_mutable_ref() {
+            let mut txn = create_test_txn();
+
+            // Ensure methods create empty collections
+            let reads = txn.ensure_json_reads();
+            assert!(reads.is_empty());
+
+            let writes = txn.ensure_json_writes();
+            assert!(writes.is_empty());
+
+            let versions = txn.ensure_json_snapshot_versions();
+            assert!(versions.is_empty());
+
+            // Now all are allocated
+            assert!(txn.has_json_ops());
         }
     }
 }
