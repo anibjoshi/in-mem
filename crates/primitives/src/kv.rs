@@ -197,6 +197,70 @@ impl KVStore {
         Ok(snapshot.get(&storage_key)?.is_some())
     }
 
+    // ========== Batch Operations (Fast Path) ==========
+
+    /// Get multiple values in a single snapshot (FAST PATH)
+    ///
+    /// Uses a single snapshot acquisition for all keys, ensuring:
+    /// - Consistent point-in-time view across all keys
+    /// - More efficient than multiple get() calls
+    /// - No version mixing (all keys from same snapshot)
+    ///
+    /// # Performance
+    /// For N keys: ~(snapshot_time + N * lookup_time)
+    /// vs N * (snapshot_time + lookup_time) for individual gets
+    ///
+    /// # Returns
+    /// Vec of Option<Value> in same order as input keys.
+    /// None for keys that don't exist.
+    pub fn get_many(&self, run_id: &RunId, keys: &[&str]) -> Result<Vec<Option<Value>>> {
+        use in_mem_core::traits::SnapshotView;
+
+        // Single snapshot for consistency
+        let snapshot = self.db.storage().create_snapshot();
+        let ns = self.namespace_for_run(run_id);
+
+        keys.iter()
+            .map(|key| {
+                let storage_key = Key::new_kv(ns.clone(), key);
+                Ok(snapshot.get(&storage_key)?.map(|vv| vv.value))
+            })
+            .collect()
+    }
+
+    /// Get multiple values as a HashMap (FAST PATH)
+    ///
+    /// Like get_many(), but returns a HashMap for easier lookup.
+    /// Only includes keys that exist (missing keys are omitted).
+    ///
+    /// # Returns
+    /// HashMap mapping key strings to their values.
+    /// Keys that don't exist are not included.
+    pub fn get_many_map(
+        &self,
+        run_id: &RunId,
+        keys: &[&str],
+    ) -> Result<std::collections::HashMap<String, Value>> {
+        use in_mem_core::traits::SnapshotView;
+
+        let snapshot = self.db.storage().create_snapshot();
+        let ns = self.namespace_for_run(run_id);
+
+        let mut result = std::collections::HashMap::with_capacity(keys.len());
+        for key in keys {
+            let storage_key = Key::new_kv(ns.clone(), *key);
+            if let Some(vv) = snapshot.get(&storage_key)? {
+                result.insert((*key).to_string(), vv.value);
+            }
+        }
+        Ok(result)
+    }
+
+    /// Check if a key exists (alias for exists, matches spec) (FAST PATH)
+    pub fn contains(&self, run_id: &RunId, key: &str) -> Result<bool> {
+        self.exists(run_id, key)
+    }
+
     // ========== List Operations ==========
 
     /// List keys with optional prefix filter
@@ -829,5 +893,101 @@ mod tests {
             kv.get(&run2, "shared-key").unwrap(),
             Some(Value::String("run2-value".into()))
         );
+    }
+
+    // ========== Batch Get Tests (Story #237) ==========
+
+    #[test]
+    fn test_get_many_returns_all_values() {
+        let (_temp, _db, kv) = setup();
+        let run_id = RunId::new();
+
+        kv.put(&run_id, "a", Value::I64(1)).unwrap();
+        kv.put(&run_id, "b", Value::I64(2)).unwrap();
+        kv.put(&run_id, "c", Value::I64(3)).unwrap();
+
+        let results = kv.get_many(&run_id, &["a", "b", "c", "missing"]).unwrap();
+
+        assert_eq!(results[0], Some(Value::I64(1)));
+        assert_eq!(results[1], Some(Value::I64(2)));
+        assert_eq!(results[2], Some(Value::I64(3)));
+        assert_eq!(results[3], None);
+    }
+
+    #[test]
+    fn test_get_many_preserves_order() {
+        let (_temp, _db, kv) = setup();
+        let run_id = RunId::new();
+
+        kv.put(&run_id, "z", Value::I64(26)).unwrap();
+        kv.put(&run_id, "a", Value::I64(1)).unwrap();
+        kv.put(&run_id, "m", Value::I64(13)).unwrap();
+
+        // Order of results matches order of input keys
+        let results = kv.get_many(&run_id, &["m", "z", "a"]).unwrap();
+
+        assert_eq!(results[0], Some(Value::I64(13))); // m
+        assert_eq!(results[1], Some(Value::I64(26))); // z
+        assert_eq!(results[2], Some(Value::I64(1))); // a
+    }
+
+    #[test]
+    fn test_get_many_map() {
+        let (_temp, _db, kv) = setup();
+        let run_id = RunId::new();
+
+        kv.put(&run_id, "key1", Value::String("val1".into()))
+            .unwrap();
+        kv.put(&run_id, "key2", Value::String("val2".into()))
+            .unwrap();
+
+        let map = kv
+            .get_many_map(&run_id, &["key1", "key2", "missing"])
+            .unwrap();
+
+        assert_eq!(map.len(), 2); // missing is not included
+        assert_eq!(map.get("key1"), Some(&Value::String("val1".into())));
+        assert_eq!(map.get("key2"), Some(&Value::String("val2".into())));
+        assert_eq!(map.get("missing"), None);
+    }
+
+    #[test]
+    fn test_get_many_empty_keys() {
+        let (_temp, _db, kv) = setup();
+        let run_id = RunId::new();
+
+        let results = kv.get_many(&run_id, &[]).unwrap();
+        assert!(results.is_empty());
+
+        let map = kv.get_many_map(&run_id, &[]).unwrap();
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn test_contains() {
+        let (_temp, _db, kv) = setup();
+        let run_id = RunId::new();
+
+        assert!(!kv.contains(&run_id, "key").unwrap());
+
+        kv.put(&run_id, "key", Value::I64(42)).unwrap();
+
+        assert!(kv.contains(&run_id, "key").unwrap());
+    }
+
+    #[test]
+    fn test_get_many_run_isolation() {
+        let (_temp, _db, kv) = setup();
+        let run1 = RunId::new();
+        let run2 = RunId::new();
+
+        kv.put(&run1, "key", Value::I64(1)).unwrap();
+        kv.put(&run2, "key", Value::I64(2)).unwrap();
+
+        let results1 = kv.get_many(&run1, &["key"]).unwrap();
+        let results2 = kv.get_many(&run2, &["key"]).unwrap();
+
+        assert_eq!(results1[0], Some(Value::I64(1)));
+        assert_eq!(results2[0], Some(Value::I64(2)));
     }
 }
