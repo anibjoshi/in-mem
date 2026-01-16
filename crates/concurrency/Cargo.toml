@@ -13,11 +13,13 @@ in-mem-storage = { path = "../storage" }
 in-mem-durability = { path = "../durability" }
 chrono = { workspace = true }
 parking_lot = { workspace = true }
+rmp-serde = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+serde_json = { workspace = true }
 static_assertions = "1.1"
 tempfile = { workspace = true }

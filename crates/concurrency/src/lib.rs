@@ -23,8 +23,8 @@ pub use manager::TransactionManager;
 pub use recovery::{RecoveryCoordinator, RecoveryResult, RecoveryStats};
 pub use snapshot::ClonedSnapshotView;
 pub use transaction::{
-    ApplyResult, CASOperation, CommitError, JsonPatchEntry, JsonPathRead, PendingOperations,
-    TransactionContext, TransactionStatus,
+    ApplyResult, CASOperation, CommitError, JsonPatchEntry, JsonPathRead, JsonStoreExt,
+    PendingOperations, TransactionContext, TransactionStatus,
 };
 pub use validation::{
     validate_cas_set, validate_read_set, validate_transaction, validate_write_set, ConflictType,

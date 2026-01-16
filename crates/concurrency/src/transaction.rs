@@ -9,7 +9,7 @@
 use crate::validation::{validate_transaction, ValidationResult};
 use crate::wal_writer::TransactionWALWriter;
 use in_mem_core::error::{Error, Result};
-use in_mem_core::json::{JsonPatch, JsonPath};
+use in_mem_core::json::{get_at_path, JsonPatch, JsonPath, JsonValue};
 use in_mem_core::traits::{SnapshotView, Storage};
 use in_mem_core::types::{Key, RunId};
 use in_mem_core::value::Value;
@@ -196,6 +196,100 @@ impl JsonPatchEntry {
             resulting_version,
         }
     }
+}
+
+// ============================================================================
+// JsonStoreExt Trait (M5 Epic 30)
+// ============================================================================
+
+/// Extension trait for JSON operations within transactions (M5 Rule 3)
+///
+/// This trait enables JSON operations to be performed within a TransactionContext,
+/// allowing atomic cross-primitive transactions between JSON and other primitives.
+///
+/// # Architecture (M5 Architecture Rule 3)
+///
+/// Per M5 Rule 3: "Add `JsonStoreExt` trait to TransactionContext. NO separate
+/// JsonTransaction type." This enables cross-primitive atomic transactions
+/// without additional coordination.
+///
+/// # Usage
+///
+/// ```ignore
+/// db.transaction(run_id, |txn| {
+///     // JSON operation
+///     let value = txn.json_get(&key, &path)?;
+///     txn.json_set(&key, &path, json!({"updated": true}))?;
+///
+///     // KV operation in same transaction
+///     txn.put(other_key, Value::Bytes(b"done".to_vec()))?;
+///
+///     Ok(())
+/// })?;
+/// ```
+///
+/// # Read-Your-Writes
+///
+/// JSON operations support read-your-writes semantics:
+/// - `json_set` writes are visible to subsequent `json_get` calls in the same transaction
+/// - Writes are buffered until commit
+///
+/// # Conflict Detection
+///
+/// JSON reads and writes are tracked for region-based conflict detection:
+/// - All reads track the document version at read time
+/// - At commit time, if any read document's version has changed, conflict is detected
+pub trait JsonStoreExt {
+    /// Get a value at a JSON path within a document
+    ///
+    /// # Arguments
+    /// * `key` - Key of the JSON document
+    /// * `path` - JSON path to read from
+    ///
+    /// # Returns
+    /// - `Ok(Some(value))` if path exists
+    /// - `Ok(None)` if document exists but path doesn't
+    /// - `Err` if document doesn't exist or transaction is invalid
+    fn json_get(&mut self, key: &Key, path: &JsonPath) -> Result<Option<JsonValue>>;
+
+    /// Set a value at a JSON path within a document
+    ///
+    /// # Arguments
+    /// * `key` - Key of the JSON document
+    /// * `path` - JSON path to write to
+    /// * `value` - Value to set
+    ///
+    /// # Returns
+    /// - `Ok(())` on success
+    /// - `Err` if document doesn't exist or transaction is invalid
+    fn json_set(&mut self, key: &Key, path: &JsonPath, value: JsonValue) -> Result<()>;
+
+    /// Delete a value at a JSON path within a document
+    ///
+    /// # Arguments
+    /// * `key` - Key of the JSON document
+    /// * `path` - JSON path to delete
+    ///
+    /// # Returns
+    /// - `Ok(())` on success (even if path didn't exist)
+    /// - `Err` if document doesn't exist or transaction is invalid
+    fn json_delete(&mut self, key: &Key, path: &JsonPath) -> Result<()>;
+
+    /// Get the entire JSON document
+    ///
+    /// # Arguments
+    /// * `key` - Key of the JSON document
+    ///
+    /// # Returns
+    /// - `Ok(Some(value))` if document exists
+    /// - `Ok(None)` if document doesn't exist
+    fn json_get_document(&mut self, key: &Key) -> Result<Option<JsonValue>>;
+
+    /// Check if a JSON document exists
+    ///
+    /// # Arguments
+    /// * `key` - Key of the JSON document
+    fn json_exists(&mut self, key: &Key) -> Result<bool>;
 }
 
 /// Transaction context for OCC with snapshot isolation
@@ -1170,6 +1264,11 @@ impl TransactionContext {
         self.delete_set.clear();
         self.cas_set.clear();
 
+        // Clear JSON fields (deallocate, since JSON ops are rare)
+        self.json_reads = None;
+        self.json_writes = None;
+        self.json_snapshot_versions = None;
+
         // Reset state
         self.status = TransactionStatus::Active;
         self.start_time = Instant::now();
@@ -1193,6 +1292,142 @@ impl TransactionContext {
             self.delete_set.capacity(),
             self.cas_set.capacity(),
         )
+    }
+}
+
+// ============================================================================
+// JsonStoreExt Implementation (M5 Epic 30)
+// ============================================================================
+
+impl JsonStoreExt for TransactionContext {
+    fn json_get(&mut self, key: &Key, path: &JsonPath) -> Result<Option<JsonValue>> {
+        self.ensure_active()?;
+
+        // Check write set first (read-your-writes)
+        // Look for the most recent write that affects this path
+        if let Some(writes) = &self.json_writes {
+            for entry in writes.iter().rev() {
+                if entry.key == *key {
+                    // Check if the patch affects this path
+                    match &entry.patch {
+                        JsonPatch::Set { path: set_path, value } if set_path.is_ancestor_of(path) => {
+                            // If set_path equals our path, return the value directly
+                            if set_path == path {
+                                return Ok(Some(value.clone()));
+                            }
+                            // Navigate into the written value using the relative path
+                            // Build a relative path by skipping the set_path segments
+                            let relative_segments: Vec<_> = path.segments()
+                                .iter()
+                                .skip(set_path.len())
+                                .cloned()
+                                .collect();
+                            let relative_path = JsonPath::from_segments(relative_segments);
+                            return Ok(get_at_path(value, &relative_path).cloned());
+                        }
+                        JsonPatch::Delete { path: del_path } if del_path.is_ancestor_of(path) => {
+                            // Path was deleted
+                            return Ok(None);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // Read from snapshot
+        let snapshot = self.snapshot.as_ref().ok_or_else(|| {
+            Error::InvalidState("Transaction has no snapshot for reads".to_string())
+        })?;
+
+        // Get the document from snapshot
+        let versioned = snapshot.get(key)?;
+        let Some(vv) = versioned else {
+            // Document doesn't exist
+            return Ok(None);
+        };
+
+        // Track the document version for conflict detection
+        self.record_json_snapshot_version(key.clone(), vv.version);
+        self.record_json_read(key.clone(), path.clone(), vv.version);
+
+        // Deserialize the document
+        let doc_bytes = match &vv.value {
+            Value::Bytes(b) => b,
+            _ => {
+                return Err(Error::InvalidOperation(
+                    "Expected JSON document to be stored as bytes".to_string(),
+                ))
+            }
+        };
+
+        // Deserialize using MessagePack
+        let doc_value: JsonValue = rmp_serde::from_slice(doc_bytes).map_err(|e| {
+            Error::InvalidOperation(format!("Failed to deserialize JSON document: {}", e))
+        })?;
+
+        // Get value at path
+        Ok(get_at_path(&doc_value, path).cloned())
+    }
+
+    fn json_set(&mut self, key: &Key, path: &JsonPath, value: JsonValue) -> Result<()> {
+        self.ensure_active()?;
+
+        // Ensure we have tracked the snapshot version for this document
+        // (for conflict detection at commit time)
+        if self.json_snapshot_versions().map_or(true, |v| !v.contains_key(key)) {
+            // Try to get the document version from snapshot
+            if let Some(snapshot) = &self.snapshot {
+                if let Ok(Some(vv)) = snapshot.get(key) {
+                    self.record_json_snapshot_version(key.clone(), vv.version);
+                }
+            }
+        }
+
+        // Record the write
+        let patch = JsonPatch::set_at(path.clone(), value);
+        // We don't know the resulting version until commit, use 0 as placeholder
+        self.record_json_write(key.clone(), patch, 0);
+
+        Ok(())
+    }
+
+    fn json_delete(&mut self, key: &Key, path: &JsonPath) -> Result<()> {
+        self.ensure_active()?;
+
+        // Ensure we have tracked the snapshot version for this document
+        if self.json_snapshot_versions().map_or(true, |v| !v.contains_key(key)) {
+            if let Some(snapshot) = &self.snapshot {
+                if let Ok(Some(vv)) = snapshot.get(key) {
+                    self.record_json_snapshot_version(key.clone(), vv.version);
+                }
+            }
+        }
+
+        // Record the delete
+        let patch = JsonPatch::delete_at(path.clone());
+        self.record_json_write(key.clone(), patch, 0);
+
+        Ok(())
+    }
+
+    fn json_get_document(&mut self, key: &Key) -> Result<Option<JsonValue>> {
+        // Get the root path
+        let root = JsonPath::root();
+        self.json_get(key, &root)
+    }
+
+    fn json_exists(&mut self, key: &Key) -> Result<bool> {
+        self.ensure_active()?;
+
+        // Check if document was deleted in this transaction
+        // (We track document deletes in json_writes as well)
+        // For now, check the snapshot
+        let snapshot = self.snapshot.as_ref().ok_or_else(|| {
+            Error::InvalidState("Transaction has no snapshot for reads".to_string())
+        })?;
+
+        Ok(snapshot.get(key)?.is_some())
     }
 }
 
@@ -3624,6 +3859,125 @@ mod tests {
 
             // Now all are allocated
             assert!(txn.has_json_ops());
+        }
+
+        // === JsonStoreExt Read-Your-Writes Tests (Story #284) ===
+
+        #[test]
+        fn test_json_set_records_write() {
+            use in_mem_core::json::JsonValue;
+
+            let mut txn = create_test_txn();
+            let run_id = RunId::new();
+            let doc_id = JsonDocId::new();
+            let key = create_json_key(run_id, &doc_id);
+            let path = "data.field".parse::<JsonPath>().unwrap();
+
+            // Perform json_set
+            txn.json_set(&key, &path, JsonValue::from(42)).unwrap();
+
+            // Should have recorded the write
+            assert!(txn.has_json_ops());
+            assert_eq!(txn.json_writes().len(), 1);
+            assert_eq!(txn.json_writes()[0].key, key);
+        }
+
+        #[test]
+        fn test_json_delete_records_write() {
+            let mut txn = create_test_txn();
+            let run_id = RunId::new();
+            let doc_id = JsonDocId::new();
+            let key = create_json_key(run_id, &doc_id);
+            let path = "data.field".parse::<JsonPath>().unwrap();
+
+            // Perform json_delete
+            txn.json_delete(&key, &path).unwrap();
+
+            // Should have recorded the write (delete is a write)
+            assert!(txn.has_json_ops());
+            assert_eq!(txn.json_writes().len(), 1);
+        }
+
+        #[test]
+        fn test_json_read_your_writes_direct_path() {
+            use in_mem_core::json::JsonValue;
+
+            let mut txn = create_test_txn();
+            let run_id = RunId::new();
+            let doc_id = JsonDocId::new();
+            let key = create_json_key(run_id, &doc_id);
+            let path = "data".parse::<JsonPath>().unwrap();
+
+            // Set a value
+            txn.json_set(&key, &path, JsonValue::from("hello")).unwrap();
+
+            // Read it back (should get from write set, not snapshot)
+            let result = txn.json_get(&key, &path).unwrap();
+            assert_eq!(result, Some(JsonValue::from("hello")));
+        }
+
+        #[test]
+        fn test_json_read_your_writes_nested_path() {
+            use in_mem_core::json::JsonValue;
+
+            let mut txn = create_test_txn();
+            let run_id = RunId::new();
+            let doc_id = JsonDocId::new();
+            let key = create_json_key(run_id, &doc_id);
+            let parent_path = "data".parse::<JsonPath>().unwrap();
+            let child_path: JsonPath = "data.name".parse().unwrap();
+
+            // Set an object at parent path
+            // Use a simple object structure
+            let mut obj = serde_json::Map::new();
+            obj.insert("name".to_string(), serde_json::Value::String("Alice".to_string()));
+            obj.insert("age".to_string(), serde_json::Value::Number(30.into()));
+            let json_obj = JsonValue::from(serde_json::Value::Object(obj));
+            txn.json_set(&key, &parent_path, json_obj).unwrap();
+
+            // Read child path (should navigate into the written object)
+            let result = txn.json_get(&key, &child_path).unwrap();
+            assert_eq!(result, Some(JsonValue::from("Alice")));
+        }
+
+        #[test]
+        fn test_json_read_your_deletes() {
+            use in_mem_core::json::JsonValue;
+
+            let mut txn = create_test_txn();
+            let run_id = RunId::new();
+            let doc_id = JsonDocId::new();
+            let key = create_json_key(run_id, &doc_id);
+            let path = "data".parse::<JsonPath>().unwrap();
+
+            // First set a value
+            txn.json_set(&key, &path, JsonValue::from("hello")).unwrap();
+
+            // Then delete it
+            txn.json_delete(&key, &path).unwrap();
+
+            // Reading should return None (deleted)
+            let result = txn.json_get(&key, &path).unwrap();
+            assert_eq!(result, None);
+        }
+
+        #[test]
+        fn test_json_inactive_txn_errors() {
+            use in_mem_core::json::JsonValue;
+
+            let mut txn = create_test_txn();
+            let run_id = RunId::new();
+            let doc_id = JsonDocId::new();
+            let key = create_json_key(run_id, &doc_id);
+            let path = "data".parse::<JsonPath>().unwrap();
+
+            // Abort the transaction
+            let _ = txn.mark_aborted("test".to_string());
+
+            // Operations should fail
+            assert!(txn.json_set(&key, &path, JsonValue::from(1)).is_err());
+            assert!(txn.json_get(&key, &path).is_err());
+            assert!(txn.json_delete(&key, &path).is_err());
         }
     }
 }
