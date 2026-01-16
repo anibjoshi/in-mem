@@ -34,7 +34,7 @@
 //! 6. JSON API feels like other primitives
 
 use in_mem_core::error::{Error, Result};
-use in_mem_core::json::{get_at_path, set_at_path, JsonPath, JsonValue};
+use in_mem_core::json::{delete_at_path, get_at_path, set_at_path, JsonPath, JsonValue};
 use in_mem_core::traits::SnapshotView;
 use in_mem_core::types::{JsonDocId, Key, Namespace, RunId};
 use in_mem_core::value::Value;
@@ -366,6 +366,91 @@ impl JsonStore {
             txn.put(key.clone(), serialized)?;
 
             Ok(doc.version)
+        })
+    }
+
+    /// Delete value at path in a document
+    ///
+    /// Uses transaction for atomic read-modify-write.
+    /// Increments document version on success.
+    ///
+    /// # Arguments
+    ///
+    /// * `run_id` - RunId for namespace isolation
+    /// * `doc_id` - Document to modify
+    /// * `path` - Path to delete (must not be root)
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(version)` - New document version after deletion
+    /// * `Err(InvalidOperation)` - Document doesn't exist or path error
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Remove a field from an object
+    /// json.delete_at_path(&run_id, &doc_id, &"user.temp".parse().unwrap())?;
+    /// ```
+    pub fn delete_at_path(
+        &self,
+        run_id: &RunId,
+        doc_id: &JsonDocId,
+        path: &JsonPath,
+    ) -> Result<u64> {
+        let key = self.key_for(run_id, doc_id);
+
+        self.db.transaction(*run_id, |txn| {
+            // Load existing document
+            let stored = txn.get(&key)?.ok_or_else(|| {
+                Error::InvalidOperation(format!("JSON document {} not found", doc_id))
+            })?;
+            let mut doc = Self::deserialize_doc(&stored)?;
+
+            // Apply deletion
+            delete_at_path(&mut doc.value, path)
+                .map_err(|e| Error::InvalidOperation(format!("Path error: {}", e)))?;
+            doc.touch();
+
+            // Store updated document
+            let serialized = Self::serialize_doc(&doc)?;
+            txn.put(key.clone(), serialized)?;
+
+            Ok(doc.version)
+        })
+    }
+
+    /// Destroy (delete) an entire document
+    ///
+    /// Removes the document from storage. This operation is final.
+    ///
+    /// # Arguments
+    ///
+    /// * `run_id` - RunId for namespace isolation
+    /// * `doc_id` - Document to destroy
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(true)` - Document existed and was destroyed
+    /// * `Ok(false)` - Document did not exist
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let existed = json.destroy(&run_id, &doc_id)?;
+    /// assert!(existed);
+    /// ```
+    pub fn destroy(&self, run_id: &RunId, doc_id: &JsonDocId) -> Result<bool> {
+        let key = self.key_for(run_id, doc_id);
+
+        self.db.transaction(*run_id, |txn| {
+            // Check if document exists
+            if txn.get(&key)?.is_none() {
+                return Ok(false);
+            }
+
+            // Delete the document
+            txn.delete(key.clone())?;
+            Ok(true)
         })
     }
 }
@@ -1074,5 +1159,288 @@ mod tests {
             .get(&run_id, &doc_id, &"items[1]".parse().unwrap())
             .unwrap();
         assert_eq!(item.and_then(|v| v.as_i64()), Some(999));
+    }
+
+    // ========================================
+    // Delete at Path Tests (Story #277)
+    // ========================================
+
+    #[test]
+    fn test_delete_at_path() {
+        let db = Arc::new(Database::builder().in_memory().open_temp().unwrap());
+        let store = JsonStore::new(db);
+        let run_id = RunId::new();
+        let doc_id = JsonDocId::new();
+
+        let value: JsonValue = serde_json::json!({
+            "name": "Alice",
+            "age": 30
+        })
+        .into();
+        store.create(&run_id, &doc_id, value).unwrap();
+
+        // Delete the "age" field
+        let v2 = store
+            .delete_at_path(&run_id, &doc_id, &"age".parse().unwrap())
+            .unwrap();
+        assert_eq!(v2, 2);
+
+        // Verify "age" is gone but "name" remains
+        assert!(store
+            .get(&run_id, &doc_id, &"age".parse().unwrap())
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            store
+                .get(&run_id, &doc_id, &"name".parse().unwrap())
+                .unwrap()
+                .and_then(|v| v.as_str().map(String::from)),
+            Some("Alice".to_string())
+        );
+    }
+
+    #[test]
+    fn test_delete_at_nested_path() {
+        let db = Arc::new(Database::builder().in_memory().open_temp().unwrap());
+        let store = JsonStore::new(db);
+        let run_id = RunId::new();
+        let doc_id = JsonDocId::new();
+
+        let value: JsonValue = serde_json::json!({
+            "user": {
+                "profile": {
+                    "name": "Bob",
+                    "temp": "to_delete"
+                }
+            }
+        })
+        .into();
+        store.create(&run_id, &doc_id, value).unwrap();
+
+        // Delete nested field
+        let v2 = store
+            .delete_at_path(&run_id, &doc_id, &"user.profile.temp".parse().unwrap())
+            .unwrap();
+        assert_eq!(v2, 2);
+
+        // Verify "temp" is gone
+        assert!(store
+            .get(&run_id, &doc_id, &"user.profile.temp".parse().unwrap())
+            .unwrap()
+            .is_none());
+
+        // Verify "name" remains
+        assert_eq!(
+            store
+                .get(&run_id, &doc_id, &"user.profile.name".parse().unwrap())
+                .unwrap()
+                .and_then(|v| v.as_str().map(String::from)),
+            Some("Bob".to_string())
+        );
+    }
+
+    #[test]
+    fn test_delete_at_path_array_element() {
+        let db = Arc::new(Database::builder().in_memory().open_temp().unwrap());
+        let store = JsonStore::new(db);
+        let run_id = RunId::new();
+        let doc_id = JsonDocId::new();
+
+        let value: JsonValue = serde_json::json!({
+            "items": ["a", "b", "c"]
+        })
+        .into();
+        store.create(&run_id, &doc_id, value).unwrap();
+
+        // Delete middle element
+        let v2 = store
+            .delete_at_path(&run_id, &doc_id, &"items[1]".parse().unwrap())
+            .unwrap();
+        assert_eq!(v2, 2);
+
+        // Array should now be ["a", "c"]
+        let items = store
+            .get(&run_id, &doc_id, &"items".parse().unwrap())
+            .unwrap()
+            .unwrap();
+        let arr = items.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0].as_str(), Some("a"));
+        assert_eq!(arr[1].as_str(), Some("c"));
+    }
+
+    #[test]
+    fn test_delete_at_path_increments_version() {
+        let db = Arc::new(Database::builder().in_memory().open_temp().unwrap());
+        let store = JsonStore::new(db);
+        let run_id = RunId::new();
+        let doc_id = JsonDocId::new();
+
+        let value: JsonValue = serde_json::json!({
+            "a": 1,
+            "b": 2,
+            "c": 3
+        })
+        .into();
+        store.create(&run_id, &doc_id, value).unwrap();
+        assert_eq!(store.get_version(&run_id, &doc_id).unwrap(), Some(1));
+
+        store
+            .delete_at_path(&run_id, &doc_id, &"a".parse().unwrap())
+            .unwrap();
+        assert_eq!(store.get_version(&run_id, &doc_id).unwrap(), Some(2));
+
+        store
+            .delete_at_path(&run_id, &doc_id, &"b".parse().unwrap())
+            .unwrap();
+        assert_eq!(store.get_version(&run_id, &doc_id).unwrap(), Some(3));
+    }
+
+    #[test]
+    fn test_delete_at_path_missing_document() {
+        let db = Arc::new(Database::builder().in_memory().open_temp().unwrap());
+        let store = JsonStore::new(db);
+        let run_id = RunId::new();
+        let doc_id = JsonDocId::new();
+
+        let result = store.delete_at_path(&run_id, &doc_id, &"field".parse().unwrap());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_delete_at_path_missing_path() {
+        let db = Arc::new(Database::builder().in_memory().open_temp().unwrap());
+        let store = JsonStore::new(db);
+        let run_id = RunId::new();
+        let doc_id = JsonDocId::new();
+
+        store.create(&run_id, &doc_id, JsonValue::object()).unwrap();
+
+        // Deleting a nonexistent path is idempotent (succeeds, increments version)
+        let v2 = store
+            .delete_at_path(&run_id, &doc_id, &"nonexistent".parse().unwrap())
+            .unwrap();
+        assert_eq!(v2, 2); // Version still increments even though nothing was removed
+    }
+
+    // ========================================
+    // Destroy Tests (Story #277)
+    // ========================================
+
+    #[test]
+    fn test_destroy_existing_document() {
+        let db = Arc::new(Database::builder().in_memory().open_temp().unwrap());
+        let store = JsonStore::new(db);
+        let run_id = RunId::new();
+        let doc_id = JsonDocId::new();
+
+        store
+            .create(&run_id, &doc_id, JsonValue::from(42i64))
+            .unwrap();
+        assert!(store.exists(&run_id, &doc_id).unwrap());
+
+        let existed = store.destroy(&run_id, &doc_id).unwrap();
+        assert!(existed);
+        assert!(!store.exists(&run_id, &doc_id).unwrap());
+    }
+
+    #[test]
+    fn test_destroy_nonexistent_document() {
+        let db = Arc::new(Database::builder().in_memory().open_temp().unwrap());
+        let store = JsonStore::new(db);
+        let run_id = RunId::new();
+        let doc_id = JsonDocId::new();
+
+        let existed = store.destroy(&run_id, &doc_id).unwrap();
+        assert!(!existed);
+    }
+
+    #[test]
+    fn test_destroy_run_isolation() {
+        let db = Arc::new(Database::builder().in_memory().open_temp().unwrap());
+        let store = JsonStore::new(db);
+
+        let run1 = RunId::new();
+        let run2 = RunId::new();
+        let doc_id = JsonDocId::new();
+
+        // Create document in both runs
+        store.create(&run1, &doc_id, JsonValue::from(1i64)).unwrap();
+        store.create(&run2, &doc_id, JsonValue::from(2i64)).unwrap();
+
+        // Destroy in run1
+        store.destroy(&run1, &doc_id).unwrap();
+
+        // Document should be gone from run1 but still exist in run2
+        assert!(!store.exists(&run1, &doc_id).unwrap());
+        assert!(store.exists(&run2, &doc_id).unwrap());
+    }
+
+    #[test]
+    fn test_destroy_then_recreate() {
+        let db = Arc::new(Database::builder().in_memory().open_temp().unwrap());
+        let store = JsonStore::new(db);
+        let run_id = RunId::new();
+        let doc_id = JsonDocId::new();
+
+        // Create, destroy, recreate
+        store
+            .create(&run_id, &doc_id, JsonValue::from(1i64))
+            .unwrap();
+        store.destroy(&run_id, &doc_id).unwrap();
+
+        // Should be able to recreate with new value
+        let version = store
+            .create(&run_id, &doc_id, JsonValue::from(2i64))
+            .unwrap();
+        assert_eq!(version, 1); // Fresh document starts at version 1
+
+        let value = store.get(&run_id, &doc_id, &JsonPath::root()).unwrap();
+        assert_eq!(value.and_then(|v| v.as_i64()), Some(2));
+    }
+
+    #[test]
+    fn test_destroy_complex_document() {
+        let db = Arc::new(Database::builder().in_memory().open_temp().unwrap());
+        let store = JsonStore::new(db);
+        let run_id = RunId::new();
+        let doc_id = JsonDocId::new();
+
+        let value: JsonValue = serde_json::json!({
+            "user": {
+                "name": "Alice",
+                "items": [1, 2, 3],
+                "nested": {
+                    "deep": {
+                        "value": true
+                    }
+                }
+            }
+        })
+        .into();
+        store.create(&run_id, &doc_id, value).unwrap();
+
+        let existed = store.destroy(&run_id, &doc_id).unwrap();
+        assert!(existed);
+        assert!(!store.exists(&run_id, &doc_id).unwrap());
+    }
+
+    #[test]
+    fn test_destroy_idempotent() {
+        let db = Arc::new(Database::builder().in_memory().open_temp().unwrap());
+        let store = JsonStore::new(db);
+        let run_id = RunId::new();
+        let doc_id = JsonDocId::new();
+
+        store
+            .create(&run_id, &doc_id, JsonValue::from(42i64))
+            .unwrap();
+
+        // First destroy returns true
+        assert!(store.destroy(&run_id, &doc_id).unwrap());
+
+        // Subsequent destroys return false
+        assert!(!store.destroy(&run_id, &doc_id).unwrap());
+        assert!(!store.destroy(&run_id, &doc_id).unwrap());
     }
 }
