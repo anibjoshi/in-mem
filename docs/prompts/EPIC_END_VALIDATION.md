@@ -13,8 +13,9 @@ Epic-end validation ensures:
 4. Tests are comprehensive and passing
 5. No regressions introduced
 
-**Note**: This document covers validation for both M3 (Epics 13-19) and M4 (Epics 20-25).
+**Note**: This document covers validation for M3 (Epics 13-19), M4 (Epics 20-25), and M5 (Epics 26-32).
 For M4-specific validation, see [Phase 6b: M4 Performance Validation](#phase-6b-m4-performance-validation-m4-only).
+For M5-specific validation, see [Phase 6c: M5 JSON Primitive Validation](#phase-6c-m5-json-primitive-validation-m5-only).
 
 ---
 
@@ -98,6 +99,7 @@ ls -la crates/primitives/src/<expected_files>
 
 **For M3 (Epics 13-19)**: Open `docs/architecture/M3_ARCHITECTURE.md`
 **For M4 (Epics 20-25)**: Open `docs/architecture/M4_ARCHITECTURE.md`
+**For M5 (Epics 26-32)**: Open `docs/architecture/M5_ARCHITECTURE.md` (THE AUTHORITATIVE SPEC)
 
 Verify implementation matches:
 
@@ -121,6 +123,17 @@ Verify implementation matches:
 | Section 5 | Transaction Pooling | [ ] Thread-local pools, reset() method |
 | Section 6 | Read Path Optimization | [ ] Fast path reads, snapshot-based |
 | Section 7 | Red Flag Thresholds | [ ] All hard stops respected |
+
+#### M5 Spec Compliance (Epics 26-32)
+
+| Rule | Requirement | Implemented Correctly |
+|------|-------------|----------------------|
+| Rule 1 | JSON in ShardedStore | [ ] No separate DashMap, uses `Key::new_json()` |
+| Rule 2 | Stateless Facade | [ ] JsonStore holds only `Arc<Database>` |
+| Rule 3 | Extension Trait | [ ] JsonStoreExt on TransactionContext, no separate type |
+| Rule 4 | Path Semantics | [ ] Storage sees whole docs, path logic in API layer |
+| Rule 5 | Unified WAL | [ ] Entry types 0x20-0x23 in existing WALEntry enum |
+| Rule 6 | Consistent API | [ ] Same patterns as KVStore, EventLog, etc. |
 
 ### 3.2 Spec Deviation Check
 
@@ -455,6 +468,207 @@ grep -r "enum DurabilityMode" crates/durability/src/
 
 ---
 
+## Phase 6c: M5 JSON Primitive Validation (M5 Only)
+
+**This phase is REQUIRED for all M5 epics (26-32).**
+
+### 6c.1 The Six Architectural Rules Verification
+
+```bash
+# Rule 1: JSON in ShardedStore (no separate DashMap)
+grep -r "DashMap.*Json" crates/primitives/src/
+# Should return NO results - JSON uses existing storage
+
+# Rule 2: Stateless facade
+grep -A5 "pub struct JsonStore" crates/primitives/src/json_store.rs
+# Should show ONLY Arc<Database>
+
+# Rule 3: Extension trait (not separate type)
+grep -r "impl JsonStoreExt for TransactionContext" crates/
+# Should find the impl
+
+# Rule 4: Storage sees whole documents
+grep -r "storage.put_at_path\|storage.get_at_path" crates/
+# Should return NO results - path logic in API layer only
+
+# Rule 5: Unified WAL
+grep -r "JsonCreate\|JsonSet\|JsonDelete\|JsonDestroy" crates/durability/src/wal.rs
+# Should find entry types 0x20-0x23 in WALEntry enum
+
+# Rule 6: Consistent API
+grep -r "fn create\|fn get\|fn set\|fn destroy" crates/primitives/src/json_store.rs
+# Should match other primitive patterns
+```
+
+### 6c.2 Core Types Verification (Epic 26)
+
+```bash
+# Verify JsonDocId, JsonValue, JsonPath, JsonPatch exist
+~/.cargo/bin/cargo test --package in-mem-core json_
+
+# Verify TypeTag::Json = 0x11
+grep -r "Json = 0x11" crates/core/src/
+
+# Verify JsonPath parsing
+~/.cargo/bin/cargo test --package in-mem-core test_json_path
+```
+
+### 6c.3 Path Operations Verification (Epic 27)
+
+```bash
+# Verify path operations
+~/.cargo/bin/cargo test --package in-mem-core test_get_at_path
+~/.cargo/bin/cargo test --package in-mem-core test_set_at_path
+~/.cargo/bin/cargo test --package in-mem-core test_delete_at_path
+~/.cargo/bin/cargo test --package in-mem-core test_apply_patches
+```
+
+### 6c.4 JsonStore Verification (Epic 28)
+
+```bash
+# Verify CRUD operations
+~/.cargo/bin/cargo test --package primitives json_store
+
+# Verify fast path reads (no transaction overhead)
+~/.cargo/bin/cargo test --package primitives test_json_fast_path
+
+# Verify stateless facade pattern
+~/.cargo/bin/cargo test --package primitives test_json_store_stateless
+```
+
+### 6c.5 WAL Integration Verification (Epic 29)
+
+```bash
+# Verify WAL entry types
+~/.cargo/bin/cargo test --package in-mem-durability json_wal
+
+# Verify serialization/deserialization
+~/.cargo/bin/cargo test --package in-mem-durability test_json_entry_roundtrip
+
+# Verify recovery
+~/.cargo/bin/cargo test --package in-mem-durability test_json_recovery
+```
+
+### 6c.6 Transaction Integration Verification (Epic 30)
+
+```bash
+# Verify JsonStoreExt trait
+~/.cargo/bin/cargo test --package in-mem-concurrency json_transaction
+
+# Verify cross-primitive atomicity
+~/.cargo/bin/cargo test --package primitives test_json_cross_primitive
+
+# Verify lazy allocation (zero overhead when not using JSON)
+~/.cargo/bin/cargo test --package in-mem-concurrency test_lazy_json_state
+```
+
+### 6c.7 Conflict Detection Verification (Epic 31)
+
+```bash
+# Verify path overlap detection
+~/.cargo/bin/cargo test --package in-mem-core test_path_overlap
+
+# Verify read-write conflict detection
+~/.cargo/bin/cargo test --package in-mem-concurrency test_read_write_conflict
+
+# Verify write-write conflict detection
+~/.cargo/bin/cargo test --package in-mem-concurrency test_write_write_conflict
+
+# Verify conflict aborts entire transaction
+~/.cargo/bin/cargo test --package in-mem-concurrency test_conflict_abort
+```
+
+### 6c.8 Performance Benchmarks (Epic 32)
+
+```bash
+# Run M5 JSON benchmarks
+~/.cargo/bin/cargo bench --bench m5_json_performance
+
+# Expected results:
+# - JSON create (1KB): < 1ms
+# - JSON get at path (1KB): < 100µs
+# - JSON set at path (1KB): < 1ms
+# - JSON delete at path (1KB): < 500µs
+```
+
+### 6c.9 Non-Regression Verification
+
+```bash
+# Verify M4 performance targets are maintained
+~/.cargo/bin/cargo bench --bench m4_performance
+
+# Run M4 red flag tests (must still pass)
+~/.cargo/bin/cargo test --test m4_red_flags
+
+# Verify existing primitives unaffected
+~/.cargo/bin/cargo test --package primitives kv_store
+~/.cargo/bin/cargo test --package primitives event_log
+~/.cargo/bin/cargo test --package primitives state_cell
+~/.cargo/bin/cargo test --package primitives trace_store
+```
+
+### 6c.10 M5 Epic-Specific Validation
+
+#### Epic 26: Core Types
+```bash
+~/.cargo/bin/cargo test --package in-mem-core json_
+grep -r "TypeTag::Json" crates/core/src/
+```
+
+#### Epic 27: Path Operations
+```bash
+~/.cargo/bin/cargo test --package in-mem-core path_
+~/.cargo/bin/cargo test --package in-mem-core patch_
+```
+
+#### Epic 28: JsonStore Core
+```bash
+~/.cargo/bin/cargo test --package primitives json_store
+# Verify no internal state
+grep -A10 "pub struct JsonStore" crates/primitives/src/json_store.rs
+```
+
+#### Epic 29: WAL Integration
+```bash
+~/.cargo/bin/cargo test --package in-mem-durability json_
+grep -r "0x2" crates/durability/src/wal.rs
+```
+
+#### Epic 30: Transaction Integration
+```bash
+~/.cargo/bin/cargo test --package in-mem-concurrency json_
+~/.cargo/bin/cargo test --package primitives test_json_transaction
+```
+
+#### Epic 31: Conflict Detection
+```bash
+~/.cargo/bin/cargo test --package in-mem-concurrency json_conflict
+~/.cargo/bin/cargo test --package in-mem-concurrency test_overlap
+```
+
+#### Epic 32: Validation
+```bash
+# Full validation suite
+~/.cargo/bin/cargo bench --bench m5_json_performance
+~/.cargo/bin/cargo test --test m5_json_integration
+~/.cargo/bin/cargo test --test m4_red_flags
+```
+
+### 6c.11 M5 Performance Checklist
+
+| Metric | Target | Red Flag | Actual | Status |
+|--------|--------|----------|--------|--------|
+| JSON create (1KB) | < 1ms | > 5ms | ___ | [ ] |
+| JSON get at path (1KB) | < 100µs | > 500µs | ___ | [ ] |
+| JSON set at path (1KB) | < 1ms | > 5ms | ___ | [ ] |
+| JSON delete at path (1KB) | < 500µs | > 2ms | ___ | [ ] |
+| KV put (no regression) | < 3µs | > 10µs | ___ | [ ] |
+| KV get (no regression) | < 5µs | > 10µs | ___ | [ ] |
+| Event append (no regression) | < 10µs | > 30µs | ___ | [ ] |
+| State read (no regression) | < 5µs | > 10µs | ___ | [ ] |
+
+---
+
 ## Phase 7: Final Sign-Off
 
 ### 7.1 Completion Checklist
@@ -469,6 +683,9 @@ grep -r "enum DurabilityMode" crates/durability/src/
 | Epic-specific validation done (Phase 6) | [ ] |
 | **M4 Only**: Performance validation (Phase 6b) | [ ] |
 | **M4 Only**: All red flags pass | [ ] |
+| **M5 Only**: JSON primitive validation (Phase 6c) | [ ] |
+| **M5 Only**: Six architectural rules verified | [ ] |
+| **M5 Only**: Non-regression tests pass | [ ] |
 
 ### 7.2 Sign-Off
 
@@ -585,6 +802,46 @@ Run the complete epic-end validation for Epic <N>: <Epic Name>.
 **CRITICAL**: If ANY red flag fails, STOP and REDESIGN. Do NOT proceed.
 ```
 
+### M5 Epic Validation (Epics 26-32)
+
+Use this prompt for M5 JSON primitive validation:
+
+```
+## Task: M5 Epic End Validation
+
+Run the complete epic-end validation for Epic <N>: <Epic Name>.
+
+**Steps**:
+1. Run Phase 1 automated checks
+2. Verify all <X> stories are complete (Phase 2)
+3. Verify spec compliance against M5_ARCHITECTURE.md (Phase 3)
+4. Perform code review checklist (Phase 4)
+5. Verify best practices (Phase 5)
+6. Run epic-specific validation (Phase 6)
+7. Run M5 JSON validation (Phase 6c) - CRITICAL
+8. Verify ALL six architectural rules
+9. Run non-regression tests (M4 performance targets must be maintained)
+10. Provide final sign-off summary (Phase 7)
+
+**Expected Output**:
+- Pass/fail status for each phase
+- Six architectural rules verification results
+- JSON performance benchmark results vs targets
+- Non-regression test results (M4 targets maintained)
+- Any issues found with recommendations
+- Final sign-off or list of blockers
+
+**Reference**:
+- **M5 Architecture (AUTHORITATIVE)**: docs/architecture/M5_ARCHITECTURE.md
+- Epic prompt: docs/prompts/M5/epic-<N>-claude-prompts.md
+- M5 Implementation Plan: docs/milestones/M5/M5_IMPLEMENTATION_PLAN.md
+- M5 Prompt Header: docs/prompts/M5/M5_PROMPT_HEADER.md
+- Epic Spec: docs/milestones/M5/EPIC_<N>_*.md
+- Stories: #XXX - #XXX
+
+**CRITICAL**: The six architectural rules are NON-NEGOTIABLE. Any violation is a blocking issue.
+```
+
 ---
 
 ## Quick Reference: Validation Commands
@@ -645,6 +902,55 @@ echo "Phase 1 + M4 Performance: PASS"
   test_zero_allocations
 ```
 
+### M5 Quick Validation
+
+```bash
+# One-liner for Phase 1 + M5 JSON validation
+~/.cargo/bin/cargo build --workspace && \
+~/.cargo/bin/cargo test --workspace && \
+~/.cargo/bin/cargo clippy --workspace -- -D warnings && \
+~/.cargo/bin/cargo fmt --check && \
+~/.cargo/bin/cargo bench --bench m5_json_performance && \
+~/.cargo/bin/cargo test --test m4_red_flags && \
+echo "Phase 1 + M5 Validation: PASS"
+
+# Run all M5 JSON tests
+~/.cargo/bin/cargo test --package in-mem-core json_
+~/.cargo/bin/cargo test --package primitives json_store
+~/.cargo/bin/cargo test --package in-mem-concurrency json_
+~/.cargo/bin/cargo test --package in-mem-durability json_
+
+# Run M5 benchmarks
+~/.cargo/bin/cargo bench --bench m5_json_performance
+
+# Run non-regression tests
+~/.cargo/bin/cargo bench --bench m4_performance
+~/.cargo/bin/cargo test --test m4_red_flags
+```
+
+### M5 Six Rules Quick Check
+
+```bash
+# Quick architectural rules verification (run after any M5 change)
+echo "Rule 1: No separate DashMap for JSON"
+grep -r "DashMap.*Json" crates/primitives/src/ && echo "FAIL: Found separate DashMap" || echo "PASS"
+
+echo "Rule 2: Stateless facade"
+grep -A5 "pub struct JsonStore" crates/primitives/src/json_store.rs
+
+echo "Rule 3: Extension trait"
+grep -r "impl JsonStoreExt for TransactionContext" crates/ && echo "PASS" || echo "FAIL: Missing impl"
+
+echo "Rule 4: No path in storage"
+grep -r "storage.put_at_path\|storage.get_at_path" crates/ && echo "FAIL: Found path in storage" || echo "PASS"
+
+echo "Rule 5: Unified WAL"
+grep -r "JsonCreate\|JsonSet" crates/durability/src/wal.rs && echo "PASS" || echo "FAIL: Missing JSON WAL entries"
+
+echo "Rule 6: Consistent API"
+grep -r "fn create\|fn get\|fn set" crates/primitives/src/json_store.rs
+```
+
 ---
 
 ## M4 Milestone Completion Checklist
@@ -680,6 +986,77 @@ echo "Phase 1 + M4 Performance: PASS"
 | | Hot-path allocations: 0 | [ ] |
 | **Documentation** | | |
 | | M4_ARCHITECTURE.md complete | [ ] |
+| | All story PRs merged | [ ] |
+| | Benchmark results documented | [ ] |
+
+---
+
+## M5 Milestone Completion Checklist
+
+**Use this checklist when completing ALL M5 epics (Epic 32 final validation):**
+
+| Category | Requirement | Status |
+|----------|-------------|--------|
+| **Core Types (Epic 26)** | | |
+| | JsonDocId with UUID | [ ] |
+| | JsonValue enum (Null, Bool, Number, String, Array, Object) | [ ] |
+| | JsonPath parsing and manipulation | [ ] |
+| | JsonPatch operations (Set, Delete, ArrayPush, etc.) | [ ] |
+| | TypeTag::Json = 0x11 | [ ] |
+| **Path Operations (Epic 27)** | | |
+| | get_at_path() | [ ] |
+| | set_at_path() | [ ] |
+| | delete_at_path() | [ ] |
+| | apply_patches() | [ ] |
+| | Path overlap detection | [ ] |
+| **JsonStore (Epic 28)** | | |
+| | Stateless facade (Arc<Database> only) | [ ] |
+| | create() | [ ] |
+| | get() fast path (no transaction) | [ ] |
+| | set() | [ ] |
+| | delete_at_path() | [ ] |
+| | destroy() | [ ] |
+| **WAL Integration (Epic 29)** | | |
+| | JsonCreate (0x20) | [ ] |
+| | JsonSet (0x21) | [ ] |
+| | JsonDelete (0x22) | [ ] |
+| | JsonDestroy (0x23) | [ ] |
+| | Serialization/deserialization | [ ] |
+| | Recovery from WAL | [ ] |
+| **Transaction Integration (Epic 30)** | | |
+| | JsonStoreExt trait | [ ] |
+| | txn.json_get() | [ ] |
+| | txn.json_set() | [ ] |
+| | Cross-primitive atomicity | [ ] |
+| | Lazy state allocation | [ ] |
+| **Conflict Detection (Epic 31)** | | |
+| | Path overlap detection | [ ] |
+| | Read-write conflict check | [ ] |
+| | Write-write conflict check | [ ] |
+| | Version mismatch detection | [ ] |
+| | Conflict aborts entire transaction | [ ] |
+| **Validation (Epic 32)** | | |
+| | Unit tests comprehensive | [ ] |
+| | Integration tests pass | [ ] |
+| | Benchmarks meet targets | [ ] |
+| | M4 non-regression verified | [ ] |
+| **Six Architectural Rules** | | |
+| | Rule 1: JSON in ShardedStore | [ ] |
+| | Rule 2: Stateless facade | [ ] |
+| | Rule 3: Extension trait (not separate type) | [ ] |
+| | Rule 4: Path semantics in API layer | [ ] |
+| | Rule 5: Unified WAL | [ ] |
+| | Rule 6: Consistent API pattern | [ ] |
+| **Performance** | | |
+| | JSON create (1KB) < 1ms | [ ] |
+| | JSON get at path (1KB) < 100µs | [ ] |
+| | JSON set at path (1KB) < 1ms | [ ] |
+| | JSON delete at path (1KB) < 500µs | [ ] |
+| | No regression in M4 targets | [ ] |
+| **Documentation** | | |
+| | M5_ARCHITECTURE.md authoritative | [ ] |
+| | M5_IMPLEMENTATION_PLAN.md aligned | [ ] |
+| | All EPIC_*.md specs complete | [ ] |
 | | All story PRs merged | [ ] |
 | | Benchmark results documented | [ ] |
 
