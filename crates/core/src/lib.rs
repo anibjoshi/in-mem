@@ -24,8 +24,8 @@ pub mod value; // Story #9
 // Re-export commonly used types and traits
 pub use error::{Error, Result};
 pub use json::{
-    get_at_path, get_at_path_mut, JsonPatch, JsonPath, JsonPathError, JsonValue, LimitError,
-    PathParseError, PathSegment, MAX_ARRAY_SIZE, MAX_DOCUMENT_SIZE, MAX_NESTING_DEPTH,
+    get_at_path, get_at_path_mut, set_at_path, JsonPatch, JsonPath, JsonPathError, JsonValue,
+    LimitError, PathParseError, PathSegment, MAX_ARRAY_SIZE, MAX_DOCUMENT_SIZE, MAX_NESTING_DEPTH,
     MAX_PATH_LENGTH,
 };
 pub use traits::{SnapshotView, Storage};
