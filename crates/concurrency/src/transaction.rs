@@ -999,12 +999,7 @@ impl TransactionContext {
     /// // Reset for reuse - capacity is preserved!
     /// ctx.reset(2, new_run_id, Some(new_snapshot));
     /// ```
-    pub fn reset(
-        &mut self,
-        txn_id: u64,
-        run_id: RunId,
-        snapshot: Option<Box<dyn SnapshotView>>,
-    ) {
+    pub fn reset(&mut self, txn_id: u64, run_id: RunId, snapshot: Option<Box<dyn SnapshotView>>) {
         // Update identity
         self.txn_id = txn_id;
         self.run_id = run_id;
@@ -3128,10 +3123,7 @@ mod tests {
                 new_delete_cap, delete_cap,
                 "delete_set capacity should be preserved"
             );
-            assert_eq!(
-                new_cas_cap, cas_cap,
-                "cas_set capacity should be preserved"
-            );
+            assert_eq!(new_cas_cap, cas_cap, "cas_set capacity should be preserved");
 
             // Verify state is reset correctly
             assert_eq!(txn.txn_id, 2);
