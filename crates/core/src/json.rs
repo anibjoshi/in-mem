@@ -1177,6 +1177,97 @@ fn value_type_name(value: &serde_json::Value) -> &'static str {
     }
 }
 
+// =============================================================================
+// Path Deletion (Story #270)
+// =============================================================================
+
+/// Delete value at path within a JSON document
+///
+/// Removes the value at the specified path. For objects, this removes the key.
+/// For arrays, this removes the element and shifts subsequent elements.
+/// Deleting the root replaces the value with null.
+///
+/// # Arguments
+///
+/// * `root` - The root JSON value to modify
+/// * `path` - The path to delete
+///
+/// # Returns
+///
+/// * `Ok(Some(value))` - The deleted value
+/// * `Ok(None)` - The path didn't exist
+/// * `Err(JsonPathError)` - Type mismatch during traversal
+///
+/// # Examples
+///
+/// ```
+/// use in_mem_core::json::{JsonValue, JsonPath, delete_at_path, get_at_path};
+///
+/// // Delete object key
+/// let mut json: JsonValue = r#"{"name": "Alice", "age": 30}"#.parse().unwrap();
+/// let deleted = delete_at_path(&mut json, &"name".parse().unwrap()).unwrap();
+/// assert_eq!(deleted.unwrap().as_str(), Some("Alice"));
+/// assert!(get_at_path(&json, &"name".parse().unwrap()).is_none());
+///
+/// // Delete array element (shifts indices)
+/// let mut arr: JsonValue = r#"[1, 2, 3]"#.parse().unwrap();
+/// delete_at_path(&mut arr, &"[1]".parse().unwrap()).unwrap();
+/// assert_eq!(arr.as_array().unwrap().len(), 2);
+/// assert_eq!(arr.as_array().unwrap()[1].as_i64(), Some(3)); // Was at index 2
+/// ```
+pub fn delete_at_path(
+    root: &mut JsonValue,
+    path: &JsonPath,
+) -> Result<Option<JsonValue>, JsonPathError> {
+    // Handle root path - replace with null
+    if path.is_root() {
+        let old = std::mem::take(root);
+        return Ok(Some(old));
+    }
+
+    let segments = path.segments();
+    if segments.is_empty() {
+        let old = std::mem::take(root);
+        return Ok(Some(old));
+    }
+
+    // Navigate to parent
+    let parent_path = path.parent().ok_or(JsonPathError::NotFound)?;
+    let parent = get_at_path_mut(root, &parent_path).ok_or(JsonPathError::NotFound)?;
+    let parent_inner = parent.as_inner_mut();
+
+    // Delete at the last segment
+    let last_segment = segments.last().unwrap();
+    match last_segment {
+        PathSegment::Key(key) => {
+            if !parent_inner.is_object() {
+                return Err(JsonPathError::TypeMismatch {
+                    expected: "object",
+                    found: value_type_name(parent_inner),
+                });
+            }
+            let obj = parent_inner.as_object_mut().unwrap();
+            let removed = obj.remove(key);
+            Ok(removed.map(JsonValue::from_value))
+        }
+        PathSegment::Index(idx) => {
+            if !parent_inner.is_array() {
+                return Err(JsonPathError::TypeMismatch {
+                    expected: "array",
+                    found: value_type_name(parent_inner),
+                });
+            }
+            let arr = parent_inner.as_array_mut().unwrap();
+            if *idx < arr.len() {
+                let removed = arr.remove(*idx);
+                Ok(Some(JsonValue::from_value(removed)))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2376,5 +2467,137 @@ mod tests {
         set_at_path(&mut json, &path, JsonValue::from("Item 1")).unwrap();
 
         assert_eq!(get_at_path(&json, &path).unwrap().as_str(), Some("Item 1"));
+    }
+
+    // =========================================================================
+    // Delete at Path Tests (Story #270)
+    // =========================================================================
+
+    #[test]
+    fn test_delete_at_path_root() {
+        let mut json = JsonValue::from(42i64);
+        let deleted = delete_at_path(&mut json, &JsonPath::root()).unwrap();
+        assert_eq!(deleted.unwrap().as_i64(), Some(42));
+        assert!(json.is_null());
+    }
+
+    #[test]
+    fn test_delete_at_path_object_key() {
+        let mut json: JsonValue = r#"{"name": "Alice", "age": 30}"#.parse().unwrap();
+        let path: JsonPath = "name".parse().unwrap();
+        let deleted = delete_at_path(&mut json, &path).unwrap();
+
+        assert_eq!(deleted.unwrap().as_str(), Some("Alice"));
+        assert!(get_at_path(&json, &path).is_none());
+        // age should still exist
+        assert!(get_at_path(&json, &"age".parse().unwrap()).is_some());
+    }
+
+    #[test]
+    fn test_delete_at_path_nested_object() {
+        let mut json: JsonValue = r#"{"user": {"name": "Bob", "email": "bob@example.com"}}"#
+            .parse()
+            .unwrap();
+        let path: JsonPath = "user.name".parse().unwrap();
+        let deleted = delete_at_path(&mut json, &path).unwrap();
+
+        assert_eq!(deleted.unwrap().as_str(), Some("Bob"));
+        assert!(get_at_path(&json, &path).is_none());
+        // user.email should still exist
+        assert!(get_at_path(&json, &"user.email".parse().unwrap()).is_some());
+    }
+
+    #[test]
+    fn test_delete_at_path_array_element() {
+        let mut json: JsonValue = r#"[1, 2, 3]"#.parse().unwrap();
+        let path: JsonPath = "[1]".parse().unwrap();
+        let deleted = delete_at_path(&mut json, &path).unwrap();
+
+        assert_eq!(deleted.unwrap().as_i64(), Some(2));
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        // Verify indices shifted
+        assert_eq!(arr[0].as_i64(), Some(1));
+        assert_eq!(arr[1].as_i64(), Some(3)); // Was at index 2
+    }
+
+    #[test]
+    fn test_delete_at_path_array_first() {
+        let mut json: JsonValue = r#"["a", "b", "c"]"#.parse().unwrap();
+        let path: JsonPath = "[0]".parse().unwrap();
+        delete_at_path(&mut json, &path).unwrap();
+
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0].as_str(), Some("b"));
+        assert_eq!(arr[1].as_str(), Some("c"));
+    }
+
+    #[test]
+    fn test_delete_at_path_array_last() {
+        let mut json: JsonValue = r#"["a", "b", "c"]"#.parse().unwrap();
+        let path: JsonPath = "[2]".parse().unwrap();
+        delete_at_path(&mut json, &path).unwrap();
+
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0].as_str(), Some("a"));
+        assert_eq!(arr[1].as_str(), Some("b"));
+    }
+
+    #[test]
+    fn test_delete_at_path_missing_key() {
+        let mut json: JsonValue = r#"{"name": "Alice"}"#.parse().unwrap();
+        let path: JsonPath = "missing".parse().unwrap();
+        let deleted = delete_at_path(&mut json, &path).unwrap();
+
+        assert!(deleted.is_none());
+    }
+
+    #[test]
+    fn test_delete_at_path_missing_index() {
+        let mut json: JsonValue = r#"[1, 2]"#.parse().unwrap();
+        let path: JsonPath = "[10]".parse().unwrap();
+        let deleted = delete_at_path(&mut json, &path).unwrap();
+
+        assert!(deleted.is_none());
+    }
+
+    #[test]
+    fn test_delete_at_path_missing_parent() {
+        let mut json: JsonValue = r#"{"foo": 1}"#.parse().unwrap();
+        let path: JsonPath = "bar.baz".parse().unwrap();
+        let result = delete_at_path(&mut json, &path);
+
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), JsonPathError::NotFound));
+    }
+
+    #[test]
+    fn test_delete_at_path_type_mismatch() {
+        let mut json = JsonValue::from(42i64);
+        let path: JsonPath = "name".parse().unwrap();
+        let result = delete_at_path(&mut json, &path);
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            JsonPathError::TypeMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn test_delete_at_path_nested_array() {
+        let mut json: JsonValue =
+            r#"{"items": [{"id": 1}, {"id": 2}, {"id": 3}]}"#.parse().unwrap();
+        let path: JsonPath = "items[1]".parse().unwrap();
+        let deleted = delete_at_path(&mut json, &path).unwrap();
+
+        assert!(deleted.is_some());
+        let arr = get_at_path(&json, &"items".parse().unwrap())
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert_eq!(arr.len(), 2);
     }
 }
