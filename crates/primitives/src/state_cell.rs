@@ -177,9 +177,8 @@ impl StateCell {
 
         match snapshot.get(&key)? {
             Some(vv) => {
-                let state: State = from_stored_value(&vv.value).map_err(|e| {
-                    in_mem_core::error::Error::SerializationError(e.to_string())
-                })?;
+                let state: State = from_stored_value(&vv.value)
+                    .map_err(|e| in_mem_core::error::Error::SerializationError(e.to_string()))?;
                 Ok(Some(state))
             }
             None => Ok(None),

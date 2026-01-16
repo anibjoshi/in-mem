@@ -260,9 +260,8 @@ impl EventLog {
 
         match snapshot.get(&event_key)? {
             Some(vv) => {
-                let event: Event = from_stored_value(&vv.value).map_err(|e| {
-                    in_mem_core::error::Error::SerializationError(e.to_string())
-                })?;
+                let event: Event = from_stored_value(&vv.value)
+                    .map_err(|e| in_mem_core::error::Error::SerializationError(e.to_string()))?;
                 Ok(Some(event))
             }
             None => Ok(None),
