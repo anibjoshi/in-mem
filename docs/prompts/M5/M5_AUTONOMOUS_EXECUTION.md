@@ -32,15 +32,6 @@ For each epic (26 → 27 → 28 → 29 → 30 → 31 → 32):
 
 6. **Proceed to next epic**
 
-## The Six Rules (NON-NEGOTIABLE)
-
-1. JSON in ShardedStore (no separate DashMap)
-2. JsonStore stateless (Arc<Database> only)
-3. JsonStoreExt on TransactionContext (no separate type)
-4. Path semantics in API layer (not storage)
-5. Unified WAL (entry types 0x20-0x23)
-6. Consistent API pattern
-
 ## Stop Conditions
 
 - Any architectural rule violation
