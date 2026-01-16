@@ -21,7 +21,7 @@ pub mod value; // Story #9
 // Re-export commonly used types and traits
 pub use error::{Error, Result};
 pub use traits::{SnapshotView, Storage};
-pub use types::{Key, Namespace, RunId, TypeTag};
+pub use types::{JsonDocId, Key, Namespace, RunId, TypeTag};
 pub use value::{Timestamp, Value, VersionedValue};
 
 /// Placeholder for core functionality
