@@ -378,6 +378,24 @@ This includes:
 
 **This invariant must not change.**
 
+### 3.6 JsonPath Tracking Is Solely for Conflict Detection (M5)
+
+**In M5, JsonPath tracking exists only to support region-based conflict detection. It is not used for snapshot versioning or historical reads.**
+
+This prevents accidental semantic drift. Specifically:
+
+- **NOT for snapshot versioning**: M5 uses document-level versions, not per-path versions
+- **NOT for historical reads**: M5 does not support point-in-time queries at path granularity
+- **NOT for change tracking**: Path history is not maintained beyond conflict detection scope
+
+**Why this matters**:
+- Keeps M5 implementation simple and focused
+- Prevents premature complexity
+- Makes the M5→M6 upgrade path clear (M6+ may add per-path versioning)
+- Avoids confusion about what JsonPath tracking guarantees
+
+**This is an M5-specific constraint, not a permanent invariant.** Future milestones (M6+) may extend JsonPath tracking for additional purposes such as subtree MVCC or path-level historical queries.
+
 ---
 
 ## 5. JSON Document Model
