@@ -81,6 +81,7 @@ criterion = "0.5"
 tempfile = { workspace = true }
 chrono = { workspace = true }
 serde_json = { workspace = true }
+rustc-hash = { workspace = true }
 in-mem-primitives = { path = "crates/primitives" }
 
 [[bench]]
@@ -101,4 +102,12 @@ harness = false
 
 [[bench]]
 name = "m4_performance"
+harness = false
+
+[[bench]]
+name = "m4_facade_tax"
+harness = false
+
+[[bench]]
+name = "m4_contention"
 harness = false
