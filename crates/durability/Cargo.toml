@@ -12,6 +12,7 @@ in-mem-core = { path = "../core" }
 in-mem-storage = { path = "../storage" }
 bincode = { workspace = true }
 serde = { workspace = true }
+rmp-serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }

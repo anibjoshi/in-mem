@@ -22,8 +22,11 @@
 
 use crate::wal::{WALEntry, WAL};
 use in_mem_core::error::Result;
+use in_mem_core::json::{delete_at_path, set_at_path, JsonValue};
 use in_mem_core::traits::Storage;
-use in_mem_core::types::RunId;
+use in_mem_core::types::{JsonDocId, Key, Namespace, RunId};
+use in_mem_core::value::Value;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use tracing::warn;
 
@@ -55,6 +58,58 @@ pub struct ReplayStats {
     pub orphaned_entries: usize,
     /// Number of transactions skipped by filter
     pub txns_filtered: usize,
+    // JSON operations (M5)
+    /// Number of JSON Create operations applied
+    pub json_creates_applied: usize,
+    /// Number of JSON Set operations applied
+    pub json_sets_applied: usize,
+    /// Number of JSON Delete operations applied
+    pub json_deletes_applied: usize,
+    /// Number of JSON Destroy operations applied
+    pub json_destroys_applied: usize,
+}
+
+/// JSON document structure for recovery (M5)
+///
+/// This mirrors the JsonDoc struct in primitives but is defined here to avoid
+/// circular dependencies. Uses msgpack serialization for compatibility.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RecoveryJsonDoc {
+    /// Document identifier
+    id: JsonDocId,
+    /// JSON value
+    value: JsonValue,
+    /// Document version (increments on any change)
+    version: u64,
+    /// Creation timestamp (millis since epoch)
+    created_at: i64,
+    /// Last update timestamp (millis since epoch)
+    updated_at: i64,
+}
+
+impl RecoveryJsonDoc {
+    /// Create a new document with initial value
+    fn new(id: JsonDocId, value: JsonValue, version: u64, timestamp: i64) -> Self {
+        Self {
+            id,
+            value,
+            version,
+            created_at: timestamp,
+            updated_at: timestamp,
+        }
+    }
+
+    /// Serialize to msgpack bytes
+    fn to_bytes(&self) -> Result<Vec<u8>> {
+        rmp_serde::to_vec(self)
+            .map_err(|e| in_mem_core::error::Error::SerializationError(e.to_string()))
+    }
+
+    /// Deserialize from msgpack bytes
+    fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        rmp_serde::from_slice(bytes)
+            .map_err(|e| in_mem_core::error::Error::SerializationError(e.to_string()))
+    }
 }
 
 /// Options for WAL replay
@@ -575,7 +630,7 @@ fn get_transaction_max_version(txn: &Transaction) -> u64 {
 
 /// Apply a committed transaction to storage
 ///
-/// Applies all Write and Delete operations from a transaction to storage,
+/// Applies all Write, Delete, and JSON operations from a transaction to storage,
 /// preserving the version numbers from the WAL entries.
 ///
 /// # Arguments
@@ -612,6 +667,158 @@ fn apply_transaction<S: Storage + ?Sized>(
                 stats.deletes_applied += 1;
                 stats.final_version = stats.final_version.max(*version);
             }
+
+            // ================================================================
+            // JSON Operations (M5)
+            // ================================================================
+            WALEntry::JsonCreate {
+                run_id,
+                doc_id,
+                value_bytes,
+                version,
+                timestamp,
+            } => {
+                // Deserialize the JSON value from msgpack bytes
+                let value: JsonValue = rmp_serde::from_slice(value_bytes).map_err(|e| {
+                    in_mem_core::error::Error::SerializationError(format!(
+                        "Failed to deserialize JSON value during recovery: {}",
+                        e
+                    ))
+                })?;
+
+                // Create the document
+                let doc = RecoveryJsonDoc::new(*doc_id, value, *version, *timestamp);
+                let doc_bytes = doc.to_bytes()?;
+
+                // Store using JSON key
+                let key = Key::new_json(Namespace::for_run(*run_id), doc_id);
+                storage.put_with_version(key, Value::Bytes(doc_bytes), *version, None)?;
+
+                stats.json_creates_applied += 1;
+                stats.final_version = stats.final_version.max(*version);
+            }
+
+            WALEntry::JsonSet {
+                run_id,
+                doc_id,
+                path,
+                value_bytes,
+                version,
+            } => {
+                let key = Key::new_json(Namespace::for_run(*run_id), doc_id);
+
+                // Load existing document
+                let existing = storage.get(&key)?;
+                if let Some(vv) = existing {
+                    let mut doc = match &vv.value {
+                        Value::Bytes(bytes) => RecoveryJsonDoc::from_bytes(bytes)?,
+                        _ => {
+                            return Err(in_mem_core::error::Error::InvalidOperation(
+                                "Expected bytes for JSON document".to_string(),
+                            ))
+                        }
+                    };
+
+                    // Deserialize the new value
+                    let new_value: JsonValue = rmp_serde::from_slice(value_bytes).map_err(|e| {
+                        in_mem_core::error::Error::SerializationError(format!(
+                            "Failed to deserialize JSON value during recovery: {}",
+                            e
+                        ))
+                    })?;
+
+                    // Apply the path mutation
+                    set_at_path(&mut doc.value, path, new_value).map_err(|e| {
+                        in_mem_core::error::Error::InvalidOperation(format!(
+                            "Failed to set path during recovery: {}",
+                            e
+                        ))
+                    })?;
+
+                    // Update version and timestamp
+                    doc.version = *version;
+                    doc.updated_at = std::time::SystemTime::now()
+                        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as i64;
+
+                    // Store updated document
+                    let doc_bytes = doc.to_bytes()?;
+                    storage.put_with_version(key, Value::Bytes(doc_bytes), *version, None)?;
+
+                    stats.json_sets_applied += 1;
+                    stats.final_version = stats.final_version.max(*version);
+                } else {
+                    warn!(
+                        "JsonSet for non-existent document {:?} during recovery, skipping",
+                        doc_id
+                    );
+                }
+            }
+
+            WALEntry::JsonDelete {
+                run_id,
+                doc_id,
+                path,
+                version,
+            } => {
+                let key = Key::new_json(Namespace::for_run(*run_id), doc_id);
+
+                // Load existing document
+                let existing = storage.get(&key)?;
+                if let Some(vv) = existing {
+                    let mut doc = match &vv.value {
+                        Value::Bytes(bytes) => RecoveryJsonDoc::from_bytes(bytes)?,
+                        _ => {
+                            return Err(in_mem_core::error::Error::InvalidOperation(
+                                "Expected bytes for JSON document".to_string(),
+                            ))
+                        }
+                    };
+
+                    // Apply the path deletion
+                    delete_at_path(&mut doc.value, path).map_err(|e| {
+                        in_mem_core::error::Error::InvalidOperation(format!(
+                            "Failed to delete path during recovery: {}",
+                            e
+                        ))
+                    })?;
+
+                    // Update version and timestamp
+                    doc.version = *version;
+                    doc.updated_at = std::time::SystemTime::now()
+                        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as i64;
+
+                    // Store updated document
+                    let doc_bytes = doc.to_bytes()?;
+                    storage.put_with_version(key, Value::Bytes(doc_bytes), *version, None)?;
+
+                    stats.json_deletes_applied += 1;
+                    stats.final_version = stats.final_version.max(*version);
+                } else {
+                    warn!(
+                        "JsonDelete for non-existent document {:?} during recovery, skipping",
+                        doc_id
+                    );
+                }
+            }
+
+            WALEntry::JsonDestroy { run_id, doc_id } => {
+                let key = Key::new_json(Namespace::for_run(*run_id), doc_id);
+
+                // Delete the document (use version 0 since JsonDestroy doesn't carry version)
+                // The version doesn't matter much for deletes as long as it's applied
+                if storage.get(&key)?.is_some() {
+                    storage.delete_with_version(&key, 0)?;
+                    stats.json_destroys_applied += 1;
+                } else {
+                    // Document already doesn't exist - idempotent
+                    stats.json_destroys_applied += 1;
+                }
+            }
+
             _ => {
                 // BeginTxn, CommitTxn, etc. are not applied to storage
             }
