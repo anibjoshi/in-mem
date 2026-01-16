@@ -8,7 +8,7 @@
 //! - Value: Unified value enum for all data types
 //! - Error: Error type hierarchy
 //! - Traits: Core trait definitions (Storage, SnapshotView)
-//! - JSON types (M5): JsonValue, JsonDocId
+//! - JSON types (M5): JsonValue, JsonPath, JsonDocId
 
 #![warn(missing_docs)]
 #![warn(clippy::all)]
@@ -22,7 +22,7 @@ pub mod value; // Story #9
 
 // Re-export commonly used types and traits
 pub use error::{Error, Result};
-pub use json::JsonValue;
+pub use json::{JsonPath, JsonValue, PathParseError, PathSegment};
 pub use traits::{SnapshotView, Storage};
 pub use types::{JsonDocId, Key, Namespace, RunId, TypeTag};
 pub use value::{Timestamp, Value, VersionedValue};
