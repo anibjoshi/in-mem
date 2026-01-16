@@ -22,3 +22,4 @@ crc32fast = "1.3"
 proptest = { workspace = true }
 tempfile = { workspace = true }
 chrono = { workspace = true }
+serde_json = { workspace = true }
