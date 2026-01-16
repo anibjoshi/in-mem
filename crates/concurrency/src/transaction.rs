@@ -9,6 +9,7 @@
 use crate::validation::{validate_transaction, ValidationResult};
 use crate::wal_writer::TransactionWALWriter;
 use in_mem_core::error::{Error, Result};
+use in_mem_core::json::{JsonPatch, JsonPath};
 use in_mem_core::traits::{SnapshotView, Storage};
 use in_mem_core::types::{Key, RunId};
 use in_mem_core::value::Value;
@@ -145,6 +146,56 @@ pub struct CASOperation {
     pub expected_version: u64,
     /// New value to write if version matches
     pub new_value: Value,
+}
+
+// ============================================================================
+// JSON Transaction Types (M5 Epic 30)
+// ============================================================================
+
+/// Record of a JSON path read (for conflict detection)
+///
+/// Tracks which paths within JSON documents were read during a transaction.
+/// Used for fine-grained conflict detection at commit time.
+#[derive(Debug, Clone)]
+pub struct JsonPathRead {
+    /// Key of the JSON document
+    pub key: Key,
+    /// Path that was read
+    pub path: JsonPath,
+    /// Version of the document when read
+    pub version: u64,
+}
+
+impl JsonPathRead {
+    /// Create a new JSON path read record
+    pub fn new(key: Key, path: JsonPath, version: u64) -> Self {
+        Self { key, path, version }
+    }
+}
+
+/// Record of a JSON patch operation (for commit)
+///
+/// Stores a patch to be applied to a JSON document at commit time.
+/// Patches are applied in order to compute the final document state.
+#[derive(Debug, Clone)]
+pub struct JsonPatchEntry {
+    /// Key of the JSON document
+    pub key: Key,
+    /// Patch to apply
+    pub patch: JsonPatch,
+    /// Version the document will have after this patch
+    pub resulting_version: u64,
+}
+
+impl JsonPatchEntry {
+    /// Create a new JSON patch entry
+    pub fn new(key: Key, patch: JsonPatch, resulting_version: u64) -> Self {
+        Self {
+            key,
+            patch,
+            resulting_version,
+        }
+    }
 }
 
 /// Transaction context for OCC with snapshot isolation
@@ -3216,6 +3267,122 @@ mod tests {
             assert!(w1 >= 30 || w1 > w0, "write_set capacity should grow");
             assert!(d1 >= 10 || d1 > d0, "delete_set capacity should grow");
             assert!(c1 >= 5 || c1 > c0, "cas_set capacity should grow");
+        }
+    }
+
+    // ========================================================================
+    // JSON Transaction Types Tests (Story #282)
+    // ========================================================================
+
+    mod json_types_tests {
+        use super::*;
+        use in_mem_core::json::JsonPath;
+        use in_mem_core::types::{JsonDocId, Namespace};
+
+        fn create_json_key(run_id: RunId, doc_id: &JsonDocId) -> Key {
+            Key::new_json(Namespace::for_run(run_id), doc_id)
+        }
+
+        #[test]
+        fn test_json_path_read_creation() {
+            let run_id = RunId::new();
+            let doc_id = JsonDocId::new();
+            let key = create_json_key(run_id, &doc_id);
+            let path = "foo.bar".parse::<JsonPath>().unwrap();
+
+            let read = JsonPathRead::new(key.clone(), path.clone(), 5);
+
+            assert_eq!(read.key, key);
+            assert_eq!(read.path, path);
+            assert_eq!(read.version, 5);
+        }
+
+        #[test]
+        fn test_json_path_read_root() {
+            let run_id = RunId::new();
+            let doc_id = JsonDocId::new();
+            let key = create_json_key(run_id, &doc_id);
+            let path = JsonPath::root();
+
+            let read = JsonPathRead::new(key, path.clone(), 0);
+
+            assert_eq!(read.path, path);
+            assert_eq!(read.version, 0); // Version 0 = document doesn't exist
+        }
+
+        #[test]
+        fn test_json_path_read_nested_path() {
+            let run_id = RunId::new();
+            let doc_id = JsonDocId::new();
+            let key = create_json_key(run_id, &doc_id);
+            let path = "users[0].profile.name".parse::<JsonPath>().unwrap();
+
+            let read = JsonPathRead::new(key, path.clone(), 42);
+
+            assert_eq!(read.path, path);
+            assert_eq!(read.version, 42);
+        }
+
+        #[test]
+        fn test_json_patch_entry_creation() {
+            use in_mem_core::json::JsonValue;
+
+            let run_id = RunId::new();
+            let doc_id = JsonDocId::new();
+            let key = create_json_key(run_id, &doc_id);
+            let path = "count".parse::<JsonPath>().unwrap();
+            let patch = JsonPatch::set_at(path, JsonValue::from(42i64));
+
+            let entry = JsonPatchEntry::new(key.clone(), patch, 10);
+
+            assert_eq!(entry.key, key);
+            assert_eq!(entry.resulting_version, 10);
+        }
+
+        #[test]
+        fn test_json_patch_entry_delete() {
+            let run_id = RunId::new();
+            let doc_id = JsonDocId::new();
+            let key = create_json_key(run_id, &doc_id);
+            let path = "temp_field".parse::<JsonPath>().unwrap();
+            let patch = JsonPatch::delete_at(path);
+
+            let entry = JsonPatchEntry::new(key.clone(), patch, 5);
+
+            assert_eq!(entry.key, key);
+            assert_eq!(entry.resulting_version, 5);
+        }
+
+        #[test]
+        fn test_json_path_read_clone() {
+            let run_id = RunId::new();
+            let doc_id = JsonDocId::new();
+            let key = create_json_key(run_id, &doc_id);
+            let path = "data".parse::<JsonPath>().unwrap();
+
+            let read = JsonPathRead::new(key, path, 100);
+            let cloned = read.clone();
+
+            assert_eq!(read.key, cloned.key);
+            assert_eq!(read.path, cloned.path);
+            assert_eq!(read.version, cloned.version);
+        }
+
+        #[test]
+        fn test_json_patch_entry_clone() {
+            use in_mem_core::json::JsonValue;
+
+            let run_id = RunId::new();
+            let doc_id = JsonDocId::new();
+            let key = create_json_key(run_id, &doc_id);
+            let path = "value".parse::<JsonPath>().unwrap();
+            let patch = JsonPatch::set_at(path, JsonValue::from("test"));
+
+            let entry = JsonPatchEntry::new(key, patch, 1);
+            let cloned = entry.clone();
+
+            assert_eq!(entry.key, cloned.key);
+            assert_eq!(entry.resulting_version, cloned.resulting_version);
         }
     }
 }
