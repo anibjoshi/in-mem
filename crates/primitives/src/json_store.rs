@@ -34,7 +34,8 @@
 //! 6. JSON API feels like other primitives
 
 use in_mem_core::error::{Error, Result};
-use in_mem_core::json::JsonValue;
+use in_mem_core::json::{get_at_path, JsonPath, JsonValue};
+use in_mem_core::traits::SnapshotView;
 use in_mem_core::types::{JsonDocId, Key, Namespace, RunId};
 use in_mem_core::value::Value;
 use in_mem_engine::Database;
@@ -183,7 +184,6 @@ impl JsonStore {
     /// Deserialize document from storage
     ///
     /// Expects Value::Bytes containing MessagePack-encoded JsonDoc.
-    #[allow(dead_code)] // Will be used in Story #275+
     fn deserialize_doc(value: &Value) -> Result<JsonDoc> {
         match value {
             Value::Bytes(bytes) => {
@@ -236,6 +236,87 @@ impl JsonStore {
             txn.put(key.clone(), serialized)?;
             Ok(doc.version)
         })
+    }
+
+    // ========================================================================
+    // Fast Path Reads (Story #275)
+    // ========================================================================
+
+    /// Get value at path in a document (FAST PATH)
+    ///
+    /// Uses SnapshotView directly for read-only access.
+    /// Bypasses full transaction overhead:
+    /// - Direct snapshot read
+    /// - No transaction object allocation
+    /// - No read-set recording
+    /// - No commit validation
+    ///
+    /// # Arguments
+    ///
+    /// * `run_id` - RunId for namespace isolation
+    /// * `doc_id` - Document to read from
+    /// * `path` - Path within the document (use JsonPath::root() for whole doc)
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(value))` - Value at path
+    /// * `Ok(None)` - Document doesn't exist or path not found
+    /// * `Err` - On deserialization error
+    pub fn get(
+        &self,
+        run_id: &RunId,
+        doc_id: &JsonDocId,
+        path: &JsonPath,
+    ) -> Result<Option<JsonValue>> {
+        let snapshot = self.db.storage().create_snapshot();
+        let key = self.key_for(run_id, doc_id);
+
+        match snapshot.get(&key)? {
+            Some(vv) => {
+                let doc = Self::deserialize_doc(&vv.value)?;
+                Ok(get_at_path(&doc.value, path).cloned())
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Get the full document (FAST PATH)
+    ///
+    /// Returns the entire JsonDoc including metadata (version, timestamps).
+    pub fn get_doc(&self, run_id: &RunId, doc_id: &JsonDocId) -> Result<Option<JsonDoc>> {
+        let snapshot = self.db.storage().create_snapshot();
+        let key = self.key_for(run_id, doc_id);
+
+        match snapshot.get(&key)? {
+            Some(vv) => Ok(Some(Self::deserialize_doc(&vv.value)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Get document version (FAST PATH)
+    ///
+    /// Efficient way to check document version without full deserialization.
+    /// (In practice, we deserialize but could optimize later)
+    pub fn get_version(&self, run_id: &RunId, doc_id: &JsonDocId) -> Result<Option<u64>> {
+        let snapshot = self.db.storage().create_snapshot();
+        let key = self.key_for(run_id, doc_id);
+
+        match snapshot.get(&key)? {
+            Some(vv) => {
+                let doc = Self::deserialize_doc(&vv.value)?;
+                Ok(Some(doc.version))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Check if document exists (FAST PATH)
+    ///
+    /// Fastest way to check document existence.
+    pub fn exists(&self, run_id: &RunId, doc_id: &JsonDocId) -> Result<bool> {
+        let snapshot = self.db.storage().create_snapshot();
+        let key = self.key_for(run_id, doc_id);
+        Ok(snapshot.get(&key)?.is_some())
     }
 }
 
@@ -550,5 +631,217 @@ mod tests {
 
         let version = store.create(&run_id, &doc_id, JsonValue::array()).unwrap();
         assert_eq!(version, 1);
+    }
+
+    // ========================================
+    // Get Tests (Story #275)
+    // ========================================
+
+    #[test]
+    fn test_get_root() {
+        let db = Arc::new(Database::builder().in_memory().open_temp().unwrap());
+        let store = JsonStore::new(db);
+        let run_id = RunId::new();
+        let doc_id = JsonDocId::new();
+
+        store
+            .create(&run_id, &doc_id, JsonValue::from(42i64))
+            .unwrap();
+
+        let value = store.get(&run_id, &doc_id, &JsonPath::root()).unwrap();
+        assert_eq!(value.and_then(|v| v.as_i64()), Some(42));
+    }
+
+    #[test]
+    fn test_get_at_path() {
+        let db = Arc::new(Database::builder().in_memory().open_temp().unwrap());
+        let store = JsonStore::new(db);
+        let run_id = RunId::new();
+        let doc_id = JsonDocId::new();
+
+        let value: JsonValue = serde_json::json!({
+            "name": "Alice",
+            "age": 30
+        })
+        .into();
+
+        store.create(&run_id, &doc_id, value).unwrap();
+
+        let name = store
+            .get(&run_id, &doc_id, &"name".parse().unwrap())
+            .unwrap();
+        assert_eq!(
+            name.and_then(|v| v.as_str().map(String::from)),
+            Some("Alice".to_string())
+        );
+
+        let age = store
+            .get(&run_id, &doc_id, &"age".parse().unwrap())
+            .unwrap();
+        assert_eq!(age.and_then(|v| v.as_i64()), Some(30));
+    }
+
+    #[test]
+    fn test_get_nested_path() {
+        let db = Arc::new(Database::builder().in_memory().open_temp().unwrap());
+        let store = JsonStore::new(db);
+        let run_id = RunId::new();
+        let doc_id = JsonDocId::new();
+
+        let value: JsonValue = serde_json::json!({
+            "user": {
+                "profile": {
+                    "name": "Bob"
+                }
+            }
+        })
+        .into();
+
+        store.create(&run_id, &doc_id, value).unwrap();
+
+        let name = store
+            .get(&run_id, &doc_id, &"user.profile.name".parse().unwrap())
+            .unwrap();
+        assert_eq!(
+            name.and_then(|v| v.as_str().map(String::from)),
+            Some("Bob".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_array_element() {
+        let db = Arc::new(Database::builder().in_memory().open_temp().unwrap());
+        let store = JsonStore::new(db);
+        let run_id = RunId::new();
+        let doc_id = JsonDocId::new();
+
+        let value: JsonValue = serde_json::json!({
+            "items": ["a", "b", "c"]
+        })
+        .into();
+
+        store.create(&run_id, &doc_id, value).unwrap();
+
+        let item = store
+            .get(&run_id, &doc_id, &"items[1]".parse().unwrap())
+            .unwrap();
+        assert_eq!(
+            item.and_then(|v| v.as_str().map(String::from)),
+            Some("b".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_missing_document() {
+        let db = Arc::new(Database::builder().in_memory().open_temp().unwrap());
+        let store = JsonStore::new(db);
+        let run_id = RunId::new();
+        let doc_id = JsonDocId::new();
+
+        let result = store.get(&run_id, &doc_id, &JsonPath::root()).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_missing_path() {
+        let db = Arc::new(Database::builder().in_memory().open_temp().unwrap());
+        let store = JsonStore::new(db);
+        let run_id = RunId::new();
+        let doc_id = JsonDocId::new();
+
+        store.create(&run_id, &doc_id, JsonValue::object()).unwrap();
+
+        let result = store
+            .get(&run_id, &doc_id, &"nonexistent".parse().unwrap())
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_doc() {
+        let db = Arc::new(Database::builder().in_memory().open_temp().unwrap());
+        let store = JsonStore::new(db);
+        let run_id = RunId::new();
+        let doc_id = JsonDocId::new();
+
+        store
+            .create(&run_id, &doc_id, JsonValue::from(42i64))
+            .unwrap();
+
+        let doc = store.get_doc(&run_id, &doc_id).unwrap().unwrap();
+        assert_eq!(doc.id, doc_id);
+        assert_eq!(doc.version, 1);
+        assert_eq!(doc.value, JsonValue::from(42i64));
+    }
+
+    #[test]
+    fn test_get_doc_missing() {
+        let db = Arc::new(Database::builder().in_memory().open_temp().unwrap());
+        let store = JsonStore::new(db);
+        let run_id = RunId::new();
+        let doc_id = JsonDocId::new();
+
+        let result = store.get_doc(&run_id, &doc_id).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_version() {
+        let db = Arc::new(Database::builder().in_memory().open_temp().unwrap());
+        let store = JsonStore::new(db);
+        let run_id = RunId::new();
+        let doc_id = JsonDocId::new();
+
+        store
+            .create(&run_id, &doc_id, JsonValue::from(42i64))
+            .unwrap();
+
+        let version = store.get_version(&run_id, &doc_id).unwrap();
+        assert_eq!(version, Some(1));
+    }
+
+    #[test]
+    fn test_get_version_missing() {
+        let db = Arc::new(Database::builder().in_memory().open_temp().unwrap());
+        let store = JsonStore::new(db);
+        let run_id = RunId::new();
+        let doc_id = JsonDocId::new();
+
+        let version = store.get_version(&run_id, &doc_id).unwrap();
+        assert!(version.is_none());
+    }
+
+    #[test]
+    fn test_exists() {
+        let db = Arc::new(Database::builder().in_memory().open_temp().unwrap());
+        let store = JsonStore::new(db);
+        let run_id = RunId::new();
+        let doc_id = JsonDocId::new();
+
+        assert!(!store.exists(&run_id, &doc_id).unwrap());
+
+        store
+            .create(&run_id, &doc_id, JsonValue::from(42i64))
+            .unwrap();
+
+        assert!(store.exists(&run_id, &doc_id).unwrap());
+    }
+
+    #[test]
+    fn test_exists_run_isolation() {
+        let db = Arc::new(Database::builder().in_memory().open_temp().unwrap());
+        let store = JsonStore::new(db);
+
+        let run1 = RunId::new();
+        let run2 = RunId::new();
+        let doc_id = JsonDocId::new();
+
+        store
+            .create(&run1, &doc_id, JsonValue::from(42i64))
+            .unwrap();
+
+        // Document exists in run1 but not in run2
+        assert!(store.exists(&run1, &doc_id).unwrap());
+        assert!(!store.exists(&run2, &doc_id).unwrap());
     }
 }
