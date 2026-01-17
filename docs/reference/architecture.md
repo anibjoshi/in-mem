@@ -2,7 +2,7 @@
 
 Learn how **in-mem** works internally and why it's designed the way it is.
 
-**Current Version**: 0.3.0 (M3 Primitives + M4 Performance)
+**Current Version**: 0.5.0 (M5 JSON + M6 Retrieval)
 
 ## Design Philosophy
 
@@ -18,7 +18,12 @@ Learn how **in-mem** works internally and why it's designed the way it is.
 └───────────────────────────┬─────────────────────────────┘
                             │
 ┌───────────────────────────▼─────────────────────────────┐
-│  Primitives (KV, EventLog, StateCell, Trace, RunIndex)  │  ← Stateless facades
+│  Primitives (KV, EventLog, StateCell, Trace, RunIndex,  │  ← Stateless facades
+│              JsonStore)                                 │
+└───────────────────────────┬─────────────────────────────┘
+                            │
+┌───────────────────────────▼─────────────────────────────┐
+│  Search Layer (HybridSearch, BM25, InvertedIndex, RRF)  │  ← Retrieval surfaces
 └───────────────────────────┬─────────────────────────────┘
                             │
 ┌───────────────────────────▼─────────────────────────────┐
@@ -94,13 +99,21 @@ write → log to WAL → fsync → apply to storage → return
 
 ## Primitives Architecture
 
-All primitives are stateless facades:
+All six primitives are stateless facades:
 
 ```rust
 pub struct Primitive {
     db: Arc<Database>
 }
 ```
+
+**Six Primitives**:
+- **KVStore**: Key-value storage with batch operations
+- **EventLog**: Append-only log with hash chaining
+- **StateCell**: Named cells with CAS operations
+- **TraceStore**: Hierarchical trace recording
+- **RunIndex**: Run lifecycle management
+- **JsonStore** (M5): JSON documents with path mutations
 
 ### Fast Path vs Transaction Path
 
@@ -113,6 +126,40 @@ pub struct Primitive {
 - Full OCC with conflict detection
 - WAL persistence (based on durability mode)
 
+## Search Architecture (M6)
+
+### Hybrid Search
+
+**in-mem** provides unified search across all primitives:
+
+```
+SearchRequest → HybridSearch → [BM25 + Semantic] → RRF Fusion → SearchResponse
+```
+
+### Components
+
+**BM25Lite**: Lightweight keyword scoring
+- Tokenization with lowercase normalization
+- TF-IDF weighting with BM25 formula
+- Title boost for structured documents
+
+**InvertedIndex**: Optional full-text index
+- Disabled by default (opt-in)
+- Tracks document frequency and term positions
+- Version-based cache invalidation
+
+**RRF Fusion**: Reciprocal Rank Fusion
+- Combines keyword and semantic scores
+- Default k=60 for rank normalization
+- Preserves relative ordering from both sources
+
+### Budget Semantics
+
+Search operations respect time budgets:
+- `budget_ms`: Maximum search time
+- Graceful degradation on timeout
+- Partial results returned with budget metadata
+
 ## Performance Characteristics
 
 | Metric | Target |
@@ -123,6 +170,8 @@ pub struct Primitive {
 | Buffered throughput | 50K ops/sec |
 | Fast path read | <10µs |
 | Disjoint scaling (4 threads) | ≥3.2× |
+| Search (no index) | O(n) scan |
+| Search (with index) | O(log n) lookup |
 
 ## See Also
 

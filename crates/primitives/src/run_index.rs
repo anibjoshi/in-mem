@@ -772,6 +772,124 @@ impl RunIndex {
             Ok(meta)
         })
     }
+
+    // ========== Search API (M6) ==========
+
+    /// Search runs
+    ///
+    /// Searches run ID, status, and metadata. Respects budget constraints.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use in_mem_core::SearchRequest;
+    ///
+    /// let response = run_index.search(&SearchRequest::new(run_id, "active"))?;
+    /// for hit in response.hits {
+    ///     println!("Found run {:?} with score {}", hit.doc_ref, hit.score);
+    /// }
+    /// ```
+    pub fn search(
+        &self,
+        req: &in_mem_core::SearchRequest,
+    ) -> in_mem_core::error::Result<in_mem_core::SearchResponse> {
+        use crate::searchable::{build_search_response, SearchCandidate};
+        use in_mem_core::search_types::DocRef;
+        use in_mem_core::traits::SnapshotView;
+        use std::time::Instant;
+
+        let start = Instant::now();
+        let snapshot = self.db.storage().create_snapshot();
+        let prefix = Key::new_run_with_id(global_namespace(), "");
+
+        let mut candidates = Vec::new();
+        let mut truncated = false;
+
+        // Scan all runs
+        for (key, versioned_value) in snapshot.scan_prefix(&prefix)? {
+            // Filter out index keys
+            let key_str = String::from_utf8(key.user_key.clone()).unwrap_or_default();
+            if key_str.contains("__idx_") {
+                continue;
+            }
+
+            // Check budget constraints
+            if start.elapsed().as_micros() as u64 >= req.budget.max_wall_time_micros {
+                truncated = true;
+                break;
+            }
+            if candidates.len() >= req.budget.max_candidates_per_primitive {
+                truncated = true;
+                break;
+            }
+
+            // Deserialize run metadata
+            let meta: RunMetadata = match from_stored_value(&versioned_value.value) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+
+            // Time range filter
+            if let Some((start_ts, end_ts)) = req.time_range {
+                if meta.created_at < start_ts as i64 || meta.created_at > end_ts as i64 {
+                    continue;
+                }
+            }
+
+            // Extract searchable text
+            let text = self.extract_run_text(&meta);
+
+            candidates.push(SearchCandidate::new(
+                DocRef::Run {
+                    run_id: in_mem_core::types::RunId::from_string(&meta.run_id)
+                        .unwrap_or_else(|| in_mem_core::types::RunId::new()),
+                },
+                text,
+                Some(meta.created_at as u64),
+            ));
+        }
+
+        Ok(build_search_response(
+            candidates,
+            &req.query,
+            req.k,
+            truncated,
+            start.elapsed().as_micros() as u64,
+        ))
+    }
+
+    /// Extract searchable text from a run
+    fn extract_run_text(&self, meta: &RunMetadata) -> String {
+        let status_str = match meta.status {
+            RunStatus::Active => "active",
+            RunStatus::Completed => "completed",
+            RunStatus::Failed => "failed",
+            RunStatus::Cancelled => "cancelled",
+            RunStatus::Paused => "paused",
+            RunStatus::Archived => "archived",
+        };
+        let mut parts = vec![meta.run_id.clone(), status_str.to_string()];
+        parts.extend(meta.tags.clone());
+        if let Ok(s) = serde_json::to_string(&meta.metadata) {
+            parts.push(s);
+        }
+        parts.join(" ")
+    }
+}
+
+// ========== Searchable Trait Implementation (M6) ==========
+
+impl crate::searchable::Searchable for RunIndex {
+    fn search(
+        &self,
+        req: &in_mem_core::SearchRequest,
+    ) -> in_mem_core::error::Result<in_mem_core::SearchResponse> {
+        self.search(req)
+    }
+
+    fn primitive_kind(&self) -> in_mem_core::search_types::PrimitiveKind {
+        in_mem_core::search_types::PrimitiveKind::Run
+    }
 }
 
 // ========== Tests ==========

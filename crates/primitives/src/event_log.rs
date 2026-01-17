@@ -497,6 +497,119 @@ impl EventLog {
             Ok(types.into_iter().collect())
         })
     }
+
+    // ========== Search API (M6) ==========
+
+    /// Search events
+    ///
+    /// Searches event type and payload. Respects budget constraints.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use in_mem_core::SearchRequest;
+    ///
+    /// let response = log.search(&SearchRequest::new(run_id, "error"))?;
+    /// for hit in response.hits {
+    ///     println!("Found event {:?} with score {}", hit.doc_ref, hit.score);
+    /// }
+    /// ```
+    pub fn search(
+        &self,
+        req: &in_mem_core::SearchRequest,
+    ) -> in_mem_core::error::Result<in_mem_core::SearchResponse> {
+        use crate::searchable::{build_search_response, SearchCandidate};
+        use in_mem_core::search_types::DocRef;
+        use in_mem_core::traits::SnapshotView;
+        use std::time::Instant;
+
+        let start = Instant::now();
+        let snapshot = self.db.storage().create_snapshot();
+        let ns = self.namespace_for_run(&req.run_id);
+
+        // Get metadata to know how many events exist
+        let meta_key = Key::new_event_meta(ns.clone());
+        let meta: EventLogMeta = match snapshot.get(&meta_key)? {
+            Some(vv) => from_stored_value(&vv.value).unwrap_or_default(),
+            None => return Ok(in_mem_core::SearchResponse::empty()),
+        };
+
+        let mut candidates = Vec::new();
+        let mut truncated = false;
+
+        // Scan all events
+        for seq in 0..meta.next_sequence {
+            // Check budget constraints
+            if start.elapsed().as_micros() as u64 >= req.budget.max_wall_time_micros {
+                truncated = true;
+                break;
+            }
+            if candidates.len() >= req.budget.max_candidates_per_primitive {
+                truncated = true;
+                break;
+            }
+
+            let event_key = Key::new_event(ns.clone(), seq);
+            if let Some(vv) = snapshot.get(&event_key)? {
+                let event: Event = match from_stored_value(&vv.value) {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+
+                // Time range filter
+                if let Some((start_ts, end_ts)) = req.time_range {
+                    let ts = event.timestamp as u64;
+                    if ts < start_ts || ts > end_ts {
+                        continue;
+                    }
+                }
+
+                // Extract searchable text: event type + payload
+                let text = self.extract_event_text(&event);
+
+                candidates.push(SearchCandidate::new(
+                    DocRef::Event {
+                        log_key: event_key,
+                        seq,
+                    },
+                    text,
+                    Some(event.timestamp as u64),
+                ));
+            }
+        }
+
+        Ok(build_search_response(
+            candidates,
+            &req.query,
+            req.k,
+            truncated,
+            start.elapsed().as_micros() as u64,
+        ))
+    }
+
+    /// Extract searchable text from an event
+    fn extract_event_text(&self, event: &Event) -> String {
+        let mut parts = vec![event.event_type.clone()];
+        if let Ok(s) = serde_json::to_string(&event.payload) {
+            parts.push(s);
+        }
+        parts.join(" ")
+    }
+}
+
+// ========== Searchable Trait Implementation (M6) ==========
+
+impl crate::searchable::Searchable for EventLog {
+    fn search(
+        &self,
+        req: &in_mem_core::SearchRequest,
+    ) -> in_mem_core::error::Result<in_mem_core::SearchResponse> {
+        self.search(req)
+    }
+
+    fn primitive_kind(&self) -> in_mem_core::search_types::PrimitiveKind {
+        in_mem_core::search_types::PrimitiveKind::Event
+    }
 }
 
 // ========== EventLogExt Implementation (Story #179) ==========

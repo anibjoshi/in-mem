@@ -2,7 +2,7 @@
 
 **in-mem** - a fast, durable, embedded database for AI agent workloads.
 
-**Current Version**: 0.3.0 (M3 Primitives + M4 Performance)
+**Current Version**: 0.5.0 (M5 JSON + M6 Retrieval)
 
 ## Quick Links
 
@@ -13,7 +13,8 @@
 
 ## Features
 
-- **Five Primitives**: KVStore, EventLog, StateCell, TraceStore, RunIndex
+- **Six Primitives**: KVStore, EventLog, StateCell, TraceStore, RunIndex, JsonStore
+- **Hybrid Search**: BM25 + semantic search with RRF fusion
 - **Three Durability Modes**: InMemory (<3µs), Buffered (<30µs), Strict (~2ms)
 - **OCC Transactions**: Optimistic concurrency with snapshot isolation
 - **Run-Scoped Operations**: Every operation tagged with RunId for replay
@@ -26,7 +27,9 @@
 | M2 Transactions | ✅ |
 | M3 Primitives | ✅ |
 | M4 Performance | ✅ |
-| M5 JSON | Next |
+| M5 JSON | ✅ |
+| M6 Retrieval | ✅ |
+| M7 MCP | Next |
 
 ## Quick Start
 
@@ -58,5 +61,5 @@ db.end_run(run_id)?;
 
 ---
 
-**Version**: 0.3.0
-**Last Updated**: 2026-01-16
+**Version**: 0.5.0
+**Last Updated**: 2026-01-17
