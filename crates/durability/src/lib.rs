@@ -21,6 +21,7 @@
 // Module declarations
 pub mod encoding; // Story #18: Entry encoding/decoding with CRC
 pub mod m7_recovery; // M7 Story #298-304: Crash Recovery
+pub mod m7_transaction; // M7 Story #317: Cross-Primitive Transaction Grouping
 pub mod m7_wal_manager; // M7 Story #363: WAL Truncation
 pub mod m7_wal_reader; // M7 Story #364: WAL Corruption Detection
 pub mod m7_wal_types; // M7 Story #360: WAL Entry Envelope with CRC32
@@ -52,5 +53,6 @@ pub use snapshot_types::{
     now_micros, primitive_ids, PrimitiveSection, SnapshotEnvelope, SnapshotError, SnapshotHeader,
     SnapshotInfo, SNAPSHOT_HEADER_SIZE, SNAPSHOT_MAGIC, SNAPSHOT_VERSION_1,
 };
+pub use m7_transaction::{Transaction, TxEntry};
 pub use wal::{DurabilityMode, WALEntry as LegacyWALEntry, WAL};
 pub use wal_entry_types::{PrimitiveKind, WalEntryType, WalEntryTypeError};
