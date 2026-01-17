@@ -223,10 +223,12 @@
 
 ---
 
-## Milestone 7: Durability & Snapshots
-**Goal**: Production-ready persistence with snapshots and recovery
+## Milestone 7: Durability, Snapshots, Replay & Storage Stabilization
+**Goal**: Production-ready persistence with snapshots, replay, and stabilized storage engine
 
-**Deliverable**: Database survives crashes and restarts correctly with efficient snapshot-based recovery
+**Deliverable**: Database survives crashes, restarts correctly, replays runs deterministically, and has a stable storage foundation
+
+**Philosophy**: M7 consolidates all durability concerns into one milestone. Snapshots enable efficient recovery, replay enables debugging and time-travel, and storage stabilization ensures a solid foundation for future primitives (Vector in M8).
 
 **Success Criteria**:
 
@@ -241,79 +243,250 @@
 - [ ] Durability modes from M4 integrate with snapshot system
 - [ ] Bounded recovery time (proportional to WAL size since last snapshot)
 
-### Gate 3: JSON Recovery
+### Gate 3: JSON & Cross-Primitive Recovery
 - [ ] JSON documents recovered correctly from WAL
 - [ ] JSON patches replayed in order
 - [ ] Cross-primitive transactions recover atomically
 
-**Risk**: Data loss bugs. Must test recovery thoroughly.
-
----
-
-## Milestone 8: Replay & Polish
-**Goal**: Deterministic replay and production readiness
-
-**Deliverable**: Production-ready MVP with replay
-
-**Success Criteria**:
+### Gate 4: Deterministic Replay
 - [ ] replay_run(run_id) reconstructs database state
 - [ ] Run Index enables O(run size) replay (not O(WAL size))
 - [ ] diff_runs(run_a, run_b) compares two runs
-- [ ] Example agent application works end-to-end
-- [ ] Benchmarks show >250K ops/sec (InMemory), >10K ops/sec (Buffered)
-- [ ] Integration test coverage >90%
-- [ ] Documentation: README, API docs, examples
 - [ ] Run lifecycle (begin_run, end_run) fully working
 
-**Risk**: Replay correctness. Must validate determinism.
+### Gate 5: Storage Stabilization
+- [ ] Storage engine API frozen for M8+ primitives
+- [ ] Clear extension points for new primitive types
+- [ ] Performance benchmarks documented as baseline
+
+**Risk**: Data loss bugs. Must test recovery thoroughly. Replay determinism is subtle.
 
 ---
 
-## Post-MVP Milestones (Future)
+## Milestone 8: Vector Primitive
+**Goal**: Native vector primitive for semantic search and AI agent memory
 
-### Milestone 9: Vector Store
-- Implement vector primitive with HNSW index
-- Semantic search with metadata filters
-- Integration with KV/Event/Trace/JSON primitives
-- Plugs into M6 retrieval surface for hybrid search
+**Deliverable**: VectorStore primitive with similarity search, integrated into transaction system and M6 retrieval surface
 
-### Milestone 10: Network Layer
-- RPC server (gRPC or similar)
-- Client libraries (Rust, Python)
-- Multi-client support
+**Philosophy**: Vector is not a standalone database feature. It's a **composite primitive** built on KV, enabling semantic search alongside keyword search. KV + JSON + Vector covers 99% of AI agent database needs.
 
-### Milestone 11: MCP Integration
-- MCP server implementation
-- Tool definitions for agent access
-- IDE integration demos
+**Success Criteria**:
 
-### Milestone 12: Advanced Features
-- Query DSL for complex filters
-- Run forking and lineage tracking
-- Incremental snapshots
-- Advanced sharding strategies
+### Gate 1: Core Semantics
+- [ ] VectorStore::insert(key, embedding, metadata) works
+- [ ] VectorStore::search(query_vector, k) returns top-k results
+- [ ] VectorStore::delete(key) works
+- [ ] VectorStore::get(key) retrieves embedding + metadata
 
-### Milestone 13: JSON Optimization (Structural Storage)
+### Gate 2: Similarity Search
+- [ ] Cosine similarity scoring
+- [ ] Metadata filtering (pre-filter or post-filter)
+- [ ] Configurable distance metrics (cosine, euclidean, dot product)
+
+### Gate 3: Index Support
+- [ ] Brute-force search for small datasets
+- [ ] HNSW index for larger datasets (optional, can be deferred to M9)
+- [ ] Index persistence and recovery
+
+### Gate 4: M6 Integration
+- [ ] `vector.search(&SearchRequest)` returns `SearchResponse`
+- [ ] Hybrid search: keyword (BM25) + semantic (vector) fusion
+- [ ] RRF fusion works across keyword and vector results
+
+### Gate 5: Transaction Integration
+- [ ] Vector operations participate in transactions
+- [ ] Snapshot-consistent vector search
+- [ ] Cross-primitive atomicity (KV + Vector in same transaction)
+
+**Risk**: HNSW complexity. Start with brute-force, add HNSW when needed.
+
+---
+
+## Milestone 9: Performance & Indexing
+**Goal**: Optimize hot paths and add secondary indexing capabilities
+
+**Deliverable**: Faster queries, better scaling, and indexing infrastructure for all primitives
+
+**Philosophy**: M9 is the "make it fast" milestone. By now we have real workloads from M7/M8. Optimize based on data, not speculation. HNSW refinement belongs here if not completed in M8.
+
+**Success Criteria**:
+
+### Gate 1: Query Optimization
+- [ ] Profile and optimize hot paths identified in M7/M8
+- [ ] Index-accelerated lookups where beneficial
+- [ ] Query planning for complex searches
+
+### Gate 2: Secondary Indexes
+- [ ] Secondary index infrastructure (B-tree or similar)
+- [ ] Index on JSON paths
+- [ ] Index on metadata fields
+
+### Gate 3: HNSW Refinement (if deferred from M8)
+- [ ] HNSW parameter tuning
+- [ ] Incremental index updates
+- [ ] Index compaction
+
+### Gate 4: Scaling
+- [ ] Multi-threaded index builds
+- [ ] Parallel query execution
+- [ ] Memory usage optimization
+
+**Risk**: Premature optimization. Only optimize what benchmarks show matters.
+
+---
+
+## Milestone 10: Python Client
+**Goal**: First-class Python client for AI agent developers
+
+**Deliverable**: Python SDK with ergonomic API, async support, and comprehensive documentation
+
+**Philosophy**: Python dominates AI/ML tooling. A clean Python client unlocks the majority of agent developers. This is the MVP client library.
+
+**Success Criteria**:
+
+### Gate 1: Core Client
+- [ ] Python package installable via pip
+- [ ] Connection management and configuration
+- [ ] All primitive operations exposed (KV, JSON, Event, State, Trace, Run, Vector)
+
+### Gate 2: Ergonomic API
+- [ ] Pythonic API design (context managers, iterators, type hints)
+- [ ] Async support (asyncio)
+- [ ] Error handling with clear exception hierarchy
+
+### Gate 3: Search Integration
+- [ ] Search API with query builders
+- [ ] Hybrid search (keyword + vector) support
+- [ ] Pagination and streaming results
+
+### Gate 4: Documentation & Examples
+- [ ] API documentation
+- [ ] Example agent applications
+- [ ] Jupyter notebook tutorials
+
+**Risk**: API design can bike-shed. Ship MVP, iterate based on feedback.
+
+---
+
+## Milestone 11: Security & Multi-Tenancy
+**Goal**: Production security features and tenant isolation
+
+**Deliverable**: Authentication, authorization, and multi-tenant support
+
+**Philosophy**: Security is table stakes for production. Multi-tenancy enables SaaS deployment. These features shouldn't slow core development but are essential before production.
+
+**Success Criteria**:
+
+### Gate 1: Authentication
+- [ ] API key authentication
+- [ ] Token-based auth (JWT or similar)
+- [ ] Connection-level authentication
+
+### Gate 2: Authorization
+- [ ] Role-based access control (RBAC)
+- [ ] Primitive-level permissions
+- [ ] Run-level access control
+
+### Gate 3: Multi-Tenancy
+- [ ] Tenant isolation (data separation)
+- [ ] Per-tenant resource limits
+- [ ] Tenant-aware routing
+
+### Gate 4: Security Hardening
+- [ ] Encryption at rest (optional)
+- [ ] Audit logging
+- [ ] Security review and penetration testing
+
+**Risk**: Security features can expand infinitely. Scope to essential production needs.
+
+---
+
+## Milestone 12: Production Readiness
+**Goal**: Operational excellence for production deployment
+
+**Deliverable**: Observable, maintainable, deployable system
+
+**Philosophy**: M12 is the capstone milestone. Everything needed to run in production with confidence: monitoring, deployment, documentation.
+
+**Success Criteria**:
+
+### Gate 1: Observability
+- [ ] Metrics export (Prometheus/OpenTelemetry)
+- [ ] Structured logging
+- [ ] Distributed tracing integration
+- [ ] Health checks and readiness probes
+
+### Gate 2: Operations
+- [ ] Graceful shutdown and startup
+- [ ] Configuration management
+- [ ] Backup and restore procedures
+- [ ] Upgrade/migration tooling
+
+### Gate 3: Deployment
+- [ ] Docker image
+- [ ] Kubernetes manifests / Helm chart
+- [ ] Cloud deployment guides (AWS, GCP, Azure)
+
+### Gate 4: Documentation
+- [ ] Operations runbook
+- [ ] Architecture documentation
+- [ ] API reference (complete)
+- [ ] Performance tuning guide
+
+### Gate 5: Quality
+- [ ] Integration test coverage >90%
+- [ ] Load testing and benchmarks
+- [ ] Chaos engineering tests
+- [ ] Example agent application works end-to-end
+
+**Risk**: Scope creep. Define "production ready" clearly and stick to it.
+
+---
+
+## Post-MVP Enhancements (Future)
+
+### JSON Optimization (Structural Storage)
 - Per-node versioning / subtree MVCC
 - Structural sharing for efficient snapshots
 - Array insert/remove with stable identities
 - Diff operations
 
-### Milestone 14: Performance Phase 2 (Redis Parity)
+### Advanced Search
+- Enhanced hybrid search algorithms
+- Learning-to-rank integration
+- Query expansion and synonyms
+
+### MCP Integration
+- MCP server implementation
+- Tool definitions for agent access
+- IDE integration demos
+
+### Network Layer Enhancements
+- gRPC server
+- Additional client libraries (TypeScript, Go)
+- Connection pooling and load balancing
+
+### Performance Phase 2 (Redis Parity)
 - Arena allocators and memory management
 - Cache-line alignment and SoA transforms
 - Lock-free reads (epoch-based/RCU)
 - Prefetching and branch optimization
 - Target: Millions ops/sec (Redis internal loop parity)
 
+### Advanced Features
+- Query DSL for complex filters
+- Run forking and lineage tracking
+- Incremental snapshots
+- Distributed mode (far future)
+
 ---
 
 ## MVP Definition
 
-**MVP = Milestones 1-8 Complete**
+**MVP = Milestones 1-12 Complete**
 
 At MVP completion, the system should:
-1. Store agent state in 6 primitives (KV, Events, StateCell, Trace, RunIndex, **JSON**)
+1. Store agent state in 7 primitives (KV, Events, StateCell, Trace, RunIndex, JSON, **Vector**)
 2. Support concurrent transactions with OCC
 3. **Achieve Redis-competitive performance in InMemory mode (250K+ ops/sec)**
 4. Persist data with WAL and snapshots
@@ -324,14 +497,16 @@ At MVP completion, the system should:
 9. Have >90% test coverage
 10. **JSON primitive with path-level mutations and region-based conflict detection**
 11. **Retrieval surface with primitive-native search and composite hybrid search**
+12. **Vector primitive with semantic search and hybrid retrieval (keyword + vector)**
+13. **Python client library for AI agent developers**
+14. **Security: authentication, authorization, multi-tenancy**
+15. **Production-ready: observability, deployment, documentation**
 
 **Not in MVP**:
-- Vector store (Milestone 9)
-- Network layer (Milestone 10)
-- MCP server (Milestone 11)
-- Query DSL (Milestone 12)
-- JSON structural optimization (Milestone 13)
-- Redis internal loop parity (Milestone 14)
+- JSON structural optimization (post-MVP enhancement)
+- Redis internal loop parity (post-MVP enhancement)
+- MCP server (post-MVP enhancement)
+- Additional client libraries beyond Python (post-MVP enhancement)
 - Distributed mode (far future)
 
 ---
@@ -348,10 +523,14 @@ Completed:
 - M6 (Retrieval Surfaces) ✅
 
 Current:
-- M7 (Durability & Snapshots) ← YOU ARE HERE
+- M7 (Durability, Snapshots, Replay & Storage) ← YOU ARE HERE
 
 Remaining:
-- M8 (Replay & Polish)
+- M8 (Vector Primitive)
+- M9 (Performance & Indexing)
+- M10 (Python Client)
+- M11 (Security & Multi-Tenancy)
+- M12 (Production Readiness)
 ```
 
 ---
@@ -371,16 +550,27 @@ M5 (JSON Primitive) ✅
   ↓
 M6 (Retrieval Surfaces) ✅
   ↓
-M7 (Durability & Snapshots) ← Current
+M7 (Durability, Snapshots, Replay) ← Current
   ↓
-M8 (Replay & Polish)
+M8 (Vector Primitive)
+  ↓
+M9 (Performance & Indexing)
+  ↓
+M10 (Python Client)
+  ↓
+M11 (Security & Multi-Tenancy)
+  ↓
+M12 (Production Readiness)
 ```
 
 **Notes**:
-- M4 introduced durability *modes* (InMemory/Buffered/Strict). M7 adds durability *infrastructure* (snapshots, WAL rotation).
-- M5 locked in JSON mutation semantics. JSON optimization (structural storage, per-node versioning) is M13.
-- M6 adds retrieval surface that M9 (Vector Store) will plug into for hybrid search.
-- M7 must handle JSON recovery in addition to original primitives.
+- M4 introduced durability *modes* (InMemory/Buffered/Strict). M7 adds durability *infrastructure* (snapshots, replay, WAL rotation).
+- M5 locked in JSON mutation semantics. JSON optimization (structural storage, per-node versioning) is post-MVP.
+- M6 adds retrieval surface that M8 (Vector Primitive) will plug into for hybrid search.
+- M7 consolidates all durability concerns: snapshots, replay, storage stabilization.
+- M8 Vector is a composite primitive on KV - enables semantic search alongside keyword search.
+- M9 optimizes based on real workloads from M7/M8. HNSW refinement if needed.
+- M10 Python client is the MVP client library - TypeScript/Go are post-MVP.
 
 ---
 
@@ -389,8 +579,8 @@ M8 (Replay & Polish)
 ### High-Risk Areas
 1. **Concurrency (M2)**: OCC bugs are subtle ✅ Mitigated
    - Mitigation: Extensive multi-threaded tests completed
-2. **Recovery (M7)**: Data loss is unacceptable
-   - Mitigation: Crash simulation tests, fuzzing WAL corruption
+2. **Recovery & Replay (M7)**: Data loss is unacceptable, determinism is hard
+   - Mitigation: Crash simulation tests, fuzzing WAL corruption, property-based replay tests
 3. **Layer boundaries (M3)**: Primitives leaking into each other ✅ Mitigated
    - Mitigation: Mock tests, strict dependency rules enforced
 4. **Performance unbounded (M4)**: Optimization work can expand infinitely ✅ Mitigated
@@ -401,15 +591,19 @@ M8 (Replay & Polish)
    - Mitigation: DashMap + HashMap architecture delivered; benchmarks validated
 2. **JSON semantic complexity (M5)**: Mutation semantics can drift ✅ Mitigated
    - Mitigation: Six architectural rules enforced; semantics frozen before optimization
-3. **Retrieval scope creep (M6)**: Risk of building full search engine
+3. **Retrieval scope creep (M6)**: Risk of building full search engine ✅ Mitigated
    - Mitigation: Six architectural rules; M6 validates surface only, not relevance
-4. **Replay correctness (M8)**: Determinism is hard
-   - Mitigation: Property-based tests, replay verification
+4. **Vector complexity (M8)**: HNSW can be complex
+   - Mitigation: Start with brute-force, add HNSW when needed; defer refinement to M9
+5. **Security scope creep (M11)**: Security features can expand infinitely
+   - Mitigation: Scope to essential production needs; iterate post-MVP
 
 ### Low-Risk Areas
 1. **Foundation (M1)**: Well-understood patterns ✅ Complete
 2. **API design (M3)**: Can iterate post-MVP ✅ Complete
 3. **JSON API (M5)**: Follows established primitive patterns ✅ Complete
+4. **Python client (M10)**: Well-understood; main risk is API bike-shedding
+5. **Production readiness (M12)**: Standard practices; just needs execution
 
 ---
 
@@ -438,3 +632,4 @@ M8 (Replay & Polish)
 | 3.0 | 2026-01-16 | M4 complete; M5 JSON Primitive complete; MVP now 7 milestones (M1-M7) |
 | 4.0 | 2026-01-16 | Inserted M6 Retrieval Surfaces; Durability→M7, Replay→M8; MVP now 8 milestones (M1-M8) |
 | 5.0 | 2026-01-17 | M6 Retrieval Surfaces complete; 125 tests passing (6 stress tests ignored) |
+| 6.0 | 2026-01-17 | Major roadmap restructure: M7 consolidates durability+snapshots+replay; M8=Vector; M9=Performance; M10=Python; M11=Security; M12=Production. MVP now 12 milestones (M1-M12). Post-MVP becomes enhancements. |
