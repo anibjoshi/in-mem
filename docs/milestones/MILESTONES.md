@@ -223,43 +223,47 @@
 
 ---
 
-## Milestone 7: Durability, Snapshots, Replay & Storage Stabilization
+## Milestone 7: Durability, Snapshots, Replay & Storage Stabilization ✅
 **Goal**: Production-ready persistence with snapshots, replay, and stabilized storage engine
 
 **Deliverable**: Database survives crashes, restarts correctly, replays runs deterministically, and has a stable storage foundation
+
+**Status**: Complete
 
 **Philosophy**: M7 consolidates all durability concerns into one milestone. Snapshots enable efficient recovery, replay enables debugging and time-travel, and storage stabilization ensures a solid foundation for future primitives (Vector in M8).
 
 **Success Criteria**:
 
 ### Gate 1: Snapshot System
-- [ ] Periodic snapshots (time-based and size-based)
-- [ ] Snapshot metadata includes version and WAL offset
-- [ ] WAL truncation after snapshot
-- [ ] Full recovery: load snapshot + replay WAL
+- [x] Periodic snapshots (time-based and size-based)
+- [x] Snapshot metadata includes version and WAL offset
+- [x] WAL truncation after snapshot
+- [x] Full recovery: load snapshot + replay WAL
 
 ### Gate 2: Crash Recovery
-- [ ] Crash simulation tests pass
-- [ ] Durability modes from M4 integrate with snapshot system
-- [ ] Bounded recovery time (proportional to WAL size since last snapshot)
+- [x] Crash simulation tests pass
+- [x] Durability modes from M4 integrate with snapshot system
+- [x] Bounded recovery time (proportional to WAL size since last snapshot)
 
 ### Gate 3: JSON & Cross-Primitive Recovery
-- [ ] JSON documents recovered correctly from WAL
-- [ ] JSON patches replayed in order
-- [ ] Cross-primitive transactions recover atomically
+- [x] JSON documents recovered correctly from WAL
+- [x] JSON patches replayed in order
+- [x] Cross-primitive transactions recover atomically
 
 ### Gate 4: Deterministic Replay
-- [ ] replay_run(run_id) reconstructs database state
-- [ ] Run Index enables O(run size) replay (not O(WAL size))
-- [ ] diff_runs(run_a, run_b) compares two runs
-- [ ] Run lifecycle (begin_run, end_run) fully working
+- [x] replay_run(run_id) reconstructs database state
+- [x] Run Index enables O(run size) replay (not O(WAL size))
+- [x] diff_runs(run_a, run_b) compares two runs
+- [x] Run lifecycle (begin_run, end_run) fully working
 
 ### Gate 5: Storage Stabilization
-- [ ] Storage engine API frozen for M8+ primitives
-- [ ] Clear extension points for new primitive types
-- [ ] Performance benchmarks documented as baseline
+- [x] Storage engine API frozen for M8+ primitives
+- [x] Clear extension points for new primitive types
+- [x] Performance benchmarks documented as baseline
 
-**Risk**: Data loss bugs. Must test recovery thoroughly. Replay determinism is subtle.
+**Risk**: Data loss bugs. Must test recovery thoroughly. Replay determinism is subtle. ✅ Mitigated
+
+**Architecture Doc**: [M7_ARCHITECTURE.md](../architecture/M7_ARCHITECTURE.md)
 
 ---
 
@@ -521,12 +525,12 @@ Completed:
 - M4 (Performance)        ✅
 - M5 (JSON Primitive)     ✅
 - M6 (Retrieval Surfaces) ✅
+- M7 (Durability, Snapshots, Replay & Storage) ✅
 
 Current:
-- M7 (Durability, Snapshots, Replay & Storage) ← YOU ARE HERE
+- M8 (Vector Primitive) ← YOU ARE HERE
 
 Remaining:
-- M8 (Vector Primitive)
 - M9 (Performance & Indexing)
 - M10 (Python Client)
 - M11 (Security & Multi-Tenancy)
@@ -550,9 +554,9 @@ M5 (JSON Primitive) ✅
   ↓
 M6 (Retrieval Surfaces) ✅
   ↓
-M7 (Durability, Snapshots, Replay) ← Current
+M7 (Durability, Snapshots, Replay) ✅
   ↓
-M8 (Vector Primitive)
+M8 (Vector Primitive) ← Current
   ↓
 M9 (Performance & Indexing)
   ↓
@@ -579,8 +583,8 @@ M12 (Production Readiness)
 ### High-Risk Areas
 1. **Concurrency (M2)**: OCC bugs are subtle ✅ Mitigated
    - Mitigation: Extensive multi-threaded tests completed
-2. **Recovery & Replay (M7)**: Data loss is unacceptable, determinism is hard
-   - Mitigation: Crash simulation tests, fuzzing WAL corruption, property-based replay tests
+2. **Recovery & Replay (M7)**: Data loss is unacceptable, determinism is hard ✅ Mitigated
+   - Mitigation: 182 comprehensive tests covering recovery invariants (R1-R6), replay invariants (P1-P6), crash scenarios, and cross-primitive atomicity
 3. **Layer boundaries (M3)**: Primitives leaking into each other ✅ Mitigated
    - Mitigation: Mock tests, strict dependency rules enforced
 4. **Performance unbounded (M4)**: Optimization work can expand infinitely ✅ Mitigated
@@ -633,3 +637,4 @@ M12 (Production Readiness)
 | 4.0 | 2026-01-16 | Inserted M6 Retrieval Surfaces; Durability→M7, Replay→M8; MVP now 8 milestones (M1-M8) |
 | 5.0 | 2026-01-17 | M6 Retrieval Surfaces complete; 125 tests passing (6 stress tests ignored) |
 | 6.0 | 2026-01-17 | Major roadmap restructure: M7 consolidates durability+snapshots+replay; M8=Vector; M9=Performance; M10=Python; M11=Security; M12=Production. MVP now 12 milestones (M1-M12). Post-MVP becomes enhancements. |
+| 7.0 | 2026-01-17 | M7 Durability complete; 182 comprehensive tests passing; snapshot system, crash recovery, deterministic replay, run lifecycle, storage stabilization all complete. |
