@@ -417,6 +417,108 @@ impl StateCell {
         // Then transition
         self.transition(run_id, name, f)
     }
+
+    // ========== Search API (M6) ==========
+
+    /// Search state cells
+    ///
+    /// Searches cell names and values. Respects budget constraints.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use in_mem_core::SearchRequest;
+    ///
+    /// let response = state.search(&SearchRequest::new(run_id, "counter"))?;
+    /// for hit in response.hits {
+    ///     println!("Found state {:?} with score {}", hit.doc_ref, hit.score);
+    /// }
+    /// ```
+    pub fn search(
+        &self,
+        req: &in_mem_core::SearchRequest,
+    ) -> in_mem_core::error::Result<in_mem_core::SearchResponse> {
+        use crate::searchable::{build_search_response, SearchCandidate};
+        use in_mem_core::search_types::DocRef;
+        use in_mem_core::traits::SnapshotView;
+        use std::time::Instant;
+
+        let start = Instant::now();
+        let snapshot = self.db.storage().create_snapshot();
+        let ns = self.namespace_for_run(&req.run_id);
+        let scan_prefix = Key::new_state(ns, "");
+
+        let mut candidates = Vec::new();
+        let mut truncated = false;
+
+        // Scan all state cells for this run
+        for (key, versioned_value) in snapshot.scan_prefix(&scan_prefix)? {
+            // Check budget constraints
+            if start.elapsed().as_micros() as u64 >= req.budget.max_wall_time_micros {
+                truncated = true;
+                break;
+            }
+            if candidates.len() >= req.budget.max_candidates_per_primitive {
+                truncated = true;
+                break;
+            }
+
+            // Deserialize state
+            let state: State = match from_stored_value(&versioned_value.value) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+
+            // Time range filter
+            if let Some((start_ts, end_ts)) = req.time_range {
+                if state.updated_at < start_ts as i64 || state.updated_at > end_ts as i64 {
+                    continue;
+                }
+            }
+
+            // Extract searchable text: cell name + value
+            let cell_name = key.user_key_string().unwrap_or_default();
+            let text = self.extract_state_text(&cell_name, &state);
+
+            candidates.push(SearchCandidate::new(
+                DocRef::State { key: key.clone() },
+                text,
+                Some(state.updated_at as u64),
+            ));
+        }
+
+        Ok(build_search_response(
+            candidates,
+            &req.query,
+            req.k,
+            truncated,
+            start.elapsed().as_micros() as u64,
+        ))
+    }
+
+    /// Extract searchable text from a state cell
+    fn extract_state_text(&self, name: &str, state: &State) -> String {
+        let mut parts = vec![name.to_string()];
+        if let Ok(s) = serde_json::to_string(&state.value) {
+            parts.push(s);
+        }
+        parts.join(" ")
+    }
+}
+
+// ========== Searchable Trait Implementation (M6) ==========
+
+impl crate::searchable::Searchable for StateCell {
+    fn search(
+        &self,
+        req: &in_mem_core::SearchRequest,
+    ) -> in_mem_core::error::Result<in_mem_core::SearchResponse> {
+        self.search(req)
+    }
+
+    fn primitive_kind(&self) -> in_mem_core::search_types::PrimitiveKind {
+        in_mem_core::search_types::PrimitiveKind::State
+    }
 }
 
 // ========== StateCellExt Implementation (Story #184) ==========

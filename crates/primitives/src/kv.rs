@@ -301,6 +301,111 @@ impl KVStore {
         })
     }
 
+    // ========== Search API (M6) ==========
+
+    /// Search KV entries
+    ///
+    /// Searches key names and string values using the simple scorer.
+    /// Respects budget constraints (time and candidate limits).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use in_mem_primitives::KVStore;
+    /// use in_mem_core::SearchRequest;
+    ///
+    /// let response = kv.search(&SearchRequest::new(run_id, "hello"))?;
+    /// for hit in response.hits {
+    ///     println!("Found: {:?} with score {}", hit.doc_ref, hit.score);
+    /// }
+    /// ```
+    pub fn search(
+        &self,
+        req: &in_mem_core::SearchRequest,
+    ) -> in_mem_core::error::Result<in_mem_core::SearchResponse> {
+        use crate::searchable::{build_search_response, SearchCandidate};
+        use in_mem_core::search_types::DocRef;
+        use in_mem_core::traits::SnapshotView;
+        use std::time::Instant;
+
+        let start = Instant::now();
+        let snapshot = self.db.storage().create_snapshot();
+        let ns = self.namespace_for_run(&req.run_id);
+        let scan_prefix = Key::new_kv(ns, "");
+
+        let mut candidates = Vec::new();
+        let mut truncated = false;
+
+        // Scan all KV entries for this run
+        for (key, versioned_value) in snapshot.scan_prefix(&scan_prefix)? {
+            // Check budget constraints
+            if start.elapsed().as_micros() as u64 >= req.budget.max_wall_time_micros {
+                truncated = true;
+                break;
+            }
+            if candidates.len() >= req.budget.max_candidates_per_primitive {
+                truncated = true;
+                break;
+            }
+
+            // Time range filter
+            if let Some((start_ts, end_ts)) = req.time_range {
+                let ts = versioned_value.timestamp as u64;
+                if ts < start_ts || ts > end_ts {
+                    continue;
+                }
+            }
+
+            // Extract searchable text
+            let text = self.extract_search_text(&key, &versioned_value.value);
+
+            candidates.push(SearchCandidate::new(
+                DocRef::Kv { key: key.clone() },
+                text,
+                Some(versioned_value.timestamp as u64),
+            ));
+        }
+
+        Ok(build_search_response(
+            candidates,
+            &req.query,
+            req.k,
+            truncated,
+            start.elapsed().as_micros() as u64,
+        ))
+    }
+
+    /// Extract searchable text from a KV entry
+    fn extract_search_text(&self, key: &Key, value: &Value) -> String {
+        let mut parts = Vec::new();
+
+        // Include key name
+        if let Some(key_str) = key.user_key_string() {
+            parts.push(key_str);
+        }
+
+        // Include value based on type
+        match value {
+            Value::String(s) => parts.push(s.clone()),
+            Value::Bytes(b) => {
+                if let Ok(s) = std::str::from_utf8(b) {
+                    parts.push(s.to_string());
+                }
+            }
+            Value::I64(n) => parts.push(n.to_string()),
+            Value::F64(n) => parts.push(n.to_string()),
+            Value::Bool(b) => parts.push(b.to_string()),
+            Value::Array(_) | Value::Map(_) => {
+                if let Ok(s) = serde_json::to_string(value) {
+                    parts.push(s);
+                }
+            }
+            Value::Null => {}
+        }
+
+        parts.join(" ")
+    }
+
     // ========== Multi-Operation API (Explicit Transactions) ==========
 
     /// Execute multiple KV operations atomically
@@ -375,6 +480,21 @@ impl<'a> KVTransaction<'a> {
             .into_iter()
             .filter_map(|(key, _)| key.user_key_string())
             .collect())
+    }
+}
+
+// ========== Searchable Trait Implementation (M6) ==========
+
+impl crate::searchable::Searchable for KVStore {
+    fn search(
+        &self,
+        req: &in_mem_core::SearchRequest,
+    ) -> in_mem_core::error::Result<in_mem_core::SearchResponse> {
+        self.search(req)
+    }
+
+    fn primitive_kind(&self) -> in_mem_core::search_types::PrimitiveKind {
+        in_mem_core::search_types::PrimitiveKind::Kv
     }
 }
 
@@ -989,5 +1109,134 @@ mod tests {
 
         assert_eq!(results1[0], Some(Value::I64(1)));
         assert_eq!(results2[0], Some(Value::I64(2)));
+    }
+
+    // ========== Search API Tests (M6) ==========
+
+    #[test]
+    fn test_kv_search_basic() {
+        use in_mem_core::SearchRequest;
+
+        let (_temp, _db, kv) = setup();
+        let run_id = RunId::new();
+
+        kv.put(&run_id, "greeting", Value::String("hello world".into()))
+            .unwrap();
+        kv.put(&run_id, "farewell", Value::String("goodbye world".into()))
+            .unwrap();
+        kv.put(&run_id, "other", Value::String("something else".into()))
+            .unwrap();
+
+        let req = SearchRequest::new(run_id, "hello");
+        let response = kv.search(&req).unwrap();
+
+        assert_eq!(response.hits.len(), 1);
+        assert_eq!(response.hits[0].rank, 1);
+    }
+
+    #[test]
+    fn test_kv_search_by_key_name() {
+        use in_mem_core::SearchRequest;
+
+        let (_temp, _db, kv) = setup();
+        let run_id = RunId::new();
+
+        kv.put(
+            &run_id,
+            "user_email",
+            Value::String("test@example.com".into()),
+        )
+        .unwrap();
+        kv.put(&run_id, "user_name", Value::String("John".into()))
+            .unwrap();
+
+        // Search should match key names too
+        let req = SearchRequest::new(run_id, "email");
+        let response = kv.search(&req).unwrap();
+
+        assert!(!response.hits.is_empty());
+    }
+
+    #[test]
+    fn test_kv_search_respects_k() {
+        use in_mem_core::SearchRequest;
+
+        let (_temp, _db, kv) = setup();
+        let run_id = RunId::new();
+
+        // Create many matching entries
+        for i in 0..20 {
+            kv.put(
+                &run_id,
+                &format!("key{}", i),
+                Value::String(format!("hello document {}", i)),
+            )
+            .unwrap();
+        }
+
+        let req = SearchRequest::new(run_id, "hello").with_k(5);
+        let response = kv.search(&req).unwrap();
+
+        assert_eq!(response.hits.len(), 5);
+    }
+
+    #[test]
+    fn test_kv_search_run_isolation() {
+        use in_mem_core::SearchRequest;
+
+        let (_temp, _db, kv) = setup();
+        let run1 = RunId::new();
+        let run2 = RunId::new();
+
+        kv.put(&run1, "key", Value::String("hello from run1".into()))
+            .unwrap();
+        kv.put(&run2, "key", Value::String("hello from run2".into()))
+            .unwrap();
+
+        let req1 = SearchRequest::new(run1, "hello");
+        let response1 = kv.search(&req1).unwrap();
+        assert_eq!(response1.hits.len(), 1);
+
+        let req2 = SearchRequest::new(run2, "hello");
+        let response2 = kv.search(&req2).unwrap();
+        assert_eq!(response2.hits.len(), 1);
+    }
+
+    #[test]
+    fn test_kv_search_empty_results() {
+        use in_mem_core::SearchRequest;
+
+        let (_temp, _db, kv) = setup();
+        let run_id = RunId::new();
+
+        kv.put(&run_id, "key", Value::String("hello world".into()))
+            .unwrap();
+
+        let req = SearchRequest::new(run_id, "nonexistent");
+        let response = kv.search(&req).unwrap();
+
+        assert!(response.hits.is_empty());
+    }
+
+    #[test]
+    fn test_kv_searchable_trait() {
+        use crate::searchable::Searchable;
+        use in_mem_core::search_types::PrimitiveKind;
+        use in_mem_core::SearchRequest;
+
+        let (_temp, _db, kv) = setup();
+        let run_id = RunId::new();
+
+        // Test primitive_kind
+        assert_eq!(kv.primitive_kind(), PrimitiveKind::Kv);
+
+        // Test search via trait
+        kv.put(&run_id, "key", Value::String("searchable test".into()))
+            .unwrap();
+
+        let req = SearchRequest::new(run_id, "searchable");
+        let response = Searchable::search(&kv, &req).unwrap();
+
+        assert!(!response.hits.is_empty());
     }
 }

@@ -658,6 +658,120 @@ impl TraceStore {
     pub fn count(&self, run_id: &RunId) -> Result<usize> {
         Ok(self.list(run_id)?.len())
     }
+
+    // ========== Search API (M6) ==========
+
+    /// Search traces
+    ///
+    /// Searches trace type, tags, and metadata. Respects budget constraints.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use in_mem_core::SearchRequest;
+    ///
+    /// let response = trace.search(&SearchRequest::new(run_id, "reasoning"))?;
+    /// for hit in response.hits {
+    ///     println!("Found trace {:?} with score {}", hit.doc_ref, hit.score);
+    /// }
+    /// ```
+    pub fn search(
+        &self,
+        req: &in_mem_core::SearchRequest,
+    ) -> in_mem_core::error::Result<in_mem_core::SearchResponse> {
+        use crate::searchable::{build_search_response, SearchCandidate};
+        use in_mem_core::search_types::DocRef;
+        use in_mem_core::traits::SnapshotView;
+        use std::time::Instant;
+
+        let start = Instant::now();
+        let snapshot = self.db.storage().create_snapshot();
+        let ns = self.namespace_for_run(&req.run_id);
+        let scan_prefix = Key::new_trace_with_id(ns.clone(), "trace-");
+
+        let mut candidates = Vec::new();
+        let mut truncated = false;
+
+        // Scan all traces for this run
+        for (key, versioned_value) in snapshot.scan_prefix(&scan_prefix)? {
+            // Check budget constraints
+            if start.elapsed().as_micros() as u64 >= req.budget.max_wall_time_micros {
+                truncated = true;
+                break;
+            }
+            if candidates.len() >= req.budget.max_candidates_per_primitive {
+                truncated = true;
+                break;
+            }
+
+            // Deserialize trace
+            let trace: Trace = match from_stored_value(&versioned_value.value) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+
+            // Time range filter
+            if let Some((start_ts, end_ts)) = req.time_range {
+                if trace.timestamp < start_ts as i64 || trace.timestamp > end_ts as i64 {
+                    continue;
+                }
+            }
+
+            // Extract searchable text
+            let text = self.extract_trace_text(&trace);
+
+            // Generate a numeric span_id from the trace_id hash
+            let span_id = {
+                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+                let mut hasher = DefaultHasher::new();
+                trace.id.hash(&mut hasher);
+                hasher.finish()
+            };
+
+            candidates.push(SearchCandidate::new(
+                DocRef::Trace {
+                    key: key.clone(),
+                    span_id,
+                },
+                text,
+                Some(trace.timestamp as u64),
+            ));
+        }
+
+        Ok(build_search_response(
+            candidates,
+            &req.query,
+            req.k,
+            truncated,
+            start.elapsed().as_micros() as u64,
+        ))
+    }
+
+    /// Extract searchable text from a trace
+    fn extract_trace_text(&self, trace: &Trace) -> String {
+        let mut parts = vec![trace.trace_type.type_name().to_string(), trace.id.clone()];
+        parts.extend(trace.tags.clone());
+        if let Ok(s) = serde_json::to_string(&trace.metadata) {
+            parts.push(s);
+        }
+        parts.join(" ")
+    }
+}
+
+// ========== Searchable Trait Implementation (M6) ==========
+
+impl crate::searchable::Searchable for TraceStore {
+    fn search(
+        &self,
+        req: &in_mem_core::SearchRequest,
+    ) -> in_mem_core::error::Result<in_mem_core::SearchResponse> {
+        self.search(req)
+    }
+
+    fn primitive_kind(&self) -> in_mem_core::search_types::PrimitiveKind {
+        in_mem_core::search_types::PrimitiveKind::Trace
+    }
 }
 
 // ========== TraceStoreExt Implementation (Story #190) ==========

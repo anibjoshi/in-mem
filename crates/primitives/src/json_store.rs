@@ -453,6 +453,156 @@ impl JsonStore {
             Ok(true)
         })
     }
+
+    // ========================================================================
+    // Search API (M6)
+    // ========================================================================
+
+    /// Search JSON documents
+    ///
+    /// Flattens JSON structure into searchable text and scores against query.
+    /// Respects budget constraints (time and candidate limits).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use in_mem_core::SearchRequest;
+    ///
+    /// let response = json.search(&SearchRequest::new(run_id, "Alice"))?;
+    /// for hit in response.hits {
+    ///     println!("Found doc {:?} with score {}", hit.doc_ref, hit.score);
+    /// }
+    /// ```
+    pub fn search(
+        &self,
+        req: &in_mem_core::SearchRequest,
+    ) -> in_mem_core::error::Result<in_mem_core::SearchResponse> {
+        use crate::searchable::{build_search_response, SearchCandidate};
+        use in_mem_core::search_types::DocRef;
+        use std::time::Instant;
+
+        let start = Instant::now();
+        let snapshot = self.db.storage().create_snapshot();
+        let ns = self.namespace_for_run(&req.run_id);
+        let scan_prefix = Key::new_json_prefix(ns);
+
+        let mut candidates = Vec::new();
+        let mut truncated = false;
+
+        // Scan all JSON documents for this run
+        for (key, versioned_value) in snapshot.scan_prefix(&scan_prefix)? {
+            // Check budget constraints
+            if start.elapsed().as_micros() as u64 >= req.budget.max_wall_time_micros {
+                truncated = true;
+                break;
+            }
+            if candidates.len() >= req.budget.max_candidates_per_primitive {
+                truncated = true;
+                break;
+            }
+
+            // Deserialize document
+            let doc = match Self::deserialize_doc(&versioned_value.value) {
+                Ok(d) => d,
+                Err(_) => continue, // Skip invalid documents
+            };
+
+            // Time range filter
+            if let Some((start_ts, end_ts)) = req.time_range {
+                let ts = doc.updated_at as u64;
+                if ts < start_ts || ts > end_ts {
+                    continue;
+                }
+            }
+
+            // Extract searchable text by flattening JSON
+            let text = self.flatten_json(&doc.value);
+
+            candidates.push(SearchCandidate::new(
+                DocRef::Json {
+                    key: key.clone(),
+                    doc_id: doc.id,
+                },
+                text,
+                Some(doc.updated_at as u64),
+            ));
+        }
+
+        Ok(build_search_response(
+            candidates,
+            &req.query,
+            req.k,
+            truncated,
+            start.elapsed().as_micros() as u64,
+        ))
+    }
+
+    /// Flatten JSON into searchable text
+    ///
+    /// Recursively extracts all string values and creates "path: value" pairs
+    /// for better search context.
+    fn flatten_json(&self, value: &JsonValue) -> String {
+        let mut parts = Vec::new();
+        self.flatten_recursive(value.as_inner(), &mut parts, "");
+        parts.join(" ")
+    }
+
+    /// Recursively flatten JSON value
+    fn flatten_recursive(&self, value: &serde_json::Value, parts: &mut Vec<String>, path: &str) {
+        use serde_json::Value as JV;
+
+        match value {
+            JV::String(s) => {
+                parts.push(s.clone());
+                if !path.is_empty() {
+                    parts.push(format!("{}: {}", path, s));
+                }
+            }
+            JV::Number(n) => {
+                parts.push(format!("{}", n));
+            }
+            JV::Bool(b) => {
+                parts.push(format!("{}", b));
+            }
+            JV::Array(arr) => {
+                for (i, item) in arr.iter().enumerate() {
+                    let child_path = if path.is_empty() {
+                        format!("[{}]", i)
+                    } else {
+                        format!("{}[{}]", path, i)
+                    };
+                    self.flatten_recursive(item, parts, &child_path);
+                }
+            }
+            JV::Object(obj) => {
+                for (k, v) in obj.iter() {
+                    let child_path = if path.is_empty() {
+                        k.clone()
+                    } else {
+                        format!("{}.{}", path, k)
+                    };
+                    parts.push(k.clone()); // Include field names as searchable
+                    self.flatten_recursive(v, parts, &child_path);
+                }
+            }
+            JV::Null => {}
+        }
+    }
+}
+
+// ========== Searchable Trait Implementation (M6) ==========
+
+impl crate::searchable::Searchable for JsonStore {
+    fn search(
+        &self,
+        req: &in_mem_core::SearchRequest,
+    ) -> in_mem_core::error::Result<in_mem_core::SearchResponse> {
+        self.search(req)
+    }
+
+    fn primitive_kind(&self) -> in_mem_core::search_types::PrimitiveKind {
+        in_mem_core::search_types::PrimitiveKind::Json
+    }
 }
 
 #[cfg(test)]
