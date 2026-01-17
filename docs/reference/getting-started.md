@@ -2,13 +2,13 @@
 
 **in-mem** is a fast, durable, embedded database designed for AI agent workloads.
 
-**Current Version**: 0.3.0 (M3 Primitives + M4 Performance)
+**Current Version**: 0.5.0 (M5 JSON + M6 Retrieval)
 
 ## Installation
 
 ```toml
 [dependencies]
-in-mem = "0.3"
+in-mem = "0.5"
 ```
 
 ## Quick Start
@@ -108,6 +108,48 @@ runs.complete_run(&run_id.to_string())?;
 let active = runs.query_by_status(RunStatus::Active)?;
 ```
 
+### JsonStore (M5)
+
+```rust
+use in_mem::primitives::JsonStore;
+use serde_json::json;
+
+let json = JsonStore::new(db.clone());
+
+// Store JSON document
+json.put(&run_id, "config", json!({
+    "model": "gpt-4",
+    "temperature": 0.7,
+    "max_tokens": 1000
+}))?;
+
+// Path-level mutations
+json.set_path(&run_id, "config", "$.temperature", json!(0.9))?;
+let temp = json.get_path(&run_id, "config", "$.temperature")?;
+
+// Array operations
+json.array_push(&run_id, "config", "$.history", json!({"role": "user"}))?;
+```
+
+### Hybrid Search (M6)
+
+```rust
+use in_mem::search::{SearchRequest, HybridSearch};
+
+let search = HybridSearch::new(db.clone());
+
+// Search across all primitives
+let request = SearchRequest::new("find error logs")
+    .with_limit(10)
+    .with_budget_ms(50);
+
+let response = search.search(&run_id, request)?;
+
+for result in response.results {
+    println!("Found: {:?} (score: {})", result.doc_ref, result.score);
+}
+```
+
 ## Cross-Primitive Transactions
 
 ```rust
@@ -126,6 +168,8 @@ db.transaction(&run_id, |txn| {
 1. **Use fast path operations** for reads: `kv.get()`, `kv.exists()`, `kv.get_many()`
 2. **Choose appropriate durability**: InMemory for tests, Buffered for production
 3. **Use `transition()` for counters**: Handles retries automatically
+4. **Set search budgets**: Use `with_budget_ms()` to control search latency
+5. **Enable indexing selectively**: Inverted index is opt-in for memory efficiency
 
 ## See Also
 

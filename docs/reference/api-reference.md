@@ -1,6 +1,6 @@
 # API Reference
 
-Complete API reference for **in-mem** v0.3.0 (M3 Primitives + M4 Performance).
+Complete API reference for **in-mem** v0.5.0 (M5 JSON + M6 Retrieval).
 
 ## Table of Contents
 
@@ -11,6 +11,12 @@ Complete API reference for **in-mem** v0.3.0 (M3 Primitives + M4 Performance).
   - [StateCell](#statecell)
   - [TraceStore](#tracestore)
   - [RunIndex](#runindex)
+  - [JsonStore](#jsonstore)
+- [Search](#search)
+  - [SearchRequest](#searchrequest)
+  - [SearchResponse](#searchresponse)
+  - [HybridSearch](#hybridsearch)
+  - [InvertedIndex](#invertedindex)
 - [Transactions](#transactions)
 - [Durability Modes](#durability-modes)
 - [Error Types](#error-types)
@@ -534,6 +540,253 @@ Returns all runs with a specific tag.
 
 ---
 
+### JsonStore
+
+JSON document storage with path-level mutations and region-based conflict detection.
+
+```rust
+pub struct JsonStore {
+    db: Arc<Database>
+}
+```
+
+#### Document Operations
+
+##### `put`
+
+Stores a JSON document.
+
+```rust
+pub fn put(&self, run_id: &RunId, key: &str, value: serde_json::Value) -> Result<()>
+```
+
+##### `get` (Fast Path)
+
+Retrieves a JSON document.
+
+```rust
+pub fn get(&self, run_id: &RunId, key: &str) -> Result<Option<serde_json::Value>>
+```
+
+##### `delete`
+
+Deletes a JSON document.
+
+```rust
+pub fn delete(&self, run_id: &RunId, key: &str) -> Result<bool>
+```
+
+#### Path Operations
+
+##### `get_path`
+
+Retrieves a value at a JSONPath.
+
+```rust
+pub fn get_path(&self, run_id: &RunId, key: &str, path: &str) -> Result<Option<serde_json::Value>>
+```
+
+##### `set_path`
+
+Sets a value at a JSONPath.
+
+```rust
+pub fn set_path(&self, run_id: &RunId, key: &str, path: &str, value: serde_json::Value) -> Result<()>
+```
+
+##### `delete_path`
+
+Deletes a value at a JSONPath.
+
+```rust
+pub fn delete_path(&self, run_id: &RunId, key: &str, path: &str) -> Result<bool>
+```
+
+#### Array Operations
+
+##### `array_push`
+
+Appends a value to an array at a path.
+
+```rust
+pub fn array_push(&self, run_id: &RunId, key: &str, path: &str, value: serde_json::Value) -> Result<()>
+```
+
+##### `array_pop`
+
+Removes and returns the last element of an array.
+
+```rust
+pub fn array_pop(&self, run_id: &RunId, key: &str, path: &str) -> Result<Option<serde_json::Value>>
+```
+
+#### Conflict Detection
+
+JsonStore uses region-based conflict detection:
+- Path mutations only conflict if they touch overlapping regions
+- Parent-child path conflicts are detected
+- Sibling paths can be mutated concurrently
+
+---
+
+## Search
+
+### SearchRequest
+
+Configuration for search queries.
+
+```rust
+pub struct SearchRequest {
+    pub query: String,
+    pub limit: usize,
+    pub offset: usize,
+    pub budget_ms: Option<u64>,
+    pub primitives: Option<Vec<PrimitiveType>>,
+    pub run_scope: Option<RunId>,
+}
+```
+
+#### Construction
+
+```rust
+let request = SearchRequest::new("search query")
+    .with_limit(10)
+    .with_offset(0)
+    .with_budget_ms(50)
+    .with_primitives(vec![PrimitiveType::Kv, PrimitiveType::Event]);
+```
+
+---
+
+### SearchResponse
+
+Results from a search operation.
+
+```rust
+pub struct SearchResponse {
+    pub results: Vec<SearchResult>,
+    pub total_matches: usize,
+    pub budget_exhausted: bool,
+    pub search_time_ms: u64,
+}
+
+pub struct SearchResult {
+    pub doc_ref: DocRef,
+    pub score: f64,
+    pub highlights: Vec<String>,
+    pub metadata: Value,
+}
+```
+
+---
+
+### DocRef
+
+Reference to a document in any primitive.
+
+```rust
+pub enum DocRef {
+    Kv { key: Key },
+    Event { sequence: u64 },
+    State { name: String },
+    Trace { id: String },
+    Run { run_id: String },
+    Json { key: Key },
+}
+```
+
+---
+
+### HybridSearch
+
+Unified search across all primitives.
+
+```rust
+pub struct HybridSearch {
+    db: Arc<Database>
+}
+```
+
+#### Methods
+
+##### `search`
+
+Executes a hybrid search combining keyword and semantic results.
+
+```rust
+pub fn search(&self, run_id: &RunId, request: SearchRequest) -> Result<SearchResponse>
+```
+
+##### `search_kv`
+
+Searches only in KVStore.
+
+##### `search_events`
+
+Searches only in EventLog.
+
+##### `search_json`
+
+Searches only in JsonStore.
+
+---
+
+### InvertedIndex
+
+Optional full-text index for improved search performance.
+
+```rust
+pub struct InvertedIndex { /* internal */ }
+```
+
+#### Methods
+
+##### `new`
+
+Creates a new index (disabled by default).
+
+```rust
+pub fn new() -> InvertedIndex
+```
+
+##### `enable` / `disable`
+
+Enables or disables the index.
+
+##### `index_document`
+
+Adds a document to the index.
+
+```rust
+pub fn index_document(&self, doc_ref: &DocRef, content: &str, title: Option<&str>)
+```
+
+##### `remove_document`
+
+Removes a document from the index.
+
+##### `lookup`
+
+Looks up documents containing a term.
+
+```rust
+pub fn lookup(&self, term: &str) -> Option<Vec<DocRef>>
+```
+
+##### `compute_idf`
+
+Computes inverse document frequency for a term.
+
+##### `total_docs` / `avg_doc_len` / `doc_freq`
+
+Index statistics methods.
+
+##### `version` / `wait_for_version`
+
+Version tracking for cache invalidation.
+
+---
+
 ## Transactions
 
 ### Cross-Primitive Transactions
@@ -672,6 +925,22 @@ pub enum Error {
 ---
 
 ## Version History
+
+### v0.5.0 (M5 JSON + M6 Retrieval)
+
+**M5 Features**:
+- JsonStore primitive for JSON documents
+- Path-level mutations with JSONPath
+- Array operations (push, pop)
+- Region-based conflict detection
+
+**M6 Features**:
+- SearchRequest/SearchResponse types
+- HybridSearch with RRF fusion (k=60)
+- BM25Lite keyword scoring
+- InvertedIndex (opt-in)
+- Budget semantics for search operations
+- DocRef for cross-primitive document references
 
 ### v0.3.0 (M3 Primitives + M4 Performance)
 
