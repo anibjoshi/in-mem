@@ -668,7 +668,7 @@ impl VectorStore {
     /// Get key and metadata for a VectorId by scanning KV
     ///
     /// This is O(n) in M8. M9 can add a reverse index for O(1) lookup.
-    fn get_key_and_metadata(
+    pub fn get_key_and_metadata(
         &self,
         run_id: RunId,
         collection: &str,
@@ -931,6 +931,21 @@ impl VectorStore {
     /// Get access to backends (for recovery/snapshot)
     pub fn backends(&self) -> &Arc<RwLock<BTreeMap<CollectionId, Box<dyn VectorIndexBackend>>>> {
         &self.backends
+    }
+
+    /// Get access to the database (for snapshot operations)
+    pub fn db(&self) -> &Database {
+        &self.db
+    }
+
+    /// Get access to the backend factory (for snapshot deserialization)
+    pub fn backend_factory(&self) -> &IndexBackendFactory {
+        &self.backend_factory
+    }
+
+    /// Internal helper to create vector KV key
+    pub(crate) fn vector_key_internal(&self, run_id: RunId, collection: &str, key: &str) -> Key {
+        Key::new_vector(Namespace::for_run(run_id), collection, key)
     }
 }
 

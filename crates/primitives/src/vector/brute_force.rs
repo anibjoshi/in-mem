@@ -140,6 +140,18 @@ impl VectorIndexBackend for BruteForceBackend {
     fn contains(&self, id: VectorId) -> bool {
         self.heap.contains(id)
     }
+
+    fn vector_ids(&self) -> Vec<VectorId> {
+        self.heap.ids().collect()
+    }
+
+    fn snapshot_state(&self) -> (u64, Vec<usize>) {
+        (self.heap.next_id_value(), self.heap.free_slots().to_vec())
+    }
+
+    fn restore_snapshot_state(&mut self, next_id: u64, free_slots: Vec<usize>) {
+        self.heap.restore_snapshot_state(next_id, free_slots);
+    }
 }
 
 // ============================================================================
