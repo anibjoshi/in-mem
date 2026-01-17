@@ -71,6 +71,11 @@ impl VectorIndexBackend for BruteForceBackend {
         self.heap.upsert(id, embedding)
     }
 
+    fn insert_with_id(&mut self, id: VectorId, embedding: &[f32]) -> Result<(), VectorError> {
+        // Use heap's insert_with_id which updates next_id for monotonicity
+        self.heap.insert_with_id(id, embedding)
+    }
+
     fn delete(&mut self, id: VectorId) -> Result<bool, VectorError> {
         Ok(self.heap.delete(id))
     }

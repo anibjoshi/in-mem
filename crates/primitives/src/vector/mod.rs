@@ -21,6 +21,7 @@ pub mod filter;
 pub mod heap;
 pub mod store;
 pub mod types;
+pub mod wal;
 
 pub use backend::{IndexBackendFactory, VectorIndexBackend};
 pub use brute_force::BruteForceBackend;
@@ -32,4 +33,9 @@ pub use store::VectorStore;
 pub use types::{
     CollectionId, CollectionInfo, CollectionRecord, DistanceMetric, StorageDtype, VectorConfig,
     VectorConfigSerde, VectorEntry, VectorId, VectorMatch, VectorRecord,
+};
+pub use wal::{
+    create_wal_collection_create, create_wal_collection_delete, create_wal_delete,
+    create_wal_upsert, WalVectorCollectionCreate, WalVectorCollectionDelete, WalVectorDelete,
+    WalVectorUpsert,
 };

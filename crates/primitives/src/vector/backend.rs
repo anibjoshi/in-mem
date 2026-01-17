@@ -21,6 +21,15 @@ pub trait VectorIndexBackend: Send + Sync {
     /// The VectorId is assigned externally and passed in.
     fn insert(&mut self, id: VectorId, embedding: &[f32]) -> Result<(), VectorError>;
 
+    /// Insert with specific VectorId (for WAL replay)
+    ///
+    /// Used during recovery to replay WAL entries with their original IDs.
+    /// Updates next_id if necessary to maintain monotonicity (Invariant T4).
+    ///
+    /// IMPORTANT: This method MUST ensure that future ID allocations
+    /// don't reuse IDs from replayed entries.
+    fn insert_with_id(&mut self, id: VectorId, embedding: &[f32]) -> Result<(), VectorError>;
+
     /// Delete a vector
     ///
     /// Returns true if the vector existed and was deleted.
