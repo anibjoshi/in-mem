@@ -4,8 +4,9 @@
 # =======================
 #
 # This script sets up the proper environment for running benchmarks and
-# generates performance reports for M1 (Storage), M2 (Transactions),
-# M3 (Primitives), M5 (JSON), M6 (Search), and M8 (Vector) milestones.
+# generates performance reports for all milestones:
+#   M1 (Storage), M2 (Transactions), M3 (Primitives), M4 (Performance),
+#   M5 (JSON), M6 (Search), M8 (Vector), comprehensive, and cross-primitive.
 #
 # Reference Platform:
 #   - Linux (Ubuntu 24.04.2 LTS)
@@ -18,17 +19,23 @@
 #   ./scripts/bench_runner.sh [options]
 #
 # Options:
-#   --full          Run full benchmark suite (all milestones)
+#   --full          Run ALL benchmark suites (M1-M8, comprehensive, cross-primitive)
 #   --m1            Run M1 Storage benchmarks only
 #   --m2            Run M2 Transaction benchmarks only
 #   --m3            Run M3 Primitive benchmarks only
+#   --m4            Run M4 Performance benchmarks (contention, facade_tax, performance)
 #   --m5            Run M5 JSON benchmarks only
 #   --m6            Run M6 Search benchmarks only
 #   --m8            Run M8 Vector benchmarks only
+#   --comprehensive Run comprehensive benchmarks (all primitives)
+#   --cross         Run cross-primitive transaction benchmarks
 #   --comparison    Run industry comparison benchmarks (vs redb, LMDB, SQLite)
 #   --tier=<tier>   Run specific tier (a0, a1, b, c, d, json, vector)
 #   --filter=<pat>  Run benchmarks matching pattern
 #   --baseline=<n>  Save/compare with baseline name
+#   --tag=<tag>     Add a tag to identify this run (e.g., "baseline", "simd-optimization")
+#   --notes=<text>  Add notes describing what changed in this run
+#   --decision=<d>  Record decision: "keep", "reject", or "pending"
 #   --perf          Run with perf stat
 #   --perf-record   Run with perf record (generates perf.data)
 #   --cores=<list>  Pin to specific cores (e.g., "0-7")
@@ -40,10 +47,14 @@
 #
 # Examples:
 #   ./scripts/bench_runner.sh --full
+#   ./scripts/bench_runner.sh --m4
 #   ./scripts/bench_runner.sh --m5
 #   ./scripts/bench_runner.sh --m6
+#   ./scripts/bench_runner.sh --comprehensive
+#   ./scripts/bench_runner.sh --cross
 #   ./scripts/bench_runner.sh --tier=json --filter="json_get"
-#   ./scripts/bench_runner.sh --full --baseline=m6_launch
+#   ./scripts/bench_runner.sh --full --baseline=m8_baseline --tag=baseline --notes="M8 baseline before optimization"
+#   ./scripts/bench_runner.sh --full --tag=simd-search --notes="Added SIMD to BM25 scoring" --decision=pending
 #   ./scripts/bench_runner.sh --m5 --cores="0-7" --perf
 #   ./scripts/bench_runner.sh --m5 --mode=inmemory
 #   ./scripts/bench_runner.sh --m5 --all-modes
@@ -75,13 +86,19 @@ RUN_FULL=false
 RUN_M1=false
 RUN_M2=false
 RUN_M3=false
+RUN_M4=false
 RUN_M5=false
 RUN_M6=false
 RUN_M8=false
+RUN_COMPREHENSIVE=false
+RUN_CROSS=false
 RUN_COMPARISON=false
 TIER=""
 FILTER=""
 BASELINE=""
+RUN_TAG=""
+RUN_NOTES=""
+RUN_DECISION=""
 USE_PERF=false
 USE_PERF_RECORD=false
 CORES=""
@@ -122,8 +139,8 @@ log_error() {
 }
 
 show_help() {
-    # Extract lines 2-46 (the help comment block)
-    sed -n '2,46p' "$0" | sed 's/^# //' | sed 's/^#//'
+    # Extract lines 2-61 (the help comment block)
+    sed -n '2,61p' "$0" | sed 's/^# //' | sed 's/^#//'
     exit 0
 }
 
@@ -321,16 +338,44 @@ build_release() {
     log_info "Building in release mode with LTO..."
     cd "$PROJECT_ROOT"
     if [[ -n "$bench_target" ]]; then
-        # Industry comparison needs feature flag
+        # Handle special cases
         if [[ "$bench_target" == "industry_comparison" ]]; then
             log_info "Building with comparison-benchmarks feature..."
             cargo build --release --bench "$bench_target" --features=comparison-benchmarks 2>&1 | tail -5
+        elif [[ "$bench_target" == "ALL" ]]; then
+            # Build ALL benchmark targets
+            log_info "Building all benchmark targets..."
+            cargo build --release \
+                --bench m1_storage \
+                --bench m2_transactions \
+                --bench m3_primitives \
+                --bench m4_contention \
+                --bench m4_facade_tax \
+                --bench m4_performance \
+                --bench m5_performance \
+                --bench m6_search \
+                --bench m8_vector \
+                --bench comprehensive_benchmarks \
+                --bench cross_primitive \
+                2>&1 | tail -10
         else
             cargo build --release --bench "$bench_target" 2>&1 | tail -5
         fi
     else
-        # Build all benchmark targets
-        cargo build --release --bench m1_storage --bench m2_transactions --bench m3_primitives --bench m5_performance --bench m6_search 2>&1 | tail -5
+        # Build all benchmark targets by default
+        cargo build --release \
+            --bench m1_storage \
+            --bench m2_transactions \
+            --bench m3_primitives \
+            --bench m4_contention \
+            --bench m4_facade_tax \
+            --bench m4_performance \
+            --bench m5_performance \
+            --bench m6_search \
+            --bench m8_vector \
+            --bench comprehensive_benchmarks \
+            --bench cross_primitive \
+            2>&1 | tail -10
     fi
     log_success "Build complete"
 }
@@ -405,13 +450,14 @@ run_benchmarks() {
     log_info "Running: ${cmd[*]}"
     echo ""
 
-    # Determine output filename suffix based on mode
+    # Determine output filename - include benchmark target for multi-benchmark runs
     local mode_suffix=""
     if [[ -n "$durability_mode" ]]; then
         mode_suffix="_${durability_mode}"
     fi
 
-    local output_file="$RESULTS_DIR/bench_output${mode_suffix}.txt"
+    # Use benchmark name in filename for better organization
+    local output_file="$RESULTS_DIR/${bench_target}${mode_suffix}.txt"
 
     # Execute
     "${cmd[@]}" 2>&1 | tee "$output_file"
@@ -420,12 +466,291 @@ run_benchmarks() {
     log_success "Benchmark complete"
     log_info "Results saved to: $output_file"
 
-    # Generate reports
-    generate_redis_report "$output_file" "$durability_mode"
+    # Extract and save machine-readable JSON metrics
+    extract_criterion_metrics "$output_file" "$bench_target" "$durability_mode"
+
+    # Generate reports (only for relevant benchmarks)
+    if [[ "$bench_target" == "m3_primitives" ]]; then
+        generate_redis_report "$output_file" "$durability_mode"
+    fi
 
     # Generate run summary and update index
     generate_run_summary "$bench_target" "$durability_mode"
     update_runs_index
+}
+
+# Extract metrics from Criterion output into JSON for comparison
+extract_criterion_metrics() {
+    local output_file="$1"
+    local bench_target="$2"
+    local durability_mode="$3"
+
+    local mode_suffix=""
+    if [[ -n "$durability_mode" ]]; then
+        mode_suffix="_${durability_mode}"
+    fi
+
+    local json_file="$RESULTS_DIR/${bench_target}${mode_suffix}.json"
+
+    log_info "Extracting metrics to JSON..."
+
+    # Start JSON object
+    echo "{" > "$json_file"
+    echo "  \"benchmark\": \"$bench_target\"," >> "$json_file"
+    echo "  \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"," >> "$json_file"
+    echo "  \"commit\": \"$GIT_COMMIT\"," >> "$json_file"
+    echo "  \"branch\": \"$GIT_BRANCH\"," >> "$json_file"
+    echo "  \"durability_mode\": \"${durability_mode:-strict}\"," >> "$json_file"
+    echo "  \"results\": {" >> "$json_file"
+
+    # Parse Criterion output format:
+    # benchmark_name          time:   [low mid high]
+    local first=true
+    grep "time:" "$output_file" 2>/dev/null | while read -r line; do
+        # Extract benchmark name (first field before spaces)
+        local bench_name
+        bench_name=$(echo "$line" | awk '{print $1}')
+
+        # Extract time values [low mid high]
+        local times
+        times=$(echo "$line" | sed -n 's/.*\[\([^]]*\)\].*/\1/p')
+
+        if [[ -n "$bench_name" && -n "$times" ]]; then
+            local low mid high unit
+            low=$(echo "$times" | awk '{print $1}')
+            unit=$(echo "$times" | awk '{print $2}')
+            mid=$(echo "$times" | awk '{print $3}')
+            high=$(echo "$times" | awk '{print $5}')
+
+            if [[ "$first" == "true" ]]; then
+                first=false
+            else
+                echo "," >> "$json_file"
+            fi
+
+            # Write JSON entry (without trailing comma handling in loop)
+            printf "    \"%s\": {\"low\": \"%s\", \"mid\": \"%s\", \"high\": \"%s\", \"unit\": \"%s\"}" \
+                "$bench_name" "$low" "$mid" "$high" "$unit" >> "$json_file"
+        fi
+    done
+
+    echo "" >> "$json_file"
+    echo "  }" >> "$json_file"
+    echo "}" >> "$json_file"
+
+    log_success "Metrics saved to: $json_file"
+}
+
+# Generate a consolidated summary when running --full
+generate_full_run_summary() {
+    local durability_mode="$1"
+
+    local summary_file="$RESULTS_DIR/FULL_SUMMARY.md"
+    local consolidated_json="$RESULTS_DIR/all_benchmarks.json"
+    local metadata_file="$RESULTS_DIR/run_metadata.json"
+
+    log_info "Generating consolidated summary for all benchmarks..."
+
+    local mode_display="${durability_mode:-strict (default)}"
+    local tag_display="${RUN_TAG:-untagged}"
+    local decision_display="${RUN_DECISION:-pending}"
+    local decision_emoji=""
+    case "$RUN_DECISION" in
+        keep) decision_emoji="✅" ;;
+        reject) decision_emoji="❌" ;;
+        pending|"") decision_emoji="⏳" ;;
+    esac
+
+    cat > "$summary_file" << EOF
+# Full Benchmark Run Summary (M9 Optimization)
+
+**Run ID:** \`${RUN_ID}\`
+**Date:** $(date -u +%Y-%m-%dT%H:%M:%SZ)
+**Type:** Full Benchmark Suite (M1-M8 + Comprehensive + Cross-Primitive)
+
+## Optimization Tracking
+
+| Property | Value |
+|----------|-------|
+| **Tag** | \`${tag_display}\` |
+| **Decision** | ${decision_emoji} ${decision_display} |
+| **Notes** | ${RUN_NOTES:-_No notes provided_} |
+
+## Environment
+
+| Property | Value |
+|----------|-------|
+| Git Commit | \`${GIT_COMMIT}\` |
+| Git Branch | \`${GIT_BRANCH}\` |
+| Durability Mode | ${mode_display} |
+| OS | $(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "$(uname -s)") |
+| CPU | $(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs || echo "unknown") |
+| Memory | $(awk '/MemTotal/ {printf "%.1f GB", $2/1024/1024}' /proc/meminfo 2>/dev/null || echo "unknown") |
+| Governor | $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo "N/A") |
+| Rust | $(rustc --version 2>/dev/null | awk '{print $2}' || echo "unknown") |
+
+## Benchmarks Run
+
+| Benchmark | Output File | JSON Metrics |
+|-----------|-------------|--------------|
+EOF
+
+    # List all benchmark files
+    for bench in m1_storage m2_transactions m3_primitives m4_contention m4_facade_tax m4_performance m5_performance m6_search m8_vector comprehensive_benchmarks cross_primitive; do
+        local txt_file="${bench}.txt"
+        local json_file="${bench}.json"
+        if [[ -f "$RESULTS_DIR/$txt_file" ]]; then
+            echo "| $bench | [$txt_file]($txt_file) | [$json_file]($json_file) |" >> "$summary_file"
+        fi
+    done
+
+    cat >> "$summary_file" << EOF
+
+## Key Performance Metrics
+
+### M1: Storage Layer
+EOF
+
+    # Extract key metrics from each benchmark's JSON
+    if [[ -f "$RESULTS_DIR/m1_storage.json" ]]; then
+        echo '```' >> "$summary_file"
+        grep -E "(get_hot|put_hot|scan)" "$RESULTS_DIR/m1_storage.txt" 2>/dev/null | grep "time:" | head -5 >> "$summary_file" || true
+        echo '```' >> "$summary_file"
+    fi
+
+    cat >> "$summary_file" << EOF
+
+### M2: Transactions
+EOF
+
+    if [[ -f "$RESULTS_DIR/m2_transactions.json" ]]; then
+        echo '```' >> "$summary_file"
+        grep -E "(txn_|commit|rollback)" "$RESULTS_DIR/m2_transactions.txt" 2>/dev/null | grep "time:" | head -5 >> "$summary_file" || true
+        echo '```' >> "$summary_file"
+    fi
+
+    cat >> "$summary_file" << EOF
+
+### M3: Primitives
+EOF
+
+    if [[ -f "$RESULTS_DIR/m3_primitives.json" ]]; then
+        echo '```' >> "$summary_file"
+        grep -E "(kvstore|eventlog|statecell)" "$RESULTS_DIR/m3_primitives.txt" 2>/dev/null | grep "time:" | head -5 >> "$summary_file" || true
+        echo '```' >> "$summary_file"
+    fi
+
+    cat >> "$summary_file" << EOF
+
+### M4: Performance (Facade Tax)
+EOF
+
+    if [[ -f "$RESULTS_DIR/m4_facade_tax.json" ]]; then
+        echo '```' >> "$summary_file"
+        grep -E "(hashmap|storage|kvstore)" "$RESULTS_DIR/m4_facade_tax.txt" 2>/dev/null | grep "time:" | head -6 >> "$summary_file" || true
+        echo '```' >> "$summary_file"
+    fi
+
+    cat >> "$summary_file" << EOF
+
+### M5: JSON Performance
+EOF
+
+    if [[ -f "$RESULTS_DIR/m5_performance.json" ]]; then
+        echo '```' >> "$summary_file"
+        grep -E "(json_get|json_set|json_create)" "$RESULTS_DIR/m5_performance.txt" 2>/dev/null | grep "time:" | head -5 >> "$summary_file" || true
+        echo '```' >> "$summary_file"
+    fi
+
+    cat >> "$summary_file" << EOF
+
+### M6: Search Performance
+EOF
+
+    if [[ -f "$RESULTS_DIR/m6_search.json" ]]; then
+        echo '```' >> "$summary_file"
+        grep -E "(search_kv|search_hybrid|bm25)" "$RESULTS_DIR/m6_search.txt" 2>/dev/null | grep "time:" | head -5 >> "$summary_file" || true
+        echo '```' >> "$summary_file"
+    fi
+
+    cat >> "$summary_file" << EOF
+
+### M8: Vector Performance
+EOF
+
+    if [[ -f "$RESULTS_DIR/m8_vector.json" ]]; then
+        echo '```' >> "$summary_file"
+        grep -E "(vector_insert|vector_search|cosine)" "$RESULTS_DIR/m8_vector.txt" 2>/dev/null | grep "time:" | head -5 >> "$summary_file" || true
+        echo '```' >> "$summary_file"
+    fi
+
+    cat >> "$summary_file" << EOF
+
+## Comparison with Previous Runs
+
+To compare with a previous run:
+1. Find the previous run in \`INDEX.md\`
+2. Compare the JSON files using \`diff\` or a JSON diff tool
+3. Look for >10% changes in key metrics
+
+## Files in This Run
+
+EOF
+
+    ls -la "$RESULTS_DIR"/*.txt "$RESULTS_DIR"/*.json 2>/dev/null | awk '{print "- " $NF}' >> "$summary_file" || true
+
+    # Create run metadata JSON for easy querying
+    log_info "Creating run metadata..."
+
+    cat > "$metadata_file" << METADATA_EOF
+{
+  "run_id": "$RUN_ID",
+  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "commit": "$GIT_COMMIT",
+  "branch": "$GIT_BRANCH",
+  "tag": "${RUN_TAG:-untagged}",
+  "notes": "${RUN_NOTES:-}",
+  "decision": "${RUN_DECISION:-pending}",
+  "durability_mode": "${durability_mode:-strict}",
+  "baseline": "${BASELINE:-}"
+}
+METADATA_EOF
+
+    log_success "Run metadata saved to: $metadata_file"
+
+    # Create consolidated JSON with all metrics
+    log_info "Creating consolidated JSON metrics..."
+
+    echo "{" > "$consolidated_json"
+    echo "  \"run_id\": \"$RUN_ID\"," >> "$consolidated_json"
+    echo "  \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"," >> "$consolidated_json"
+    echo "  \"commit\": \"$GIT_COMMIT\"," >> "$consolidated_json"
+    echo "  \"branch\": \"$GIT_BRANCH\"," >> "$consolidated_json"
+    echo "  \"tag\": \"${RUN_TAG:-untagged}\"," >> "$consolidated_json"
+    echo "  \"notes\": \"${RUN_NOTES:-}\"," >> "$consolidated_json"
+    echo "  \"decision\": \"${RUN_DECISION:-pending}\"," >> "$consolidated_json"
+    echo "  \"durability_mode\": \"${durability_mode:-strict}\"," >> "$consolidated_json"
+    echo "  \"benchmarks\": {" >> "$consolidated_json"
+
+    local first_bench=true
+    for bench in m1_storage m2_transactions m3_primitives m4_contention m4_facade_tax m4_performance m5_performance m6_search m8_vector comprehensive_benchmarks cross_primitive; do
+        local json_file="$RESULTS_DIR/${bench}.json"
+        if [[ -f "$json_file" ]]; then
+            if [[ "$first_bench" == "true" ]]; then
+                first_bench=false
+            else
+                echo "," >> "$consolidated_json"
+            fi
+            # Extract just the results section from each benchmark JSON
+            echo "    \"$bench\": $(cat "$json_file" | grep -A1000 '"results":' | head -n -1 | tail -n +1)" >> "$consolidated_json"
+        fi
+    done
+
+    echo "  }" >> "$consolidated_json"
+    echo "}" >> "$consolidated_json"
+
+    log_success "Full summary saved to: $summary_file"
+    log_success "Consolidated JSON saved to: $consolidated_json"
 }
 
 generate_redis_report() {
@@ -561,8 +886,15 @@ generate_run_summary() {
         m1_storage) milestones="M1 (Storage)" ;;
         m2_transactions) milestones="M2 (Transactions)" ;;
         m3_primitives) milestones="M3 (Primitives)" ;;
+        m4_contention) milestones="M4 (Contention)" ;;
+        m4_facade_tax) milestones="M4 (Facade Tax)" ;;
+        m4_performance) milestones="M4 (Performance)" ;;
         m5_performance) milestones="M5 (JSON)" ;;
         m6_search) milestones="M6 (Search)" ;;
+        m8_vector) milestones="M8 (Vector)" ;;
+        comprehensive_benchmarks) milestones="Comprehensive" ;;
+        cross_primitive) milestones="Cross-Primitive" ;;
+        industry_comparison) milestones="Industry Comparison" ;;
         *) milestones="All" ;;
     esac
 
@@ -654,35 +986,47 @@ This file lists all benchmark runs for easy comparison.
 
 **Last Updated:** $(date -u +%Y-%m-%dT%H:%M:%SZ)
 
+## M9 Optimization Tracking
+
+Use tags and decisions to track iterative optimization:
+- **Tag**: Identifies what optimization was tried (e.g., \`simd-bm25\`, \`cache-prefetch\`)
+- **Decision**: ✅ keep | ❌ reject | ⏳ pending
+- **Notes**: Description of what changed
+
 ## All Runs
 
-| Run ID | Date | Commit | Branch | Milestones |
-|--------|------|--------|--------|------------|
+| Run ID | Tag | Decision | Commit | Notes |
+|--------|-----|----------|--------|-------|
 EOF
 
     # List all run directories sorted by date (newest first)
     for run_dir in $(ls -dt "$RESULTS_BASE_DIR"/run_* 2>/dev/null); do
         if [[ -d "$run_dir" ]]; then
-            local dir_name run_id date commit branch milestones
+            local dir_name run_id tag decision commit notes decision_emoji
             dir_name=$(basename "$run_dir")
             run_id="${dir_name#run_}"
 
-            # Extract date and commit from run_id (format: YYYY-MM-DD_HH-MM-SS_commit)
-            date=$(echo "$run_id" | cut -d'_' -f1-2 | tr '_' ' ' | sed 's/-/:/3' | sed 's/-/:/3')
-            commit=$(echo "$run_id" | rev | cut -d'_' -f1 | rev)
-
-            # Try to get branch from the run
-            if [[ -f "$run_dir/SUMMARY.md" ]]; then
-                branch=$(grep "Git Branch" "$run_dir/SUMMARY.md" | sed -n 's/.*`\([^`]*\)`.*/\1/p' || echo "unknown")
-                milestones=$(grep "Milestones" "$run_dir/SUMMARY.md" | cut -d'|' -f3 | xargs 2>/dev/null || echo "unknown")
-                [[ -z "$branch" ]] && branch="unknown"
-                [[ -z "$milestones" ]] && milestones="unknown"
+            # Extract from run_metadata.json if available, otherwise from run_id
+            if [[ -f "$run_dir/run_metadata.json" ]]; then
+                tag=$(grep '"tag"' "$run_dir/run_metadata.json" | sed 's/.*: *"\([^"]*\)".*/\1/' || echo "untagged")
+                decision=$(grep '"decision"' "$run_dir/run_metadata.json" | sed 's/.*: *"\([^"]*\)".*/\1/' || echo "pending")
+                commit=$(grep '"commit"' "$run_dir/run_metadata.json" | sed 's/.*: *"\([^"]*\)".*/\1/' || echo "unknown")
+                notes=$(grep '"notes"' "$run_dir/run_metadata.json" | sed 's/.*: *"\([^"]*\)".*/\1/' | head -c 50 || echo "")
             else
-                branch="unknown"
-                milestones="unknown"
+                tag="untagged"
+                decision="pending"
+                commit=$(echo "$run_id" | rev | cut -d'_' -f1 | rev)
+                notes=""
             fi
 
-            echo "| [\`${run_id}\`](run_${run_id}/SUMMARY.md) | ${date} | \`${commit}\` | ${branch} | ${milestones} |" >> "$index_file"
+            # Decision emoji
+            case "$decision" in
+                keep) decision_emoji="✅" ;;
+                reject) decision_emoji="❌" ;;
+                *) decision_emoji="⏳" ;;
+            esac
+
+            echo "| [\`${run_id}\`](run_${run_id}/FULL_SUMMARY.md) | \`${tag}\` | ${decision_emoji} ${decision} | \`${commit}\` | ${notes}... |" >> "$index_file"
         fi
     done
 
@@ -701,12 +1045,71 @@ To compare runs:
 target/benchmark-results/
 ├── INDEX.md                    # This file
 ├── run_YYYY-MM-DD_HH-MM-SS_commit/
-│   ├── SUMMARY.md              # Run summary with key results
-│   ├── bench_output_*.txt      # Raw benchmark output
-│   ├── redis_comparison_*.txt  # Redis comparison report
-│   ├── environment_*.json      # Environment details
-│   └── perf_stat_*.txt         # (if --perf was used)
+│   ├── FULL_SUMMARY.md         # Consolidated summary (--full runs only)
+│   ├── SUMMARY.md              # Per-benchmark run summary
+│   ├── all_benchmarks.json     # Consolidated JSON metrics (--full runs only)
+│   ├── m1_storage.txt          # Raw M1 benchmark output
+│   ├── m1_storage.json         # M1 metrics in JSON format
+│   ├── m2_transactions.txt     # Raw M2 benchmark output
+│   ├── m2_transactions.json    # M2 metrics in JSON format
+│   ├── m3_primitives.txt       # Raw M3 benchmark output
+│   ├── m3_primitives.json      # M3 metrics in JSON format
+│   ├── m4_*.txt/json           # M4 performance benchmarks
+│   ├── m5_performance.txt/json # M5 JSON benchmarks
+│   ├── m6_search.txt/json      # M6 Search benchmarks
+│   ├── m8_vector.txt/json      # M8 Vector benchmarks
+│   ├── comprehensive_*.txt/json # Comprehensive benchmarks
+│   ├── cross_primitive.txt/json # Cross-primitive benchmarks
+│   ├── redis_comparison.txt    # Redis comparison report (M3 only)
+│   └── perf_stat.txt           # (if --perf was used)
 └── ...
+\`\`\`
+
+## JSON Format for Comparison
+
+Each \`*.json\` file contains:
+\`\`\`json
+{
+  "benchmark": "m1_storage",
+  "timestamp": "2026-01-18T12:00:00Z",
+  "commit": "abc1234",
+  "branch": "main",
+  "durability_mode": "strict",
+  "results": {
+    "benchmark_name": {"low": "100", "mid": "105", "high": "110", "unit": "ns"}
+  }
+}
+\`\`\`
+
+Use \`jq\` to extract and compare specific metrics:
+\`\`\`bash
+# Compare two runs
+jq '.results["kvstore/get"]' run_A/m3_primitives.json run_B/m3_primitives.json
+
+# List all runs by tag
+for d in run_*/; do jq -r '.tag' "\$d/run_metadata.json" 2>/dev/null; done
+
+# Find runs with decision=keep
+for d in run_*/; do
+  decision=\$(jq -r '.decision' "\$d/run_metadata.json" 2>/dev/null)
+  if [[ "\$decision" == "keep" ]]; then echo "\$d"; fi
+done
+\`\`\`
+
+## Updating Decisions
+
+After analyzing results, update the decision in \`run_metadata.json\`:
+\`\`\`bash
+# Mark a run as "keep"
+jq '.decision = "keep"' run_XXX/run_metadata.json > tmp.json && mv tmp.json run_XXX/run_metadata.json
+
+# Or edit directly
+vim run_XXX/run_metadata.json
+\`\`\`
+
+Then re-run the index update:
+\`\`\`bash
+./scripts/bench_runner.sh  # Just run without flags to regenerate INDEX.md
 \`\`\`
 EOF
 
@@ -737,6 +1140,10 @@ main() {
                 RUN_M3=true
                 shift
                 ;;
+            --m4)
+                RUN_M4=true
+                shift
+                ;;
             --m5)
                 RUN_M5=true
                 shift
@@ -747,6 +1154,14 @@ main() {
                 ;;
             --m8)
                 RUN_M8=true
+                shift
+                ;;
+            --comprehensive)
+                RUN_COMPREHENSIVE=true
+                shift
+                ;;
+            --cross)
+                RUN_CROSS=true
                 shift
                 ;;
             --comparison)
@@ -763,6 +1178,18 @@ main() {
                 ;;
             --baseline=*)
                 BASELINE="${1#*=}"
+                shift
+                ;;
+            --tag=*)
+                RUN_TAG="${1#*=}"
+                shift
+                ;;
+            --notes=*)
+                RUN_NOTES="${1#*=}"
+                shift
+                ;;
+            --decision=*)
+                RUN_DECISION="${1#*=}"
                 shift
                 ;;
             --perf)
@@ -847,14 +1274,22 @@ main() {
         BENCH_TARGET="m2_transactions"
     elif [[ "$RUN_M3" == "true" ]]; then
         BENCH_TARGET="m3_primitives"
+    elif [[ "$RUN_M4" == "true" ]]; then
+        BENCH_TARGET="M4"  # Special marker for M4 (multiple benchmarks)
     elif [[ "$RUN_M5" == "true" ]]; then
         BENCH_TARGET="m5_performance"
     elif [[ "$RUN_M6" == "true" ]]; then
         BENCH_TARGET="m6_search"
     elif [[ "$RUN_M8" == "true" ]]; then
         BENCH_TARGET="m8_vector"
+    elif [[ "$RUN_COMPREHENSIVE" == "true" ]]; then
+        BENCH_TARGET="comprehensive_benchmarks"
+    elif [[ "$RUN_CROSS" == "true" ]]; then
+        BENCH_TARGET="cross_primitive"
     elif [[ "$RUN_COMPARISON" == "true" ]]; then
         BENCH_TARGET="industry_comparison"
+    elif [[ "$RUN_FULL" == "true" ]]; then
+        BENCH_TARGET="ALL"  # Special marker for ALL benchmarks
     fi
 
     echo ""
@@ -945,19 +1380,83 @@ main() {
             for run in "${all_modes_runs[@]}"; do
                 log_info "  $RESULTS_BASE_DIR/run_${run}/"
             done
+        elif [[ "$BENCH_TARGET" == "ALL" ]]; then
+            # Run ALL benchmarks sequentially
+            log_info "Running ALL benchmarks (M1-M8 + comprehensive + cross-primitive)..."
+            echo ""
+
+            # List of all benchmark targets
+            local all_benchmarks=(
+                "m1_storage"
+                "m2_transactions"
+                "m3_primitives"
+                "m4_contention"
+                "m4_facade_tax"
+                "m4_performance"
+                "m5_performance"
+                "m6_search"
+                "m8_vector"
+                "comprehensive_benchmarks"
+                "cross_primitive"
+            )
+
+            for bench in "${all_benchmarks[@]}"; do
+                echo ""
+                echo "============================================================"
+                echo "BENCHMARK: $bench"
+                echo "============================================================"
+                echo ""
+                run_benchmarks "$FILTER" "$BASELINE" "$CORES" "$USE_PERF" "$USE_PERF_RECORD" "$DURABILITY_MODE" "$bench"
+            done
+
+            # Generate consolidated summary for all benchmarks
+            generate_full_run_summary "$DURABILITY_MODE"
+
+            echo ""
+            echo "============================================================"
+            echo "ALL BENCHMARKS COMPLETE"
+            echo "============================================================"
+            echo ""
+            log_success "All benchmark results saved to: $RESULTS_DIR"
+        elif [[ "$BENCH_TARGET" == "M4" ]]; then
+            # Run all M4 benchmarks (contention, facade_tax, performance)
+            log_info "Running M4 Performance benchmarks..."
+            echo ""
+
+            local m4_benchmarks=(
+                "m4_contention"
+                "m4_facade_tax"
+                "m4_performance"
+            )
+
+            for bench in "${m4_benchmarks[@]}"; do
+                echo ""
+                echo "============================================================"
+                echo "BENCHMARK: $bench"
+                echo "============================================================"
+                echo ""
+                run_benchmarks "$FILTER" "$BASELINE" "$CORES" "$USE_PERF" "$USE_PERF_RECORD" "$DURABILITY_MODE" "$bench"
+            done
+
+            echo ""
+            log_success "M4 benchmarks complete"
         else
             # Run with specific mode or default
             run_benchmarks "$FILTER" "$BASELINE" "$CORES" "$USE_PERF" "$USE_PERF_RECORD" "$DURABILITY_MODE" "$BENCH_TARGET"
         fi
     else
-        log_info "No benchmarks specified. Use --full, --m1, --m2, --m3, --m5, --m6, --m8, or --filter=<pattern>"
+        log_info "No benchmarks specified. Use --full, --m1, --m2, --m3, --m4, --m5, --m6, --m8, or --filter=<pattern>"
         log_info "Examples:"
-        log_info "  $0 --full                    # Run all benchmarks"
+        log_info "  $0 --full                    # Run ALL benchmarks (M1-M8 + comprehensive + cross)"
         log_info "  $0 --m1                      # Run M1 Storage benchmarks"
         log_info "  $0 --m2                      # Run M2 Transaction benchmarks"
+        log_info "  $0 --m3                      # Run M3 Primitives benchmarks"
+        log_info "  $0 --m4                      # Run M4 Performance benchmarks (contention, facade_tax, performance)"
         log_info "  $0 --m5                      # Run M5 JSON benchmarks"
         log_info "  $0 --m6                      # Run M6 Search benchmarks"
         log_info "  $0 --m8                      # Run M8 Vector benchmarks"
+        log_info "  $0 --comprehensive           # Run comprehensive benchmarks"
+        log_info "  $0 --cross                   # Run cross-primitive transaction benchmarks"
         log_info "  $0 --tier=json               # Run M5 JSON benchmarks"
         log_info "  $0 --tier=search             # Run M6 Search benchmarks"
         log_info "  $0 --tier=vector             # Run M8 Vector benchmarks"
@@ -965,9 +1464,8 @@ main() {
         log_info "  $0 --m6 --filter=\"search_kv\" # Run search_kv benchmarks"
         log_info "  $0 --m8 --filter=\"vector_search\" # Run vector_search benchmarks"
         log_info "  $0 --m5 --perf               # Run M5 with perf stat"
-        log_info "  $0 --m5 --baseline=m5        # Save baseline 'm5'"
-        log_info "  $0 --m6 --baseline=m6        # Save baseline 'm6'"
-        log_info "  $0 --m8 --baseline=m8        # Save baseline 'm8'"
+        log_info "  $0 --full --tag=baseline --notes=\"M8 baseline before M9\"  # Tag a baseline run"
+        log_info "  $0 --full --tag=simd-opt --notes=\"Added SIMD to BM25\" --decision=pending  # Track optimization"
         log_info "  $0 --m5 --mode=inmemory      # Run in InMemory mode"
         log_info "  $0 --m5 --all-modes          # Run all three durability modes"
         log_info "  $0 --comparison              # Run SOTA comparison benchmarks"

@@ -25,6 +25,9 @@ cargo test --test m5_comprehensive -- --nocapture
 # Run M6 comprehensive tests
 cargo test --test m6_comprehensive -- --nocapture
 
+# Run M8 comprehensive tests
+cargo test --test m8_comprehensive -- --nocapture
+
 # If any invariant test fails, STOP. Do not benchmark a broken system.
 ```
 
@@ -204,6 +207,8 @@ Run M6 benchmarks (search, hybrid retrieval, indexing):
 
 ```bash
 cargo bench --bench m6_search -- --noplot
+# Or using bench_runner.sh:
+./scripts/bench_runner.sh --m6
 ```
 
 Record results for:
@@ -252,7 +257,62 @@ Record results for:
 | index_scaling/lookup/100000 | <20µs | <50µs | >100µs |
 | search_result_size/k_100 | <200µs | <500µs | >1ms |
 
-## Phase 6: Save Baseline
+## Phase 6: M8 Vector Benchmarks
+
+Run M8 benchmarks (vector primitive, similarity search):
+
+```bash
+cargo bench --bench m8_vector -- --noplot
+# Or using bench_runner.sh:
+./scripts/bench_runner.sh --m8
+```
+
+Record results for:
+
+### vector_insert (Insertion Performance)
+- [ ] `vector_insert/single` - Single vector insertion (384d)
+- [ ] `vector_insert/batch_100` - Batch of 100 vectors
+- [ ] `vector_insert/batch_1000` - Large batch insertion
+
+### vector_search (Search Performance)
+- [ ] `vector_search/cosine/10k` - Cosine similarity on 10K vectors
+- [ ] `vector_search/euclidean/10k` - Euclidean distance on 10K vectors
+- [ ] `vector_search/dot_product/10k` - Dot product on 10K vectors
+- [ ] `vector_search/with_filter` - Filtered similarity search
+
+### vector_collection (Collection Management)
+- [ ] `vector_collection/create` - Collection creation
+- [ ] `vector_collection/delete` - Collection deletion
+- [ ] `vector_collection/list` - List collections
+
+### vector_dimension (Dimension Scaling)
+- [ ] `vector_dimension/128` - Low-dimensional vectors
+- [ ] `vector_dimension/384` - Sentence transformer dimensions
+- [ ] `vector_dimension/768` - BERT-style dimensions
+- [ ] `vector_dimension/1536` - OpenAI embedding dimensions
+
+### vector_scaling (Collection Size)
+- [ ] `vector_scaling/10k` - 10K vector collection
+- [ ] `vector_scaling/100k` - 100K vector collection
+
+### vector_contention (Concurrency)
+- [ ] `vector_contention/insert/4` - Concurrent inserts, 4 threads
+- [ ] `vector_contention/search/4` - Concurrent searches, 4 threads
+
+### M8 Expected Ranges
+
+| Benchmark | Stretch | Acceptable | Concern |
+|-----------|---------|------------|---------|
+| vector_insert/single | <50µs | <100µs | >200µs |
+| vector_search/cosine/10k | <10ms | <50ms | >100ms |
+| vector_search/with_filter | <15ms | <60ms | >120ms |
+| vector_dimension/384 | <10ms | <50ms | >100ms |
+| vector_dimension/1536 | <40ms | <150ms | >300ms |
+| vector_scaling/100k | <100ms | <500ms | >1s |
+| vector_contention/insert/4 | >80% scaling | >50% scaling | <30% scaling |
+| vector_contention/search/4 | >90% scaling | >70% scaling | <50% scaling |
+
+## Phase 7: Save Baseline
 
 If results are acceptable, save as baseline:
 
@@ -261,9 +321,10 @@ cargo bench --bench m1_storage -- --save-baseline current
 cargo bench --bench m2_transactions -- --save-baseline current
 cargo bench --bench m5_performance -- --save-baseline current
 cargo bench --bench m6_search -- --save-baseline current
+cargo bench --bench m8_vector -- --save-baseline current
 ```
 
-## Phase 7: Document Results
+## Phase 8: Document Results
 
 Create a benchmark report with this format:
 
@@ -326,12 +387,27 @@ Create a benchmark report with this format:
 | search_result_size/k_100 | Xµs | +Y% | OK/CONCERN |
 | ... | ... | ... | ... |
 
+## M8 Vector Results
+
+| Benchmark | Result | vs Acceptable | Status |
+|-----------|--------|---------------|--------|
+| vector_insert/single | Xµs | +Y% | OK/CONCERN |
+| vector_search/cosine/10k | Xms | +Y% | OK/CONCERN |
+| vector_search/with_filter | Xms | +Y% | OK/CONCERN |
+| vector_dimension/384 | Xms | +Y% | OK/CONCERN |
+| vector_dimension/1536 | Xms | +Y% | OK/CONCERN |
+| vector_scaling/100k | Xms | +Y% | OK/CONCERN |
+| vector_contention/insert/4 | X% scaling | +Y% | OK/CONCERN |
+| vector_contention/search/4 | X% scaling | +Y% | OK/CONCERN |
+| ... | ... | ... | ... |
+
 ## Observations
 
 - [Any unexpected results]
 - [Bottlenecks identified]
 - [Access pattern insights]
 - [Conflict benchmark commit/abort ratios]
+- [Vector search dimension scaling patterns]
 
 ## Action Items
 
@@ -339,7 +415,7 @@ Create a benchmark report with this format:
 - [ ] [Optimizations to consider later]
 ```
 
-## Phase 8: Re-verify Correctness
+## Phase 9: Re-verify Correctness
 
 After benchmarking, run invariant tests again:
 
@@ -352,6 +428,9 @@ cargo test --test m5_comprehensive -- --nocapture
 
 # M6 comprehensive tests
 cargo test --test m6_comprehensive -- --nocapture
+
+# M8 comprehensive tests
+cargo test --test m8_comprehensive -- --nocapture
 ```
 
 If tests pass: benchmark results are valid.
@@ -415,9 +494,35 @@ Performance has regressed:
 
 ## Quick Commands
 
+### Using bench_runner.sh (Recommended for M9)
+
 ```bash
-# Full suite (M1, M2, M5, M6)
-cargo bench --bench m1_storage --bench m2_transactions --bench m5_performance --bench m6_search -- --noplot
+# Run ALL benchmarks with M9 optimization tracking
+./scripts/bench_runner.sh --full --tag=baseline --notes="M9 initial baseline"
+
+# Run specific milestones
+./scripts/bench_runner.sh --m1
+./scripts/bench_runner.sh --m2
+./scripts/bench_runner.sh --m3
+./scripts/bench_runner.sh --m4
+./scripts/bench_runner.sh --m5
+./scripts/bench_runner.sh --m6
+./scripts/bench_runner.sh --m8
+
+# Run with filters
+./scripts/bench_runner.sh --m6 --filter="search_kv"
+./scripts/bench_runner.sh --m8 --filter="vector_search"
+
+# M9 optimization workflow
+./scripts/bench_runner.sh --full --tag=opt-simd --notes="Added SIMD for vector distance"
+# Then check: target/benchmark-results/INDEX.md
+```
+
+### Using cargo bench directly
+
+```bash
+# Full suite (M1, M2, M5, M6, M8)
+cargo bench --bench m1_storage --bench m2_transactions --bench m5_performance --bench m6_search --bench m8_vector -- --noplot
 
 # Just M1
 cargo bench --bench m1_storage -- --noplot
@@ -430,6 +535,9 @@ cargo bench --bench m5_performance -- --noplot
 
 # Just M6
 cargo bench --bench m6_search -- --noplot
+
+# Just M8
+cargo bench --bench m8_vector -- --noplot
 
 # M1/M2 by category
 cargo bench --bench m1_storage -- "engine_get"
@@ -455,6 +563,14 @@ cargo bench --bench m6_search -- "search_result_size"
 cargo bench --bench m6_search -- "index_"
 cargo bench --bench m6_search -- "search_overhead"
 
+# M8 by category
+cargo bench --bench m8_vector -- "vector_insert"
+cargo bench --bench m8_vector -- "vector_search"
+cargo bench --bench m8_vector -- "vector_collection"
+cargo bench --bench m8_vector -- "vector_dimension"
+cargo bench --bench m8_vector -- "vector_scaling"
+cargo bench --bench m8_vector -- "vector_contention"
+
 # By access pattern
 cargo bench --bench m1_storage -- "hot_key"
 cargo bench --bench m1_storage -- "uniform"
@@ -463,6 +579,8 @@ cargo bench --bench m5_performance -- "hot_doc"
 cargo bench --bench m5_performance -- "uniform"
 cargo bench --bench m6_search -- "hot_query"
 cargo bench --bench m6_search -- "dataset"
+cargo bench --bench m8_vector -- "cosine"
+cargo bench --bench m8_vector -- "euclidean"
 
 # The canonical agent workload benchmark
 cargo bench --bench m2_transactions -- "readN_write1"
@@ -472,23 +590,19 @@ cargo bench --bench m1_storage -- --baseline current
 cargo bench --bench m2_transactions -- --baseline current
 cargo bench --bench m5_performance -- --baseline current
 cargo bench --bench m6_search -- --baseline current
+cargo bench --bench m8_vector -- --baseline current
 
 # Run with more samples (slower, more accurate)
 cargo bench --bench m1_storage -- --sample-size 200
 cargo bench --bench m5_performance -- --sample-size 200
 cargo bench --bench m6_search -- --sample-size 200
+cargo bench --bench m8_vector -- --sample-size 200
 
 # Run invariant tests
 cargo test --test m1_m2_comprehensive invariant
 cargo test --test m5_comprehensive
 cargo test --test m6_comprehensive
-
-# Using bench_runner.sh
-./scripts/bench_runner.sh --m5
-./scripts/bench_runner.sh --m5 --filter="json_get"
-./scripts/bench_runner.sh --m5 --all-modes
-./scripts/bench_runner.sh --m6
-./scripts/bench_runner.sh --m6 --filter="search_kv"
+cargo test --test m8_comprehensive
 ```
 
 ---
@@ -504,7 +618,7 @@ If any benchmark shows "CONCERN" or "CRITICAL" status:
 **Result**: [X ops/s or Xµs]
 **Expected**: [>Y ops/s or <Yµs (acceptable)]
 **Gap**: [Z% below acceptable]
-**Layer**: [engine/wal/txn/snapshot/conflict/search/index/hybrid]
+**Layer**: [engine/wal/txn/snapshot/conflict/search/index/hybrid/vector]
 **Access Pattern**: [hot_key/uniform/working_set/miss/rotating/hot_query/dataset]
 **Durability Mode**: [dur_strict/dur_async/N/A]
 
@@ -536,6 +650,7 @@ A benchmark run is successful if:
 - [ ] All M2 benchmarks meet "acceptable" thresholds
 - [ ] All M5 benchmarks meet "acceptable" thresholds
 - [ ] All M6 benchmarks meet "acceptable" thresholds
+- [ ] All M8 benchmarks meet "acceptable" thresholds
 - [ ] No benchmark shows >20% regression from baseline (if baseline exists)
 - [ ] Results are documented with layer, access pattern, and durability mode context
 - [ ] Conflict benchmarks report commit/abort ratios

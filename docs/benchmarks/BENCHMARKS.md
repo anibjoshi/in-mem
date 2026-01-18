@@ -20,6 +20,8 @@ The prefix indicates the **primary semantic being exercised**, not which module 
 | `search_*` | Search operations | Keyword search, hybrid search, result retrieval (M6 only) |
 | `index_*` | Index operations | Lookup, indexing, IDF computation (M6 only) |
 | `hybrid_*` | Hybrid search | Cross-primitive search, RRF fusion (M6 only) |
+| `vector_*` | Vector primitive operations | Insert, search, collection management (M8 only) |
+| `facade_*` | Facade tax measurement | Overhead at each layer (A0 hashmap, A1 storage, B facade) |
 
 **Why this taxonomy:**
 - `txn_*` separates "commit cost" from "snapshot read cost"
@@ -51,6 +53,7 @@ Benchmarks explicitly label their access pattern:
 | `hot_key` | Single key, repeated access | Config reads, counters |
 | `hot_doc` | Single document, repeated access (M5) | JSON config reads |
 | `hot_query` | Same search query, repeated (M6) | Cached search results |
+| `hot_vector` | Same vector query, repeated (M8) | Repeated similarity search |
 | `uniform` | Random keys from full keyspace | Arbitrary state access |
 | `working_set_N` | Small subset (N keys/docs) | Frequently accessed subset |
 | `miss` | Key/document not found | Error path, existence checks |
@@ -72,12 +75,30 @@ All "random" access patterns use a fixed seed (`BENCH_SEED = 0xDEADBEEF_CAFEBABE
 
 ```
 benches/
-  m1_storage.rs          # M1: Storage + WAL primitives
-  m2_transactions.rs     # M2: OCC + Snapshot Isolation
-  m5_performance.rs      # M5: JSON Primitive operations
-  m6_search.rs           # M6: Search + Retrieval Surfaces
-  BENCHMARKS.md          # This file
-  BENCHMARK_EXECUTION.md # Execution guide
+  # Milestone-specific benchmarks
+  m1_storage.rs           # M1: Storage + WAL primitives
+  m2_transactions.rs      # M2: OCC + Snapshot Isolation
+  m3_primitives.rs        # M3: Primitive facade benchmarks (KV, EventLog, StateCell, etc.)
+  m4_contention.rs        # M4: Contention benchmarks (multi-threaded access patterns)
+  m4_facade_tax.rs        # M4: Facade tax benchmarks (overhead at each layer)
+  m4_performance.rs       # M4: General performance benchmarks
+  m5_performance.rs       # M5: JSON Primitive operations
+  m6_search.rs            # M6: Search + Retrieval Surfaces
+  m8_vector.rs            # M8: Vector primitive benchmarks (similarity search)
+
+  # Cross-cutting benchmarks
+  comprehensive_benchmarks.rs  # Comprehensive benchmarks across all primitives
+  cross_primitive.rs           # Cross-primitive transaction benchmarks
+  industry_comparison.rs       # Comparison with other databases (requires --features=comparison-benchmarks)
+
+  # Utilities
+  bench_env.rs            # Environment capture and latency collection utilities
+  README.md               # Quick reference for running benchmarks
+
+docs/benchmarks/
+  BENCHMARKS.md           # This file - benchmark design and targets
+  BENCHMARK_EXECUTION.md  # Execution guide with phases
+  PERFORMANCE_BASELINE.md # Performance targets and baseline documentation
 ```
 
 ### Why milestone-scoped benchmarks?
@@ -176,6 +197,30 @@ benches/
 | `index_compute_idf/*` | IDF computation | Term frequency cost | Scoring |
 | `index_scaling/*` | Lookup at different index sizes | O(log n) index lookup | Large indices |
 | `search_overhead/index_disabled` | Search without index | Baseline scan cost | No index fallback |
+
+### M8 Vector Benchmarks
+
+| Benchmark | Semantic Guarantee | Regression Detection | Agent Pattern |
+|-----------|-------------------|----------------------|---------------|
+| `vector_insert/single` | Vector stored with metadata | Insert latency | Memory storage |
+| `vector_insert/batch_100` | Batch insertion throughput | Bulk load performance | RAG context loading |
+| `vector_insert/batch_1000` | Large batch insertion | Batch overhead | Knowledge base updates |
+| `vector_search/cosine/10k` | Cosine similarity search | Search latency | Semantic retrieval |
+| `vector_search/euclidean/10k` | Euclidean distance search | Distance computation | Clustering queries |
+| `vector_search/dot_product/10k` | Dot product search | Scoring speed | Relevance ranking |
+| `vector_search/with_filter` | Filtered similarity search | Filter overhead | Scoped retrieval |
+| `vector_search/result_size/k_*` | Top-k result assembly | Result scaling | Variable result sizes |
+| `vector_collection/create` | Collection creation | Setup overhead | Context initialization |
+| `vector_collection/delete` | Collection deletion | Cleanup cost | Context teardown |
+| `vector_collection/list` | Collection enumeration | Management overhead | Inventory queries |
+| `vector_dimension/128` | Low-dimensional vectors | Dimension scaling | Simple embeddings |
+| `vector_dimension/384` | Medium-dimensional vectors | Common embedding size | Sentence transformers |
+| `vector_dimension/768` | High-dimensional vectors | BERT-style embeddings | Large models |
+| `vector_dimension/1536` | Very high-dimensional | OpenAI embeddings | GPT embeddings |
+| `vector_scaling/10k` | 10K vector collection | Small collection | Single conversation |
+| `vector_scaling/100k` | 100K vector collection | Medium collection | Extended context |
+| `vector_contention/insert/4` | Concurrent inserts | Write contention | Parallel embedding |
+| `vector_contention/search/4` | Concurrent searches | Read scalability | Multi-agent queries |
 
 ---
 
@@ -330,6 +375,48 @@ These targets assume:
 | k=100 | <200µs | <500µs | >1ms |
 | k=500 | <500µs | <1ms | >2ms |
 
+### M8: Vector Primitive
+
+#### vector_insert (by operation type)
+
+| Operation | Stretch | Acceptable | Concern |
+|-----------|---------|------------|---------|
+| single (384d) | <50µs | <100µs | >200µs |
+| batch_100 (384d) | <5ms | <10ms | >20ms |
+| batch_1000 (384d) | <50ms | <100ms | >200ms |
+
+#### vector_search (by distance metric)
+
+| Metric + Scale | Stretch | Acceptable | Concern |
+|----------------|---------|------------|---------|
+| cosine/10k (384d) | <10ms | <50ms | >100ms |
+| euclidean/10k (384d) | <10ms | <50ms | >100ms |
+| dot_product/10k (384d) | <10ms | <50ms | >100ms |
+| with_filter/10k | <15ms | <60ms | >120ms |
+
+#### vector_dimension (scaling with dimension)
+
+| Dimension | Stretch | Acceptable | Concern |
+|-----------|---------|------------|---------|
+| 128d search/10k | <5ms | <20ms | >50ms |
+| 384d search/10k | <10ms | <50ms | >100ms |
+| 768d search/10k | <20ms | <80ms | >150ms |
+| 1536d search/10k | <40ms | <150ms | >300ms |
+
+#### vector_scaling (collection size)
+
+| Collection Size | Stretch | Acceptable | Concern |
+|-----------------|---------|------------|---------|
+| 10k vectors | <10ms | <50ms | >100ms |
+| 100k vectors | <100ms | <500ms | >1s |
+
+#### vector_contention (concurrency)
+
+| Scenario | Stretch | Acceptable | Concern |
+|----------|---------|------------|---------|
+| insert/4 threads | >80% scaling | >50% scaling | <30% scaling |
+| search/4 threads | >90% scaling | >70% scaling | <50% scaling |
+
 ---
 
 ## Running Benchmarks
@@ -414,6 +501,65 @@ cargo bench --bench m6_search -- "dataset"
 ./scripts/bench_runner.sh --m6 --filter="index_"
 ```
 
+### M8 Vector Benchmarks
+
+```bash
+# All M8 benchmarks
+cargo bench --bench m8_vector
+
+# By category
+cargo bench --bench m8_vector -- "vector_insert"
+cargo bench --bench m8_vector -- "vector_search"
+cargo bench --bench m8_vector -- "vector_collection"
+cargo bench --bench m8_vector -- "vector_dimension"
+cargo bench --bench m8_vector -- "vector_scaling"
+cargo bench --bench m8_vector -- "vector_contention"
+
+# By access pattern
+cargo bench --bench m8_vector -- "cosine"
+cargo bench --bench m8_vector -- "euclidean"
+cargo bench --bench m8_vector -- "dot_product"
+
+# Using bench_runner.sh
+./scripts/bench_runner.sh --m8
+./scripts/bench_runner.sh --m8 --filter="vector_search"
+```
+
+### Using bench_runner.sh (Recommended)
+
+The `bench_runner.sh` script provides comprehensive benchmark execution with:
+- Environment capture (CPU, memory, system state)
+- Automatic result organization
+- M9 optimization tracking (tags, notes, decisions)
+- JSON metrics extraction for comparison
+
+```bash
+# Run ALL benchmarks (recommended for M9 baseline)
+./scripts/bench_runner.sh --full --tag=baseline --notes="M9 initial baseline"
+
+# Run specific milestone
+./scripts/bench_runner.sh --m1
+./scripts/bench_runner.sh --m2
+./scripts/bench_runner.sh --m3
+./scripts/bench_runner.sh --m4
+./scripts/bench_runner.sh --m5
+./scripts/bench_runner.sh --m6
+./scripts/bench_runner.sh --m8
+
+# Run with filters
+./scripts/bench_runner.sh --m6 --filter="search_kv"
+
+# M9 optimization workflow
+./scripts/bench_runner.sh --full --tag=opt-name --notes="Description of optimization"
+
+# Results are stored in:
+# target/benchmark-results/run_{TIMESTAMP}_{COMMIT}/
+#   ├── FULL_SUMMARY.md          # Consolidated summary
+#   ├── run_metadata.json        # Tag, notes, decision
+#   ├── all_benchmarks.json      # All metrics
+#   └── {benchmark_name}.txt/json # Per-benchmark results
+```
+
 ### Comparison Mode
 
 ```bash
@@ -422,12 +568,14 @@ cargo bench --bench m1_storage -- --save-baseline main
 cargo bench --bench m2_transactions -- --save-baseline main
 cargo bench --bench m5_performance -- --save-baseline main
 cargo bench --bench m6_search -- --save-baseline main
+cargo bench --bench m8_vector -- --save-baseline main
 
 # Compare against baseline
 cargo bench --bench m1_storage -- --baseline main
 cargo bench --bench m2_transactions -- --baseline main
 cargo bench --bench m5_performance -- --baseline main
 cargo bench --bench m6_search -- --baseline main
+cargo bench --bench m8_vector -- --baseline main
 ```
 
 ---
@@ -571,7 +719,7 @@ If benchmarks pass but invariant tests fail, the benchmarks are measuring a brok
 
 ### Checklist for New Benchmarks
 
-- [ ] Layer labeled in name (`engine_`, `wal_`, `txn_`, `snapshot_`, `conflict_`, `search_`, `index_`, `hybrid_`)
+- [ ] Layer labeled in name (`engine_`, `wal_`, `txn_`, `snapshot_`, `conflict_`, `search_`, `index_`, `hybrid_`, `vector_`, `facade_`)
 - [ ] Access pattern labeled if applicable (`hot_key`, `uniform`, `hot_query`, etc.)
 - [ ] Durability mode labeled for writes (`dur_strict`, etc.)
 - [ ] All setup outside timed loop
