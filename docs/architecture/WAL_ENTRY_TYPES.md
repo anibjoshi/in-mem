@@ -61,10 +61,14 @@ These are transaction control entries used by the recovery engine.
 | Value | Name | Description |
 |-------|------|-------------|
 | 0x20 | JsonCreate | Create new document |
-| 0x21 | JsonSet | Set document value |
-| 0x22 | JsonDelete | Delete document |
-| 0x23 | JsonPatch | Apply JSON patch (RFC 6902) |
-| 0x24-0x2F | Reserved | For future JSON use |
+| 0x21 | JsonSet | Set value at path |
+| 0x22 | JsonDelete | Delete value at path |
+| 0x23 | JsonDestroy | Destroy entire document |
+| 0x24 | JsonPatch | Apply JSON patch (RFC 6902) - RESERVED |
+| 0x25-0x2F | Reserved | For future JSON use |
+
+**Note**: RFC 6902 JSON Patch (0x24) is currently reserved. M5 implements only Set/Delete operations.
+Full RFC 6902 support (add, test, move, copy) is planned for M6+.
 
 ### JsonCreate Payload Format
 
@@ -75,20 +79,28 @@ These are transaction control entries used by the recovery engine.
 ### JsonSet Payload Format
 
 ```
-[doc_id: 16 bytes][content: msgpack]
+[doc_id: 16 bytes][path: msgpack][content: msgpack]
 ```
 
 ### JsonDelete Payload Format
 
 ```
+[doc_id: 16 bytes][path: msgpack]
+```
+
+### JsonDestroy Payload Format
+
+```
 [doc_id: 16 bytes]
 ```
 
-### JsonPatch Payload Format
+### JsonPatch Payload Format (Reserved)
 
 ```
 [doc_id: 16 bytes][patch: msgpack]
 ```
+
+**Note**: JsonPatch is reserved for future RFC 6902 support. Not currently implemented.
 
 ## Event Entry Types (0x30-0x3F)
 

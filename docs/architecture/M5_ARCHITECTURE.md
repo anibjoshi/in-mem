@@ -387,6 +387,7 @@ This prevents accidental semantic drift. Specifically:
 - **NOT for snapshot versioning**: M5 uses document-level versions, not per-path versions
 - **NOT for historical reads**: M5 does not support point-in-time queries at path granularity
 - **NOT for change tracking**: Path history is not maintained beyond conflict detection scope
+- **NOT persisted to WAL**: Conflict detection is transient (in-memory during transaction); rejected transactions are rolled back and not written to WAL. Only committed operations are persisted.
 
 **Why this matters**:
 - Keeps M5 implementation simple and focused
@@ -1657,8 +1658,25 @@ fn test_json_conflict_rolls_back_kv_too() {
 | **Blob storage** | Full deserialize on every operation | M6+ structural storage |
 | **No diff** | Can't see what changed | M7 diff support |
 | **Conservative array conflict** | Array access conflicts with any array change | M6+ stable identities |
+| **Subset of RFC 6902** | Only Set/Delete operations | Compose complex ops from primitives |
 
-### 17.2 What M5 Explicitly Does NOT Provide
+### 17.2 RFC 6902 Subset Support
+
+M5 implements a **subset** of RFC 6902 JSON Patch operations, not full compliance.
+
+**Supported Operations:**
+- `Set` - Replace/create value at path (similar to RFC 6902 `replace`)
+- `Delete` - Remove value at path (RFC 6902 `remove`)
+
+**NOT Supported in M5:**
+- `add` - Insert at path (differs from `replace` for arrays and missing keys)
+- `test` - Conditional patch execution (verify value before applying)
+- `move` - Move value from one path to another
+- `copy` - Copy value from one path to another
+
+**Rationale:** M5 prioritizes semantic lock-in over feature completeness. The `Set` and `Delete` operations cover the core mutation semantics. Complex transformations can be composed via read-modify-write patterns. Full RFC 6902 support may be added in M6+ if needed. WAL entry type 0x24 is reserved for future `JsonPatch` (RFC 6902) support.
+
+### 17.3 What M5 Explicitly Does NOT Provide
 
 - Per-path versioning
 - Structural storage
@@ -1669,6 +1687,7 @@ fn test_json_conflict_rolls_back_kv_too() {
 - Diff operations
 - Query language
 - Indexes
+- Full RFC 6902 JSON Patch compliance (only Set/Delete supported)
 
 These are all **intentionally deferred**, not forgotten.
 

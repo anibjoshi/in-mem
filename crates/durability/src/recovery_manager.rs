@@ -666,6 +666,9 @@ impl RecoveryEngine {
                     TxEntry::JsonDelete { key } => {
                         tx.json_delete(key);
                     }
+                    TxEntry::JsonDestroy { key } => {
+                        tx.json_destroy(key);
+                    }
                     TxEntry::JsonPatch { key, patch } => {
                         tx.json_patch(key, patch);
                     }

@@ -129,8 +129,19 @@ pub enum WalEntryType {
     /// JSON delete value at path
     JsonDelete = 0x22,
 
-    /// JSON patch (RFC 6902)
-    JsonPatch = 0x23,
+    /// JSON destroy (delete entire document)
+    ///
+    /// Removes a complete JSON document from storage.
+    /// Unlike JsonDelete (which deletes at a path), this removes
+    /// the entire document.
+    JsonDestroy = 0x23,
+
+    /// JSON patch (RFC 6902) - RESERVED
+    ///
+    /// Entry type for applying RFC 6902 JSON patches.
+    /// Note: Currently only Set and Delete operations are supported.
+    /// Full RFC 6902 compliance (add, test, move, copy) is deferred to M6+.
+    JsonPatch = 0x24,
 
     // ========================================================================
     // Event Primitive (0x30-0x3F)
@@ -271,6 +282,7 @@ impl WalEntryType {
             WalEntryType::JsonCreate => "JSON document creation",
             WalEntryType::JsonSet => "JSON set at path",
             WalEntryType::JsonDelete => "JSON delete at path",
+            WalEntryType::JsonDestroy => "JSON destroy (delete entire document)",
             WalEntryType::JsonPatch => "JSON patch (RFC 6902)",
             WalEntryType::EventAppend => "Event append",
             WalEntryType::StateInit => "State initialization",
@@ -329,7 +341,8 @@ impl TryFrom<u8> for WalEntryType {
             0x20 => Ok(WalEntryType::JsonCreate),
             0x21 => Ok(WalEntryType::JsonSet),
             0x22 => Ok(WalEntryType::JsonDelete),
-            0x23 => Ok(WalEntryType::JsonPatch),
+            0x23 => Ok(WalEntryType::JsonDestroy),
+            0x24 => Ok(WalEntryType::JsonPatch),
 
             // Event (0x30-0x3F)
             0x30 => Ok(WalEntryType::EventAppend),
@@ -398,7 +411,8 @@ mod tests {
         assert_eq!(WalEntryType::JsonCreate as u8, 0x20);
         assert_eq!(WalEntryType::JsonSet as u8, 0x21);
         assert_eq!(WalEntryType::JsonDelete as u8, 0x22);
-        assert_eq!(WalEntryType::JsonPatch as u8, 0x23);
+        assert_eq!(WalEntryType::JsonDestroy as u8, 0x23);
+        assert_eq!(WalEntryType::JsonPatch as u8, 0x24);
 
         // Event
         assert_eq!(WalEntryType::EventAppend as u8, 0x30);
@@ -620,6 +634,7 @@ mod tests {
             WalEntryType::JsonCreate,
             WalEntryType::JsonSet,
             WalEntryType::JsonDelete,
+            WalEntryType::JsonDestroy,
             WalEntryType::JsonPatch,
             WalEntryType::EventAppend,
             WalEntryType::StateInit,
@@ -690,6 +705,7 @@ mod tests {
             WalEntryType::JsonCreate,
             WalEntryType::JsonSet,
             WalEntryType::JsonDelete,
+            WalEntryType::JsonDestroy,
             WalEntryType::JsonPatch,
             WalEntryType::EventAppend,
             WalEntryType::StateInit,
