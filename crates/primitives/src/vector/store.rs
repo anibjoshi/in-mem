@@ -30,7 +30,7 @@ use crate::vector::{
     VectorConfig, VectorEntry, VectorError, VectorId, VectorIndexBackend, VectorMatch,
     VectorRecord, VectorResult,
 };
-use in_mem_core::search_types::{DocRef, SearchHit, SearchResponse, SearchStats};
+use in_mem_core::search_types::{DocRef, SearchBudget, SearchHit, SearchResponse, SearchStats};
 use in_mem_core::types::{Key, Namespace, RunId};
 use in_mem_core::value::Value;
 use in_mem_durability::wal::WALEntry;
@@ -848,45 +848,85 @@ impl VectorStore {
             });
         }
 
-        // Search backend (returns VectorId, score pairs)
-        let candidates = {
-            let state = self.state();
-            let backends = state.backends.read().unwrap();
-            let backend =
-                backends
-                    .get(&collection_id)
-                    .ok_or_else(|| VectorError::CollectionNotFound {
-                        name: collection.to_string(),
-                    })?;
-
-            // Over-fetch if filtering to account for filtered-out results
-            let fetch_k = if filter.is_some() { k * 3 } else { k };
-            backend.search(query, fetch_k)
-        };
-
-        // Load metadata and apply filter
+        // Search backend with adaptive over-fetch for filtering (Issue #453)
+        //
+        // When a metadata filter is active, we over-fetch from the backend to account
+        // for filtered-out results. If the initial fetch doesn't yield enough results,
+        // we retry with a higher multiplier up to a max limit.
+        //
+        // Multiplier strategy: 3x -> 6x -> 12x -> all (capped at collection size)
         let mut matches = Vec::with_capacity(k);
 
-        for (vector_id, score) in candidates {
-            if matches.len() >= k {
-                break;
+        if filter.is_none() {
+            // No filter - simple case, fetch exactly k
+            let candidates = {
+                let state = self.state();
+                let backends = state.backends.read().unwrap();
+                let backend =
+                    backends
+                        .get(&collection_id)
+                        .ok_or_else(|| VectorError::CollectionNotFound {
+                            name: collection.to_string(),
+                        })?;
+                backend.search(query, k)
+            };
+
+            for (vector_id, score) in candidates {
+                let (key, metadata) = self.get_key_and_metadata(run_id, collection, vector_id)?;
+                matches.push(VectorMatch { key, score, metadata });
             }
+        } else {
+            // Filter active - use adaptive over-fetch
+            let multipliers = [3, 6, 12];
+            let collection_size = {
+                let state = self.state();
+                let backends = state.backends.read().unwrap();
+                backends
+                    .get(&collection_id)
+                    .map(|b| b.len())
+                    .unwrap_or(0)
+            };
 
-            // Get key and metadata from KV
-            let (key, metadata) = self.get_key_and_metadata(run_id, collection, vector_id)?;
+            for &mult in &multipliers {
+                let fetch_k = (k * mult).min(collection_size);
+                if fetch_k == 0 {
+                    break;
+                }
 
-            // Apply filter (post-filter)
-            if let Some(ref f) = filter {
-                if !f.matches(&metadata) {
-                    continue;
+                let candidates = {
+                    let state = self.state();
+                    let backends = state.backends.read().unwrap();
+                    let backend =
+                        backends
+                            .get(&collection_id)
+                            .ok_or_else(|| VectorError::CollectionNotFound {
+                                name: collection.to_string(),
+                            })?;
+                    backend.search(query, fetch_k)
+                };
+
+                matches.clear();
+                for (vector_id, score) in candidates {
+                    let (key, metadata) = self.get_key_and_metadata(run_id, collection, vector_id)?;
+
+                    // Apply filter
+                    if let Some(ref f) = filter {
+                        if !f.matches(&metadata) {
+                            continue;
+                        }
+                    }
+
+                    matches.push(VectorMatch { key, score, metadata });
+                    if matches.len() >= k {
+                        break;
+                    }
+                }
+
+                // If we have enough results or searched all vectors, stop
+                if matches.len() >= k || fetch_k >= collection_size {
+                    break;
                 }
             }
-
-            matches.push(VectorMatch {
-                key,
-                score,
-                metadata,
-            });
         }
 
         // Apply facade-level tie-breaking (score desc, key asc)
@@ -941,6 +981,122 @@ impl VectorStore {
         let stats = SearchStats::new(start.elapsed().as_micros() as u64, hits.len());
 
         Ok(SearchResponse::new(hits, false, stats))
+    }
+
+    /// Budget-aware search (Issue #451)
+    ///
+    /// Respects the M6 SearchBudget time and candidate limits.
+    /// Returns (results, truncated) where truncated is true if budget was exhausted.
+    ///
+    /// Budget checks are performed:
+    /// 1. Before starting search (early exit if already over time)
+    /// 2. After similarity computation
+    /// 3. After filtering (if any)
+    pub fn search_with_budget(
+        &self,
+        run_id: RunId,
+        collection: &str,
+        query: &[f32],
+        k: usize,
+        filter: Option<MetadataFilter>,
+        budget: &SearchBudget,
+    ) -> VectorResult<(Vec<VectorMatch>, bool)> {
+        let start = std::time::Instant::now();
+
+        // Early exit if budget already exhausted
+        if start.elapsed().as_micros() as u64 >= budget.max_wall_time_micros {
+            return Ok((Vec::new(), true));
+        }
+
+        // k=0 returns empty
+        if k == 0 {
+            return Ok((Vec::new(), false));
+        }
+
+        // Ensure collection is loaded
+        self.ensure_collection_loaded(run_id, collection)?;
+
+        let collection_id = CollectionId::new(run_id, collection);
+
+        // Validate query dimension
+        let config = self.get_collection_config_required(run_id, collection)?;
+        if query.len() != config.dimension {
+            return Err(VectorError::DimensionMismatch {
+                expected: config.dimension,
+                got: query.len(),
+            });
+        }
+
+        // Check time budget before backend search
+        if start.elapsed().as_micros() as u64 >= budget.max_wall_time_micros {
+            return Ok((Vec::new(), true));
+        }
+
+        // Cap fetch at budget candidate limit
+        let max_candidates = budget.max_candidates_per_primitive.min(budget.max_candidates);
+        let fetch_k = if filter.is_some() {
+            (k * 3).min(max_candidates)
+        } else {
+            k.min(max_candidates)
+        };
+
+        // Search backend
+        let candidates = {
+            let state = self.state();
+            let backends = state.backends.read().unwrap();
+            let backend = backends
+                .get(&collection_id)
+                .ok_or_else(|| VectorError::CollectionNotFound {
+                    name: collection.to_string(),
+                })?;
+            backend.search(query, fetch_k)
+        };
+
+        // Check time budget after search
+        let truncated = start.elapsed().as_micros() as u64 >= budget.max_wall_time_micros;
+        if truncated {
+            return Ok((Vec::new(), true));
+        }
+
+        // Load metadata and apply filter
+        let mut matches = Vec::with_capacity(k);
+
+        for (vector_id, score) in candidates {
+            // Check time budget periodically
+            if matches.len() % 100 == 0 {
+                if start.elapsed().as_micros() as u64 >= budget.max_wall_time_micros {
+                    return Ok((matches, true));
+                }
+            }
+
+            if matches.len() >= k {
+                break;
+            }
+
+            let (key, metadata) = self.get_key_and_metadata(run_id, collection, vector_id)?;
+
+            // Apply filter (post-filter)
+            if let Some(ref f) = filter {
+                if !f.matches(&metadata) {
+                    continue;
+                }
+            }
+
+            matches.push(VectorMatch { key, score, metadata });
+        }
+
+        // Apply facade-level tie-breaking
+        matches.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.key.cmp(&b.key))
+        });
+
+        matches.truncate(k);
+
+        let truncated = start.elapsed().as_micros() as u64 >= budget.max_wall_time_micros;
+        Ok((matches, truncated))
     }
 
     // ========================================================================
@@ -1174,6 +1330,11 @@ impl VectorStore {
     /// It does NOT write to WAL - that would cause infinite loops during replay.
     ///
     /// Called by the global WAL replayer for committed VectorCollectionCreate entries.
+    ///
+    /// # Config Validation (Issue #452)
+    ///
+    /// If collection already exists, validates that the config matches.
+    /// This catches WAL corruption or conflicting create entries.
     pub fn replay_create_collection(
         &self,
         run_id: RunId,
@@ -1181,6 +1342,42 @@ impl VectorStore {
         config: VectorConfig,
     ) -> VectorResult<()> {
         let collection_id = CollectionId::new(run_id, name);
+
+        // Check if collection already exists in backend
+        {
+            let state = self.state();
+            let backends = state.backends.read().unwrap();
+            if let Some(existing_backend) = backends.get(&collection_id) {
+                // Validate config matches (Issue #452)
+                let existing_config = existing_backend.config();
+                if existing_config.dimension != config.dimension {
+                    tracing::warn!(
+                        collection = name,
+                        existing_dim = existing_config.dimension,
+                        wal_dim = config.dimension,
+                        "Config mismatch during WAL replay: dimension differs"
+                    );
+                    return Err(VectorError::DimensionMismatch {
+                        expected: existing_config.dimension,
+                        got: config.dimension,
+                    });
+                }
+                if existing_config.metric != config.metric {
+                    tracing::warn!(
+                        collection = name,
+                        existing_metric = ?existing_config.metric,
+                        wal_metric = ?config.metric,
+                        "Config mismatch during WAL replay: metric differs"
+                    );
+                    return Err(VectorError::ConfigMismatch {
+                        collection: name.to_string(),
+                        field: "metric".to_string(),
+                    });
+                }
+                // Collection already exists with matching config - idempotent replay
+                return Ok(());
+            }
+        }
 
         // Initialize backend (no KV write - KV is replayed separately)
         let backend = self.backend_factory().create(&config);
@@ -1278,6 +1475,137 @@ impl VectorStore {
     /// Internal helper to create vector KV key
     pub(crate) fn vector_key_internal(&self, run_id: RunId, collection: &str, key: &str) -> Key {
         Key::new_vector(Namespace::for_run(run_id), collection, key)
+    }
+}
+
+// ========== Searchable Trait Implementation (M6 Integration, Issue #436) ==========
+
+impl crate::searchable::Searchable for VectorStore {
+    /// Vector search via M6 interface
+    ///
+    /// NOTE: Per M8_ARCHITECTURE.md Section 12.3:
+    /// - For SearchMode::Keyword, Vector returns empty results
+    /// - Vector does not attempt to do keyword matching on metadata
+    /// - For SearchMode::Vector or SearchMode::Hybrid, the caller must
+    ///   provide the query embedding via VectorSearchRequest extension
+    ///
+    /// The hybrid search orchestrator is responsible for:
+    /// 1. Embedding the text query (using an external model)
+    /// 2. Calling `vector.search_by_embedding()` with the embedding
+    /// 3. Fusing results via RRF
+    fn search(
+        &self,
+        req: &in_mem_core::SearchRequest,
+    ) -> in_mem_core::error::Result<in_mem_core::SearchResponse> {
+        use in_mem_core::search_types::{SearchMode, SearchResponse, SearchStats};
+        use std::time::Instant;
+
+        let start = Instant::now();
+
+        // Vector primitive only responds to Vector or Hybrid mode
+        // with an explicit query embedding provided externally.
+        //
+        // For Keyword mode, return empty - hybrid orchestrator handles this.
+        // For Vector/Hybrid mode without embedding, return empty -
+        // the hybrid orchestrator should call search_by_embedding() directly.
+        match req.mode {
+            SearchMode::Keyword => {
+                // Vector does NOT do keyword search on metadata
+                Ok(SearchResponse::new(
+                    vec![],
+                    false,
+                    SearchStats::new(start.elapsed().as_micros() as u64, 0),
+                ))
+            }
+            SearchMode::Vector | SearchMode::Hybrid => {
+                // Requires query embedding - the orchestrator must call
+                // search_by_embedding() or search_response() directly
+                // with the actual embedding vector.
+                Ok(SearchResponse::new(
+                    vec![],
+                    false,
+                    SearchStats::new(start.elapsed().as_micros() as u64, 0),
+                ))
+            }
+        }
+    }
+
+    fn primitive_kind(&self) -> in_mem_core::search_types::PrimitiveKind {
+        in_mem_core::search_types::PrimitiveKind::Vector
+    }
+}
+
+// ========== PrimitiveStorageExt Trait Implementation (Issue #438) ==========
+
+impl in_mem_storage::PrimitiveStorageExt for VectorStore {
+    /// Vector primitive type ID is 7
+    fn primitive_type_id(&self) -> u8 {
+        in_mem_storage::primitive_type_ids::VECTOR
+    }
+
+    /// Vector WAL entry types: 0x70-0x73
+    fn wal_entry_types(&self) -> &'static [u8] {
+        &[0x70, 0x71, 0x72, 0x73]
+    }
+
+    /// Serialize vector state for snapshot
+    ///
+    /// Wraps the existing snapshot_serialize method with a Vec<u8> buffer.
+    fn snapshot_serialize(&self) -> Result<Vec<u8>, in_mem_storage::PrimitiveExtError> {
+        let mut buffer = Vec::new();
+        self.snapshot_serialize(&mut buffer)
+            .map_err(|e| in_mem_storage::PrimitiveExtError::Serialization(e.to_string()))?;
+        Ok(buffer)
+    }
+
+    /// Deserialize vector state from snapshot
+    ///
+    /// Wraps the existing snapshot_deserialize method.
+    /// Note: Uses interior mutability via the RwLock in VectorBackendState.
+    fn snapshot_deserialize(&mut self, data: &[u8]) -> Result<(), in_mem_storage::PrimitiveExtError> {
+        use std::io::Cursor;
+        let mut cursor = Cursor::new(data);
+        // Note: snapshot_deserialize takes &self and uses interior mutability
+        VectorStore::snapshot_deserialize(self, &mut cursor)
+            .map_err(|e| in_mem_storage::PrimitiveExtError::Deserialization(e.to_string()))
+    }
+
+    /// Apply a WAL entry during recovery
+    ///
+    /// Delegates to VectorWalReplayer for actual entry processing.
+    /// Note: Uses interior mutability via the RwLock in VectorBackendState.
+    fn apply_wal_entry(
+        &mut self,
+        entry_type: u8,
+        payload: &[u8],
+    ) -> Result<(), in_mem_storage::PrimitiveExtError> {
+        use crate::vector::wal::VectorWalReplayer;
+        use in_mem_durability::WalEntryType;
+        use std::convert::TryFrom;
+
+        let wal_entry_type = WalEntryType::try_from(entry_type).map_err(|_| {
+            in_mem_storage::PrimitiveExtError::UnknownEntryType(entry_type)
+        })?;
+
+        let replayer = VectorWalReplayer::new(self);
+        replayer
+            .apply(wal_entry_type, payload)
+            .map_err(|e| in_mem_storage::PrimitiveExtError::InvalidOperation(e.to_string()))
+    }
+
+    /// Primitive name for logging/debugging
+    fn primitive_name(&self) -> &'static str {
+        "vector"
+    }
+
+    /// Rebuild indexes after recovery
+    ///
+    /// For M8 BruteForce backend, no indexes need rebuilding.
+    /// M9 HNSW may need to rebuild graph structure here.
+    fn rebuild_indexes(&mut self) -> Result<(), in_mem_storage::PrimitiveExtError> {
+        // BruteForce backend has no derived indexes to rebuild.
+        // HNSW (M9) would rebuild the graph here.
+        Ok(())
     }
 }
 
