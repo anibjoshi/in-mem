@@ -20,6 +20,7 @@ dashmap = { workspace = true }
 once_cell = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
