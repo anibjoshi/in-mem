@@ -944,7 +944,7 @@ EOF
 
     # Extract key results from benchmark output if available
     local output_file
-    output_file=$(ls -t "$RESULTS_DIR"/bench_output*.txt 2>/dev/null | head -1)
+    output_file=$(ls -t "$RESULTS_DIR"/*.txt 2>/dev/null | head -1 || true)
 
     if [[ -n "$output_file" && -f "$output_file" ]]; then
         cat >> "$summary_file" << EOF
@@ -955,17 +955,16 @@ EOF
 EOF
         # Extract some key benchmarks - parse criterion output format
         # Example: "search_kv/small/100  time:   [87.123 µs 89.456 µs 91.789 µs]"
-        grep -E "(get_hot|put_hot|kvstore_get|kvstore_put|json_get|json_set|search_kv|search_hybrid|index_operations)" "$output_file" 2>/dev/null | \
-            grep "time:" | \
-            head -10 | \
-            while read -r line; do
-                bench=$(echo "$line" | awk '{print $1}')
-                # Extract the middle value from the time range [low mid high]
-                time=$(echo "$line" | sed -n 's/.*\[\([^]]*\)\].*/\1/p' | awk '{print $3, $4}')
-                if [[ -n "$bench" && -n "$time" ]]; then
-                    echo "| $bench | $time |" >> "$summary_file"
-                fi
-            done
+        {
+            grep -E "(get_hot|put_hot|kvstore_get|kvstore_put|json_get|json_set|search_kv|search_hybrid|index_operations)" "$output_file" 2>/dev/null || true
+        } | grep "time:" | head -10 | while read -r line; do
+            bench=$(echo "$line" | awk '{print $1}')
+            # Extract the middle value from the time range [low mid high]
+            time=$(echo "$line" | sed -n 's/.*\[\([^]]*\)\].*/\1/p' | awk '{print $3, $4}')
+            if [[ -n "$bench" && -n "$time" ]]; then
+                echo "| $bench | $time |" >> "$summary_file"
+            fi
+        done
     fi
 
     log_success "Summary saved to: $summary_file"
