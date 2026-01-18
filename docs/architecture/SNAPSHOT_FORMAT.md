@@ -34,6 +34,8 @@ Snapshots are single-file point-in-time captures of database state. They enable 
 
 ### Header Fields
 
+The header is a fixed 38-byte structure:
+
 | Field | Offset | Size | Type | Description |
 |-------|--------|------|------|-------------|
 | Magic | 0 | 10 | bytes | "INMEM_SNAP" (ASCII) |
@@ -41,9 +43,18 @@ Snapshots are single-file point-in-time captures of database state. They enable 
 | Timestamp | 14 | 8 | u64 | Snapshot creation time (microseconds since epoch) |
 | WAL Offset | 22 | 8 | u64 | WAL position covered by this snapshot |
 | Tx Count | 30 | 8 | u64 | Number of committed transactions |
+
+**Fixed header size: 38 bytes** (`SNAPSHOT_HEADER_SIZE` constant)
+
+### Post-Header Field
+
+Immediately after the fixed header:
+
+| Field | Offset | Size | Type | Description |
+|-------|--------|------|------|-------------|
 | Prim Count | 38 | 1 | u8 | Number of primitive sections |
 
-Total header size: 39 bytes
+**Note**: The Prim Count is written separately after the header, not as part of it. This allows the header to remain a fixed 38-byte structure for simpler parsing. The minimum snapshot size is 43 bytes (38 header + 1 prim count + 4 CRC32).
 
 ## Primitive Section Format
 
@@ -188,7 +199,7 @@ Algorithm: CRC-32/ISO-HDLC (same as used in Ethernet, gzip)
 
 To validate a snapshot file:
 
-1. **Size check**: File must be at least 43 bytes (39 header + 4 CRC32)
+1. **Size check**: File must be at least 43 bytes (38 header + 1 prim count + 4 CRC32)
 2. **Magic check**: First 10 bytes must be "INMEM_SNAP"
 3. **Version check**: Version must be 1 (reject unknown versions)
 4. **CRC32 check**: Computed CRC must match stored CRC

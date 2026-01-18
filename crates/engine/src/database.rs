@@ -1272,6 +1272,142 @@ impl Database {
         })
     }
 
+    // ========================================================================
+    // Replay API (M7 - Stories #314, #315)
+    // ========================================================================
+
+    /// Replay a run and return a read-only view
+    ///
+    /// Per M7 Architecture Rule 3: Replay is side-effect free.
+    /// The returned view is derived, NOT authoritative.
+    ///
+    /// This is a STABLE API per DURABILITY_REPLAY_CONTRACT.md.
+    ///
+    /// # Replay Invariants (P1-P6)
+    ///
+    /// - P1: Pure function over (Snapshot, WAL, EventLog)
+    /// - P2: Side-effect free (does not mutate canonical store)
+    /// - P3: Derived view (not a new source of truth)
+    /// - P4: Does not persist (unless explicitly materialized)
+    /// - P5: Deterministic (same inputs = same view)
+    /// - P6: Idempotent (running twice produces identical view)
+    ///
+    /// # Arguments
+    ///
+    /// * `run_id` - The run to replay
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(ReadOnlyView)` - The reconstructed state for this run
+    /// * `Err(RunNotFound)` - If the run doesn't exist
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let view = db.replay_run(run_id)?;
+    /// println!("Run had {} KV entries", view.kv_count());
+    /// for (key, value) in view.kv_entries() {
+    ///     println!("  {:?} = {:?}", key, value);
+    /// }
+    /// ```
+    pub fn replay_run(&self, run_id: RunId) -> Result<crate::replay::ReadOnlyView> {
+        use crate::replay::ReadOnlyView;
+        use in_mem_core::types::TypeTag;
+
+        // Create an empty view for this run
+        let mut view = ReadOnlyView::new(run_id);
+
+        // Get all entries for this run from storage
+        // Per P1 invariant: Replay is a pure function over (Snapshot, WAL, EventLog)
+        // We reconstruct state by separating entries by type.
+        let entries = self.storage.list_run(&run_id);
+
+        for (key, versioned_value) in entries {
+            match key.type_tag {
+                TypeTag::KV => {
+                    // Standard KV entries go into kv_state
+                    view.apply_kv_put(key, versioned_value.value);
+                }
+                TypeTag::Event => {
+                    // Event entries: parse the stored JSON event and add to view
+                    // Skip metadata keys (__meta__)
+                    if key.user_key == b"__meta__" {
+                        continue;
+                    }
+
+                    // Events are stored as JSON strings in Value::String
+                    // Parse and extract event_type and payload
+                    if let in_mem_core::value::Value::String(json_str) = &versioned_value.value {
+                        if let Ok(parsed) =
+                            serde_json::from_str::<serde_json::Value>(json_str)
+                        {
+                            let event_type = parsed
+                                .get("event_type")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown")
+                                .to_string();
+
+                            // Extract payload as Value
+                            let payload = if let Some(p) = parsed.get("payload") {
+                                // Convert serde_json::Value to in_mem_core::value::Value
+                                serde_json::from_value(p.clone()).unwrap_or(
+                                    in_mem_core::value::Value::Null,
+                                )
+                            } else {
+                                in_mem_core::value::Value::Null
+                            };
+
+                            view.append_event(event_type, payload);
+                        }
+                    }
+                }
+                // Other types (State, Trace, Run, etc.) are stored but not
+                // currently exposed in ReadOnlyView. They can be added as needed.
+                _ => {}
+            }
+        }
+
+        Ok(view)
+    }
+
+    /// Compare two runs and return a key-level diff
+    ///
+    /// Per M7 Architecture: Key-level diff (not path-level for JSON).
+    ///
+    /// This is a STABLE API per DURABILITY_REPLAY_CONTRACT.md.
+    ///
+    /// # Arguments
+    ///
+    /// * `run_a` - Base run
+    /// * `run_b` - Comparison run
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(RunDiff)` - Differences between the runs
+    /// * `Err` - If either run doesn't exist
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let diff = db.diff_runs(run_a, run_b)?;
+    /// println!("{}", diff.summary());
+    /// for entry in &diff.added {
+    ///     println!("  Added: {} = {:?}", entry.key, entry.value_b);
+    /// }
+    /// ```
+    pub fn diff_runs(
+        &self,
+        run_a: RunId,
+        run_b: RunId,
+    ) -> Result<crate::replay::RunDiff> {
+        // Replay both runs
+        let view_a = self.replay_run(run_a)?;
+        let view_b = self.replay_run(run_b)?;
+
+        // Use the diff_views helper
+        Ok(crate::replay::diff_views(&view_a, &view_b))
+    }
+
     /// Gracefully close the database
     ///
     /// Ensures all WAL entries are flushed to disk before returning.
