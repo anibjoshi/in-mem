@@ -29,12 +29,7 @@ use in_mem_durability::wal::WALEntry;
 use in_mem_engine::Database;
 use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
-
-/// Global VectorId counter for monotonic ID assignment
-/// This counter is shared across all VectorStore instances and is updated during recovery.
-static GLOBAL_VECTOR_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Statistics from vector recovery
 #[derive(Debug, Default, Clone)]
@@ -47,8 +42,6 @@ pub struct RecoveryStats {
     pub vectors_upserted: usize,
     /// Number of vectors deleted during recovery
     pub vectors_deleted: usize,
-    /// Maximum VectorId seen during recovery (for counter restoration)
-    pub max_vector_id: u64,
 }
 
 /// Vector storage and search primitive
@@ -264,29 +257,7 @@ impl VectorStore {
             }
         }
 
-        // Update global VectorId counter to ensure determinism (Invariant T4)
-        if stats.max_vector_id > 0 {
-            Self::set_min_vector_id(stats.max_vector_id + 1);
-        }
-
         Ok(stats)
-    }
-
-    /// Set the minimum VectorId counter value
-    ///
-    /// This ensures that the counter is at least `min_id` to preserve
-    /// VectorId monotonicity across recovery (Invariant T4).
-    fn set_min_vector_id(min_id: u64) {
-        // CAS loop to ensure we only increase, never decrease
-        loop {
-            let current = GLOBAL_VECTOR_ID_COUNTER.load(Ordering::SeqCst);
-            if current >= min_id {
-                break;
-            }
-            if GLOBAL_VECTOR_ID_COUNTER.compare_exchange(current, min_id, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
-                break;
-            }
-        }
     }
 
     /// Helper to replay a single Vector WAL entry
@@ -344,13 +315,10 @@ impl VectorStore {
                     .transpose()
                     .map_err(|e| VectorError::Serialization(e.to_string()))?;
 
-                // Track max VectorId for counter restoration
-                if *vector_id > stats.max_vector_id {
-                    stats.max_vector_id = *vector_id;
-                }
-
                 // Ignore errors - collection may not exist yet if VectorCollectionCreate
                 // WAL entry wasn't written (possible in some edge cases)
+                // NOTE: replay_upsert calls insert_with_id which updates the per-collection
+                // next_id counter to maintain VectorId monotonicity (Invariant T4)
                 let _ = self.replay_upsert(
                     *run_id,
                     collection,
@@ -657,7 +625,7 @@ impl VectorStore {
             updated.update(metadata);
             (VectorId(updated.vector_id), updated)
         } else {
-            // New vector: allocate VectorId from backend
+            // New vector: allocate VectorId from backend's per-collection counter
             let mut backends = self.backends.write().unwrap();
             let backend = backends.get_mut(&collection_id).ok_or_else(|| {
                 VectorError::CollectionNotFound {
@@ -665,8 +633,8 @@ impl VectorStore {
                 }
             })?;
 
-            // Allocate new ID (monotonic, never reused)
-            let vector_id = self.allocate_vector_id(&collection_id);
+            // Allocate new ID from backend's per-collection counter (deterministic)
+            let vector_id = backend.allocate_id();
             let record = VectorRecord::new(vector_id, metadata);
 
             // Insert into backend
@@ -986,14 +954,6 @@ impl VectorStore {
 
         let record = VectorRecord::from_bytes(bytes)?;
         Ok(Some(record))
-    }
-
-    /// Allocate a new VectorId (monotonic, never reused)
-    ///
-    /// Uses the global counter that is updated during recovery to ensure
-    /// VectorId monotonicity across restarts (Invariant T4).
-    fn allocate_vector_id(&self, _collection_id: &CollectionId) -> VectorId {
-        VectorId(GLOBAL_VECTOR_ID_COUNTER.fetch_add(1, Ordering::SeqCst))
     }
 
     /// Get key and metadata for a VectorId by scanning KV

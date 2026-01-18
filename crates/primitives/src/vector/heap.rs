@@ -65,13 +65,16 @@ pub struct VectorHeap {
 
 impl VectorHeap {
     /// Create a new vector heap with the given configuration
+    ///
+    /// Note: next_id starts at 1, not 0, to match expected VectorId semantics
+    /// where IDs are positive integers.
     pub fn new(config: VectorConfig) -> Self {
         VectorHeap {
             config,
             data: Vec::new(),
             id_to_offset: BTreeMap::new(),
             free_slots: Vec::new(),
-            next_id: AtomicU64::new(0),
+            next_id: AtomicU64::new(1),
             version: AtomicU64::new(0),
         }
     }
@@ -151,7 +154,9 @@ impl VectorHeap {
     /// Allocate a new VectorId (monotonically increasing)
     ///
     /// This NEVER returns a previously used ID, even after deletions.
-    fn allocate_id(&self) -> VectorId {
+    /// This is the per-collection counter that ensures deterministic
+    /// VectorId assignment across separate databases.
+    pub fn allocate_id(&self) -> VectorId {
         VectorId::new(self.next_id.fetch_add(1, Ordering::Relaxed))
     }
 

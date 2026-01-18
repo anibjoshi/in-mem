@@ -67,6 +67,11 @@ impl BruteForceBackend {
 }
 
 impl VectorIndexBackend for BruteForceBackend {
+    fn allocate_id(&mut self) -> VectorId {
+        // Delegate to heap's per-collection counter
+        self.heap.allocate_id()
+    }
+
     fn insert(&mut self, id: VectorId, embedding: &[f32]) -> Result<(), VectorError> {
         self.heap.upsert(id, embedding)
     }

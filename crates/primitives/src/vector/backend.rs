@@ -15,6 +15,15 @@ use crate::vector::{DistanceMetric, VectorConfig, VectorError, VectorId};
 /// Do NOT add methods that assume brute-force semantics (like get_all_vectors).
 /// See Evolution Warning A in M8_ARCHITECTURE.md.
 pub trait VectorIndexBackend: Send + Sync {
+    /// Allocate a new VectorId (monotonically increasing, per-collection)
+    ///
+    /// Each collection has its own ID counter. IDs are never reused.
+    /// This counter is persisted in snapshots via `snapshot_state()`.
+    ///
+    /// CRITICAL: This is per-collection, not global. Two separate databases
+    /// doing identical operations MUST get identical VectorIds.
+    fn allocate_id(&mut self) -> VectorId;
+
     /// Insert a vector (upsert semantics)
     ///
     /// If the VectorId already exists, updates the embedding.
