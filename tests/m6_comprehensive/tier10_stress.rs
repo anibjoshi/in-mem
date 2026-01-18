@@ -3,7 +3,7 @@
 //! These tests are marked #[ignore] and run manually with --ignored flag.
 
 use super::test_utils::*;
-use in_mem_core::search_types::SearchRequest;
+use in_mem_core::search_types::{SearchBudget, SearchRequest};
 use in_mem_core::value::Value;
 use in_mem_primitives::{KVStore, RunIndex};
 use in_mem_search::DatabaseSearchExt;
@@ -39,6 +39,11 @@ fn test_tier10_large_dataset() {
 }
 
 /// Hybrid search works with large dataset
+///
+/// Note: HybridSearch divides the search budget among all 7 primitives,
+/// so we need to provide a budget large enough that KV gets sufficient time.
+/// Default budget is 100ms; with 7 primitives, each gets ~14ms.
+/// For 10,000 records, we need at least 700ms total (7 primitives × 100ms each).
 #[test]
 #[ignore]
 fn test_tier10_hybrid_large_dataset() {
@@ -48,7 +53,12 @@ fn test_tier10_hybrid_large_dataset() {
     populate_large_dataset(&db, &run_id, 10_000);
 
     let hybrid = db.hybrid();
-    let req = SearchRequest::new(run_id, "searchable").with_k(100);
+    // Provide sufficient budget for hybrid search across 7 primitives
+    // 1 second total = ~143ms per primitive, enough for 10k records
+    let budget = SearchBudget::default().with_time(1_000_000); // 1 second
+    let req = SearchRequest::new(run_id, "searchable")
+        .with_k(100)
+        .with_budget(budget);
 
     let start = Instant::now();
     let response = hybrid.search(&req).unwrap();
