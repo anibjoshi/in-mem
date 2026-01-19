@@ -19,7 +19,16 @@
 #   ./scripts/bench_runner.sh [options]
 #
 # Options:
-#   --full          Run ALL benchmark suites (M1-M8, comprehensive, cross-primitive)
+#   --functional    Run ALL new functional benchmarks (kvstore, eventlog, statecell, vector, etc.)
+#   --kv            Run KVStore primitive benchmarks
+#   --eventlog      Run EventLog primitive benchmarks
+#   --statecell     Run StateCell primitive benchmarks
+#   --vector        Run Vector primitive benchmarks
+#   --transactions  Run transaction benchmarks
+#   --contention    Run contention/concurrency benchmarks
+#
+# Legacy milestone options (deprecated):
+#   --full          Run ALL legacy benchmark suites (M1-M8, comprehensive, cross-primitive)
 #   --m1            Run M1 Storage benchmarks only
 #   --m2            Run M2 Transaction benchmarks only
 #   --m3            Run M3 Primitive benchmarks only
@@ -93,6 +102,14 @@ RUN_M8=false
 RUN_COMPREHENSIVE=false
 RUN_CROSS=false
 RUN_COMPARISON=false
+# New functional benchmark flags
+RUN_FUNCTIONAL=false
+RUN_KV=false
+RUN_EVENTLOG=false
+RUN_STATECELL=false
+RUN_VECTOR=false
+RUN_TRANSACTIONS=false
+RUN_CONTENTION=false
 TIER=""
 FILTER=""
 BASELINE=""
@@ -1167,6 +1184,35 @@ main() {
                 RUN_COMPARISON=true
                 shift
                 ;;
+            # New functional benchmark options
+            --functional)
+                RUN_FUNCTIONAL=true
+                shift
+                ;;
+            --kv)
+                RUN_KV=true
+                shift
+                ;;
+            --eventlog)
+                RUN_EVENTLOG=true
+                shift
+                ;;
+            --statecell)
+                RUN_STATECELL=true
+                shift
+                ;;
+            --vector)
+                RUN_VECTOR=true
+                shift
+                ;;
+            --transactions)
+                RUN_TRANSACTIONS=true
+                shift
+                ;;
+            --contention)
+                RUN_CONTENTION=true
+                shift
+                ;;
             --tier=*)
                 TIER="${1#*=}"
                 shift
@@ -1266,8 +1312,23 @@ main() {
             ;;
     esac
 
-    # Set benchmark target based on milestone flags
-    if [[ "$RUN_M1" == "true" ]]; then
+    # Set benchmark target based on new functional benchmark flags (preferred)
+    if [[ "$RUN_KV" == "true" ]]; then
+        BENCH_TARGET="primitives_kvstore"
+    elif [[ "$RUN_EVENTLOG" == "true" ]]; then
+        BENCH_TARGET="primitives_eventlog"
+    elif [[ "$RUN_STATECELL" == "true" ]]; then
+        BENCH_TARGET="primitives_statecell"
+    elif [[ "$RUN_VECTOR" == "true" ]]; then
+        BENCH_TARGET="primitives_vector"
+    elif [[ "$RUN_TRANSACTIONS" == "true" ]]; then
+        BENCH_TARGET="transactions"
+    elif [[ "$RUN_CONTENTION" == "true" ]]; then
+        BENCH_TARGET="contention"
+    elif [[ "$RUN_FUNCTIONAL" == "true" ]]; then
+        BENCH_TARGET="FUNCTIONAL"  # Special marker for ALL functional benchmarks
+    # Legacy milestone flags
+    elif [[ "$RUN_M1" == "true" ]]; then
         BENCH_TARGET="m1_storage"
     elif [[ "$RUN_M2" == "true" ]]; then
         BENCH_TARGET="m2_transactions"
@@ -1439,36 +1500,69 @@ main() {
 
             echo ""
             log_success "M4 benchmarks complete"
+        elif [[ "$BENCH_TARGET" == "FUNCTIONAL" ]]; then
+            # Run all new functional benchmarks
+            log_info "Running ALL functional benchmarks (new structure)..."
+            echo ""
+
+            # Currently only primitives_kvstore is implemented
+            # Additional benchmarks will be added incrementally:
+            # - primitives_eventlog
+            # - primitives_statecell
+            # - primitives_vector
+            # - transactions
+            # - contention
+            local functional_benchmarks=(
+                "primitives_kvstore"
+            )
+
+            for bench in "${functional_benchmarks[@]}"; do
+                echo ""
+                echo "============================================================"
+                echo "FUNCTIONAL BENCHMARK: $bench"
+                echo "============================================================"
+                echo ""
+                run_benchmarks "$FILTER" "$BASELINE" "$CORES" "$USE_PERF" "$USE_PERF_RECORD" "$DURABILITY_MODE" "$bench"
+            done
+
+            echo ""
+            echo "============================================================"
+            echo "ALL FUNCTIONAL BENCHMARKS COMPLETE"
+            echo "============================================================"
+            echo ""
+            log_success "Functional benchmark results saved to: $RESULTS_DIR"
         else
             # Run with specific mode or default
             run_benchmarks "$FILTER" "$BASELINE" "$CORES" "$USE_PERF" "$USE_PERF_RECORD" "$DURABILITY_MODE" "$BENCH_TARGET"
         fi
     else
-        log_info "No benchmarks specified. Use --full, --m1, --m2, --m3, --m4, --m5, --m6, --m8, or --filter=<pattern>"
-        log_info "Examples:"
-        log_info "  $0 --full                    # Run ALL benchmarks (M1-M8 + comprehensive + cross)"
+        log_info "No benchmarks specified."
+        log_info ""
+        log_info "NEW FUNCTIONAL BENCHMARKS (recommended):"
+        log_info "  $0 --functional              # Run ALL functional benchmarks"
+        log_info "  $0 --kv                      # Run KVStore benchmarks"
+        log_info "  $0 --eventlog                # Run EventLog benchmarks"
+        log_info "  $0 --statecell               # Run StateCell benchmarks"
+        log_info "  $0 --vector                  # Run Vector benchmarks"
+        log_info "  $0 --transactions            # Run Transaction benchmarks"
+        log_info "  $0 --contention              # Run Contention benchmarks"
+        log_info ""
+        log_info "LEGACY BENCHMARKS (milestone-based):"
+        log_info "  $0 --full                    # Run ALL legacy benchmarks (M1-M8 + comprehensive + cross)"
         log_info "  $0 --m1                      # Run M1 Storage benchmarks"
         log_info "  $0 --m2                      # Run M2 Transaction benchmarks"
         log_info "  $0 --m3                      # Run M3 Primitives benchmarks"
-        log_info "  $0 --m4                      # Run M4 Performance benchmarks (contention, facade_tax, performance)"
+        log_info "  $0 --m4                      # Run M4 Performance benchmarks"
         log_info "  $0 --m5                      # Run M5 JSON benchmarks"
         log_info "  $0 --m6                      # Run M6 Search benchmarks"
         log_info "  $0 --m8                      # Run M8 Vector benchmarks"
-        log_info "  $0 --comprehensive           # Run comprehensive benchmarks"
-        log_info "  $0 --cross                   # Run cross-primitive transaction benchmarks"
-        log_info "  $0 --tier=json               # Run M5 JSON benchmarks"
-        log_info "  $0 --tier=search             # Run M6 Search benchmarks"
-        log_info "  $0 --tier=vector             # Run M8 Vector benchmarks"
-        log_info "  $0 --m5 --filter=\"json_get\"  # Run json_get benchmarks"
-        log_info "  $0 --m6 --filter=\"search_kv\" # Run search_kv benchmarks"
-        log_info "  $0 --m8 --filter=\"vector_search\" # Run vector_search benchmarks"
-        log_info "  $0 --m5 --perf               # Run M5 with perf stat"
-        log_info "  $0 --full --tag=baseline --notes=\"M8 baseline before M9\"  # Tag a baseline run"
-        log_info "  $0 --full --tag=simd-opt --notes=\"Added SIMD to BM25\" --decision=pending  # Track optimization"
-        log_info "  $0 --m5 --mode=inmemory      # Run in InMemory mode"
-        log_info "  $0 --m5 --all-modes          # Run all three durability modes"
-        log_info "  $0 --comparison              # Run SOTA comparison benchmarks"
-        log_info "  $0 --comparison --filter=\"kv\" # Run KV comparisons only"
+        log_info ""
+        log_info "OPTIONS:"
+        log_info "  --filter=<pattern>           # Filter benchmarks by name"
+        log_info "  --tag=<tag>                  # Tag this run (e.g., 'baseline', 'optimization')"
+        log_info "  --notes=\"<text>\"             # Add notes about this run"
+        log_info "  --mode=<mode>                # Durability mode (inmemory, buffered, strict)"
+        log_info "  --perf                       # Run with perf stat"
     fi
 
     echo ""
