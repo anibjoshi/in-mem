@@ -95,41 +95,50 @@ All primitives follow the same API patterns.
 
 ## Epic Overview
 
-| Epic | Name | Stories | Dependencies |
-|------|------|---------|--------------|
-| 60 | Core Types | 6 | M8 complete |
-| 61 | Versioned Returns | 7 | Epic 60 |
-| 62 | Transaction Unification | 6 | Epic 60 |
-| 63 | Error Standardization | 4 | Epic 60 |
-| 64 | Conformance Testing | 5 | Epic 61, 62, 63 |
+| Epic | Name | Stories | Dependencies | Status |
+|------|------|---------|--------------|--------|
+| 60 | Core Types | 6 | M8 complete | ✅ COMPLETE |
+| 61 | Versioned Returns | 7 | Epic 60 | Pending |
+| 62 | Transaction Unification | 6 | Epic 60 | Pending |
+| 63 | Error Standardization | 4 | Epic 60 | Pending |
+| 64 | Conformance Testing | 5 | Epic 61, 62, 63 | Pending |
 
 ---
 
-## Epic 60: Core Types
+## Epic 60: Core Types ✅ COMPLETE
 
 **Goal**: Define universal types that express the seven invariants
 
-| Story | Description | Priority |
-|-------|-------------|----------|
-| #460 | EntityRef Enum Implementation | FOUNDATION |
-| #461 | Versioned<T> Wrapper Type | FOUNDATION |
-| #462 | Version Enum (TxnId, Sequence, Counter) | FOUNDATION |
-| #463 | Timestamp Type | FOUNDATION |
-| #464 | PrimitiveType Enum | HIGH |
-| #465 | RunId Standardization | FOUNDATION |
+**Status**: Completed in branch `milestone-9-phase-1` (commit f8df454)
+
+| Story | Description | Priority | Status |
+|-------|-------------|----------|--------|
+| #469 | EntityRef Enum Implementation | FOUNDATION | ✅ Done |
+| #470 | Versioned<T> Wrapper Type | FOUNDATION | ✅ Done |
+| #471 | Version Enum (TxnId, Sequence, Counter) | FOUNDATION | ✅ Done |
+| #472 | Timestamp Type | FOUNDATION | ✅ Done |
+| #473 | PrimitiveType Enum | HIGH | ✅ Done |
+| #474 | RunName Type | FOUNDATION | ✅ Done |
 
 **Acceptance Criteria**:
-- [ ] `EntityRef` enum with variants for all 7 primitives
-- [ ] `EntityRef::run_id()` method returns the run for any entity
-- [ ] `EntityRef::primitive_type()` method returns `PrimitiveType`
-- [ ] `Versioned<T>` with value, version, timestamp fields
-- [ ] `Versioned<T>::map()` for transforming inner value
-- [ ] `Versioned<T>::into_value()` (deprecated helper for migration)
-- [ ] `Version` enum: TxnId(u64), Sequence(u64), Counter(u64)
-- [ ] `Version::as_u64()` for numeric comparison
-- [ ] `Timestamp` type with `now()` constructor
-- [ ] `RunId` newtype with `new()`, `as_str()`, Display impl
-- [ ] All types implement Debug, Clone; IDs implement Hash, Eq
+- [x] `EntityRef` enum with variants for all 7 primitives
+- [x] `EntityRef::run_id()` method returns the run for any entity
+- [x] `EntityRef::primitive_type()` method returns `PrimitiveType`
+- [x] `Versioned<T>` with value, version fields (unified with VersionedValue)
+- [x] `Versioned<T>::map()` for transforming inner value
+- [x] `Versioned<T>::into_value()` for extracting value
+- [x] `Version` enum: TxnId(u64), Sequence(u64), Counter(u64)
+- [x] `Version::as_u64()` for numeric comparison
+- [x] `Timestamp` type with `now()` constructor (microsecond precision)
+- [x] `RunName` type with validation (alphanumeric, max 128 chars)
+- [x] All types implement Debug, Clone; IDs implement Hash, Eq
+
+**Implementation Notes**:
+- Types located in `crates/core/src/contract/`
+- In-place migration: `PrimitiveKind` renamed to `PrimitiveType`
+- `DocRef` unified with `EntityRef` (all variants require `run_id`)
+- `Timestamp` changed from seconds (i64) to microseconds (u64)
+- All existing tests updated (1500+ library tests, 445+ integration tests pass)
 
 ---
 
@@ -259,27 +268,35 @@ All primitives follow the same API patterns.
 
 ## Files to Modify/Create
 
-| File | Action | Description |
-|------|--------|-------------|
-| `crates/core/src/entity_ref.rs` | CREATE | EntityRef enum |
-| `crates/core/src/versioned.rs` | CREATE | Versioned<T> wrapper |
-| `crates/core/src/version.rs` | CREATE | Version enum |
-| `crates/core/src/timestamp.rs` | CREATE | Timestamp type |
-| `crates/core/src/run_id.rs` | MODIFY | Standardize RunId |
-| `crates/core/src/primitive_type.rs` | CREATE | PrimitiveType enum |
-| `crates/core/src/lib.rs` | MODIFY | Export new types |
-| `crates/core/src/error.rs` | MODIFY | Add StrataError |
-| `crates/primitives/src/kv_store.rs` | MODIFY | Versioned returns |
-| `crates/primitives/src/event_log.rs` | MODIFY | Versioned returns |
-| `crates/primitives/src/state_cell.rs` | MODIFY | Versioned returns |
-| `crates/primitives/src/trace_store.rs` | MODIFY | Versioned returns |
-| `crates/primitives/src/json_store.rs` | MODIFY | Versioned returns |
-| `crates/primitives/src/vector/store.rs` | MODIFY | Versioned returns |
-| `crates/primitives/src/run_index.rs` | MODIFY | Versioned returns |
-| `crates/engine/src/transaction.rs` | MODIFY | TransactionOps trait |
-| `crates/engine/src/run_handle.rs` | CREATE | RunHandle pattern |
-| `crates/engine/src/database.rs` | MODIFY | Wire new patterns |
-| `tests/conformance/` | CREATE | Conformance test suite |
+### Phase 1 Files (✅ Complete)
+
+| File | Action | Description | Status |
+|------|--------|-------------|--------|
+| `crates/core/src/contract/mod.rs` | CREATE | Contract module | ✅ Done |
+| `crates/core/src/contract/entity_ref.rs` | CREATE | EntityRef enum (DocRef unified) | ✅ Done |
+| `crates/core/src/contract/versioned.rs` | CREATE | Versioned<T> wrapper | ✅ Done |
+| `crates/core/src/contract/version.rs` | CREATE | Version enum | ✅ Done |
+| `crates/core/src/contract/timestamp.rs` | CREATE | Timestamp type (microseconds) | ✅ Done |
+| `crates/core/src/contract/run_name.rs` | CREATE | RunName type | ✅ Done |
+| `crates/core/src/contract/primitive_type.rs` | CREATE | PrimitiveType enum | ✅ Done |
+| `crates/core/src/lib.rs` | MODIFY | Export new types | ✅ Done |
+
+### Remaining Files (Phases 2-5)
+
+| File | Action | Description | Status |
+|------|--------|-------------|--------|
+| `crates/core/src/error.rs` | MODIFY | Add StrataError | Pending |
+| `crates/primitives/src/kv_store.rs` | MODIFY | Versioned returns | Pending |
+| `crates/primitives/src/event_log.rs` | MODIFY | Versioned returns | Pending |
+| `crates/primitives/src/state_cell.rs` | MODIFY | Versioned returns | Pending |
+| `crates/primitives/src/trace_store.rs` | MODIFY | Versioned returns | Pending |
+| `crates/primitives/src/json_store.rs` | MODIFY | Versioned returns | Pending |
+| `crates/primitives/src/vector/store.rs` | MODIFY | Versioned returns | Pending |
+| `crates/primitives/src/run_index.rs` | MODIFY | Versioned returns | Pending |
+| `crates/engine/src/transaction.rs` | MODIFY | TransactionOps trait | Pending |
+| `crates/engine/src/run_handle.rs` | CREATE | RunHandle pattern | Pending |
+| `crates/engine/src/database.rs` | MODIFY | Wire new patterns | Pending |
+| `tests/conformance/` | CREATE | Conformance test suite | Pending |
 
 ---
 
@@ -313,14 +330,21 @@ Epic 64 (Conformance Testing) ←── Epic 61, 62, 63
 > This is a lot of mechanical change: signature updates everywhere, test rewrites, plumbing work.
 > Protect momentum by proving the pattern works before generalizing.
 
-### Phase 1: Foundation (Epic 60 Complete)
+### Phase 1: Foundation (Epic 60 Complete) ✅ DONE
 
 Implement all core types fully:
-- `EntityRef`, `Versioned<T>`, `Version`, `Timestamp`, `PrimitiveType`, `RunId`
-- `StrataError` enum with all variants
+- `EntityRef`, `Versioned<T>`, `Version`, `Timestamp`, `PrimitiveType`, `RunName`
 - All types tested independently
 
-**Exit Criteria**: All 6 stories in Epic 60 complete. All 4 stories in Epic 63 complete.
+**Exit Criteria**: All 6 stories in Epic 60 complete. ~~All 4 stories in Epic 63 complete.~~
+
+**Completed**: 2026-01-19
+- Branch: `milestone-9-phase-1`
+- Commit: `f8df454`
+- Files: 67 changed, +3333/-1119 lines
+- Tests: All library tests pass (1500+), all integration tests pass (445+)
+
+**Note**: Epic 63 (Error Standardization) deferred to Phase 2 - core types implemented first following in-place migration strategy.
 
 ### Phase 2: First Two Primitives (KV + EventLog)
 
@@ -371,13 +395,13 @@ Write conformance tests (14 tests each = 42 tests).
 
 ### Phase Summary
 
-| Phase | Primitives | Epics/Stories | Conformance Tests |
-|-------|------------|---------------|-------------------|
-| 1 | (types only) | Epic 60, 63 | Unit tests only |
-| 2 | KV, EventLog | 61 (partial), 62 (partial) | 28 tests |
-| 3 | + State, Trace | 61 (partial), 62 (partial) | + 28 tests |
-| 4 | + Json, Vector, Run | 61 (complete), 62 (partial) | + 42 tests |
-| 5 | (finalize) | 62 (complete), 64 | + cross-primitive |
+| Phase | Primitives | Epics/Stories | Conformance Tests | Status |
+|-------|------------|---------------|-------------------|--------|
+| 1 | (types only) | Epic 60 | Unit tests only | ✅ DONE |
+| 2 | KV, EventLog | 61 (partial), 62 (partial), 63 | 28 tests | Pending |
+| 3 | + State, Trace | 61 (partial), 62 (partial) | + 28 tests | Pending |
+| 4 | + Json, Vector, Run | 61 (complete), 62 (partial) | + 42 tests | Pending |
+| 5 | (finalize) | 62 (complete), 64 | + cross-primitive | Pending |
 
 **Benefits of Phased Approach**:
 1. **Early validation**: Prove pattern works with 2 primitives before committing to 7

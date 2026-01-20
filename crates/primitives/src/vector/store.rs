@@ -1530,8 +1530,8 @@ impl crate::searchable::Searchable for VectorStore {
         }
     }
 
-    fn primitive_kind(&self) -> in_mem_core::search_types::PrimitiveKind {
-        in_mem_core::search_types::PrimitiveKind::Vector
+    fn primitive_kind(&self) -> in_mem_core::PrimitiveType {
+        in_mem_core::PrimitiveType::Vector
     }
 }
 

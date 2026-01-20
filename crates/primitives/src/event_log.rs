@@ -569,8 +569,8 @@ impl EventLog {
 
                 candidates.push(SearchCandidate::new(
                     DocRef::Event {
-                        log_key: event_key,
-                        seq,
+                        run_id: req.run_id,
+                        sequence: seq,
                     },
                     text,
                     Some(event.timestamp as u64),
@@ -607,8 +607,8 @@ impl crate::searchable::Searchable for EventLog {
         self.search(req)
     }
 
-    fn primitive_kind(&self) -> in_mem_core::search_types::PrimitiveKind {
-        in_mem_core::search_types::PrimitiveKind::Event
+    fn primitive_kind(&self) -> in_mem_core::PrimitiveType {
+        in_mem_core::PrimitiveType::Event
     }
 }
 

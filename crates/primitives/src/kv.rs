@@ -350,7 +350,7 @@ impl KVStore {
 
             // Time range filter
             if let Some((start_ts, end_ts)) = req.time_range {
-                let ts = versioned_value.timestamp as u64;
+                let ts = versioned_value.timestamp.as_micros();
                 if ts < start_ts || ts > end_ts {
                     continue;
                 }
@@ -359,10 +359,13 @@ impl KVStore {
             // Extract searchable text
             let text = self.extract_search_text(&key, &versioned_value.value);
 
+            // Extract user key as string for DocRef
+            let user_key_str = String::from_utf8_lossy(&key.user_key).to_string();
+
             candidates.push(SearchCandidate::new(
-                DocRef::Kv { key: key.clone() },
+                DocRef::Kv { run_id: req.run_id, key: user_key_str },
                 text,
-                Some(versioned_value.timestamp as u64),
+                Some(versioned_value.timestamp.as_micros()),
             ));
         }
 
@@ -493,8 +496,8 @@ impl crate::searchable::Searchable for KVStore {
         self.search(req)
     }
 
-    fn primitive_kind(&self) -> in_mem_core::search_types::PrimitiveKind {
-        in_mem_core::search_types::PrimitiveKind::Kv
+    fn primitive_kind(&self) -> in_mem_core::PrimitiveType {
+        in_mem_core::PrimitiveType::Kv
     }
 }
 

@@ -11,11 +11,13 @@
 //! - JSON types (M5): JsonValue, JsonPath, JsonPatch, JsonDocId
 //! - JSON limits (M5): MAX_DOCUMENT_SIZE, MAX_NESTING_DEPTH, MAX_PATH_LENGTH, MAX_ARRAY_SIZE
 //! - Search types (M6): SearchRequest, SearchResponse, SearchHit, DocRef, PrimitiveKind
+//! - Contract types (M9): EntityRef, Versioned<T>, Version, Timestamp, PrimitiveType, RunName
 
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 
 // Module declarations
+pub mod contract; // M9 contract types
 pub mod error; // Story #10
 pub mod json; // M5 JSON types
 pub mod run_types; // Run lifecycle types
@@ -32,13 +34,21 @@ pub use json::{
     MAX_DOCUMENT_SIZE, MAX_NESTING_DEPTH, MAX_PATH_LENGTH,
 };
 pub use run_types::{RunEventOffsets, RunMetadata, RunStatus};
-pub use search_types::{
-    DocRef, PrimitiveKind, SearchBudget, SearchHit, SearchMode, SearchRequest, SearchResponse,
-    SearchStats,
-};
+pub use search_types::{SearchBudget, SearchHit, SearchMode, SearchRequest, SearchResponse, SearchStats};
 pub use traits::{SnapshotView, Storage};
 pub use types::{JsonDocId, Key, Namespace, RunId, TypeTag};
-pub use value::{Timestamp, Value, VersionedValue};
+pub use value::Value;
+
+// Re-export contract types at crate root for convenience
+pub use contract::{
+    DocRef, EntityRef, PrimitiveType, RunName, RunNameError, Timestamp, Version, Versioned,
+    VersionedValue, MAX_RUN_NAME_LENGTH,
+};
+
+// Backwards compatibility: PrimitiveKind is now PrimitiveType
+#[doc(hidden)]
+#[deprecated(since = "0.9.0", note = "Use PrimitiveType instead")]
+pub type PrimitiveKind = PrimitiveType;
 
 /// Placeholder for core functionality
 /// This will be populated by stories #7-11

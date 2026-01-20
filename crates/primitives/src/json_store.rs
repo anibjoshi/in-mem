@@ -512,7 +512,7 @@ impl JsonStore {
         let mut truncated = false;
 
         // Scan all JSON documents for this run
-        for (key, versioned_value) in snapshot.scan_prefix(&scan_prefix)? {
+        for (_key, versioned_value) in snapshot.scan_prefix(&scan_prefix)? {
             // Check budget constraints
             if start.elapsed().as_micros() as u64 >= req.budget.max_wall_time_micros {
                 truncated = true;
@@ -542,7 +542,7 @@ impl JsonStore {
 
             candidates.push(SearchCandidate::new(
                 DocRef::Json {
-                    key: key.clone(),
+                    run_id: req.run_id,
                     doc_id: doc.id,
                 },
                 text,
@@ -622,8 +622,8 @@ impl crate::searchable::Searchable for JsonStore {
         self.search(req)
     }
 
-    fn primitive_kind(&self) -> in_mem_core::search_types::PrimitiveKind {
-        in_mem_core::search_types::PrimitiveKind::Json
+    fn primitive_kind(&self) -> in_mem_core::PrimitiveType {
+        in_mem_core::PrimitiveType::Json
     }
 }
 

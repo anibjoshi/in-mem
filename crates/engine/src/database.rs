@@ -1454,15 +1454,15 @@ impl Drop for Database {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
     use in_mem_core::types::{Key, Namespace, RunId};
     use in_mem_core::value::Value;
     use in_mem_core::Storage;
+    use in_mem_core::Timestamp;
     use in_mem_durability::wal::WALEntry;
     use tempfile::TempDir;
 
-    fn now() -> i64 {
-        Utc::now().timestamp()
+    fn now() -> Timestamp {
+        Timestamp::now()
     }
 
     #[test]
@@ -2110,7 +2110,7 @@ mod tests {
         let current = db.get(&key).unwrap().unwrap();
 
         // CAS with correct version
-        db.cas(run_id, key.clone(), current.version, Value::I64(2))
+        db.cas(run_id, key.clone(), current.version.as_u64(), Value::I64(2))
             .unwrap();
 
         // Verify updated
@@ -2203,7 +2203,7 @@ mod tests {
         assert_eq!(v1.value, Value::I64(1));
 
         // CAS to increment
-        db.cas(run_id, key.clone(), v1.version, Value::I64(2))
+        db.cas(run_id, key.clone(), v1.version.as_u64(), Value::I64(2))
             .unwrap();
         let v2 = db.get(&key).unwrap().unwrap();
         assert_eq!(v2.value, Value::I64(2));

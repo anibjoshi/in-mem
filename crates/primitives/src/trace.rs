@@ -693,7 +693,7 @@ impl TraceStore {
         let mut truncated = false;
 
         // Scan all traces for this run
-        for (key, versioned_value) in snapshot.scan_prefix(&scan_prefix)? {
+        for (_key, versioned_value) in snapshot.scan_prefix(&scan_prefix)? {
             // Check budget constraints
             if start.elapsed().as_micros() as u64 >= req.budget.max_wall_time_micros {
                 truncated = true;
@@ -720,19 +720,10 @@ impl TraceStore {
             // Extract searchable text
             let text = self.extract_trace_text(&trace);
 
-            // Generate a numeric span_id from the trace_id hash
-            let span_id = {
-                use std::collections::hash_map::DefaultHasher;
-                use std::hash::{Hash, Hasher};
-                let mut hasher = DefaultHasher::new();
-                trace.id.hash(&mut hasher);
-                hasher.finish()
-            };
-
             candidates.push(SearchCandidate::new(
                 DocRef::Trace {
-                    key: key.clone(),
-                    span_id,
+                    run_id: req.run_id,
+                    trace_id: trace.id.clone(),
                 },
                 text,
                 Some(trace.timestamp as u64),
@@ -769,8 +760,8 @@ impl crate::searchable::Searchable for TraceStore {
         self.search(req)
     }
 
-    fn primitive_kind(&self) -> in_mem_core::search_types::PrimitiveKind {
-        in_mem_core::search_types::PrimitiveKind::Trace
+    fn primitive_kind(&self) -> in_mem_core::PrimitiveType {
+        in_mem_core::PrimitiveType::Trace
     }
 }
 

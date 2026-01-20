@@ -697,7 +697,9 @@ fn apply_transaction<S: Storage + ?Sized>(
                 })?;
 
                 // Create the document
-                let doc = RecoveryJsonDoc::new(*doc_id, value, *version, *timestamp);
+                // Convert Timestamp (u64 microseconds) to i64 seconds for recovery format
+                let timestamp_secs = (timestamp.as_micros() / 1_000_000) as i64;
+                let doc = RecoveryJsonDoc::new(*doc_id, value, *version, timestamp_secs);
                 let doc_bytes = doc.to_bytes()?;
 
                 // Store using JSON key
@@ -843,16 +845,16 @@ fn apply_transaction<S: Storage + ?Sized>(
 mod tests {
     use super::*;
     use crate::wal::DurabilityMode;
-    use chrono::Utc;
     use in_mem_core::types::{Key, Namespace};
     use in_mem_core::value::Value;
+    use in_mem_core::Timestamp;
     use in_mem_core::Storage; // Need trait in scope for .get() and .current_version()
     use in_mem_storage::UnifiedStore; // Used in tests (still implements Storage)
     use tempfile::TempDir;
 
     /// Helper to get current timestamp
-    fn now() -> i64 {
-        Utc::now().timestamp()
+    fn now() -> Timestamp {
+        Timestamp::now()
     }
 
     #[test]
@@ -932,12 +934,12 @@ mod tests {
         let key1 = Key::new_kv(ns.clone(), "key1");
         let val1 = store.get(&key1).unwrap().unwrap();
         assert_eq!(val1.value, Value::Bytes(b"value1".to_vec()));
-        assert_eq!(val1.version, 1);
+        assert_eq!(val1.version.as_u64(), 1);
 
         let key2 = Key::new_kv(ns.clone(), "key2");
         let val2 = store.get(&key2).unwrap().unwrap();
         assert_eq!(val2.value, Value::String("value2".to_string()));
-        assert_eq!(val2.version, 2);
+        assert_eq!(val2.version.as_u64(), 2);
     }
 
     #[test]
@@ -1251,15 +1253,15 @@ mod tests {
         // Verify versions are preserved exactly
         let key1 = Key::new_kv(ns.clone(), "key1");
         let val1 = store.get(&key1).unwrap().unwrap();
-        assert_eq!(val1.version, 100); // Version preserved, not re-allocated
+        assert_eq!(val1.version.as_u64(), 100); // Version preserved, not re-allocated
 
         let key2 = Key::new_kv(ns.clone(), "key2");
         let val2 = store.get(&key2).unwrap().unwrap();
-        assert_eq!(val2.version, 200);
+        assert_eq!(val2.version.as_u64(), 200);
 
         let key3 = Key::new_kv(ns.clone(), "key3");
         let val3 = store.get(&key3).unwrap().unwrap();
-        assert_eq!(val3.version, 300);
+        assert_eq!(val3.version.as_u64(), 300);
 
         // Global version should reflect max version from WAL
         assert_eq!(store.current_version(), 300);
@@ -2301,7 +2303,7 @@ mod tests {
         // Final value should be "final" with version 30
         let stored = store.get(&key).unwrap().unwrap();
         assert_eq!(stored.value, Value::String("final".to_string()));
-        assert_eq!(stored.version, 30);
+        assert_eq!(stored.version.as_u64(), 30);
     }
 
     // ========================================================================

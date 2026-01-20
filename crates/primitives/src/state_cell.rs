@@ -481,7 +481,7 @@ impl StateCell {
             let text = self.extract_state_text(&cell_name, &state);
 
             candidates.push(SearchCandidate::new(
-                DocRef::State { key: key.clone() },
+                DocRef::State { run_id: req.run_id, name: cell_name },
                 text,
                 Some(state.updated_at as u64),
             ));
@@ -516,8 +516,8 @@ impl crate::searchable::Searchable for StateCell {
         self.search(req)
     }
 
-    fn primitive_kind(&self) -> in_mem_core::search_types::PrimitiveKind {
-        in_mem_core::search_types::PrimitiveKind::State
+    fn primitive_kind(&self) -> in_mem_core::PrimitiveType {
+        in_mem_core::PrimitiveType::State
     }
 }
 
