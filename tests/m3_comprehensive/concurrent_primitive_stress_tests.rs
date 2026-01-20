@@ -322,7 +322,7 @@ mod statecell_stress {
         // Final value should equal total increments (no lost updates)
         let state = tp.state_cell.read(&run_id, "counter").unwrap().unwrap();
         assert_eq!(
-            state.value,
+            state.value.value,
             values::int((num_threads * increments_per_thread) as i64)
         );
     }
@@ -399,10 +399,10 @@ mod statecell_stress {
                     if let Ok((_, new_version)) = result {
                         // Per-thread: each successful transition should return a higher version
                         // than the previous successful transition by THIS thread
-                        if new_version <= last_version {
+                        if new_version.value <= last_version {
                             version_decreases += 1;
                         }
-                        last_version = new_version;
+                        last_version = new_version.value;
                     }
                 }
                 version_decreases
@@ -420,7 +420,7 @@ mod statecell_stress {
         let final_state = tp.state_cell.read(&run_id, "cell").unwrap().unwrap();
         let expected_version = (num_threads * ops_per_thread + 1) as u64; // +1 for init
         assert_eq!(
-            final_state.version, expected_version,
+            final_state.value.version, expected_version,
             "Final version should equal total transitions + 1"
         );
     }
@@ -523,7 +523,7 @@ mod cross_primitive_stress {
         // StateCell should equal total transitions
         let state = tp.state_cell.read(&run_id, "state").unwrap().unwrap();
         assert_eq!(
-            state.value,
+            state.value.value,
             values::int((num_threads * ops_per_thread) as i64)
         );
     }

@@ -80,7 +80,7 @@ mod multi_primitive_recovery {
 
             // StateCell recovered
             let state = prims.state_cell.read(&run_id, "cell").unwrap().unwrap();
-            assert_eq!(state.value, values::int(42));
+            assert_eq!(state.value.value, values::int(42));
 
             // TraceStore recovered
             let traces = prims.trace_store.query_by_type(&run_id, "Thought").unwrap();
@@ -251,8 +251,8 @@ mod cas_version_continuity {
                 .unwrap();
 
             let state = prims.state_cell.read(&run_id, "cell").unwrap().unwrap();
-            version_after_session_1 = state.version;
-            assert_eq!(state.version, 4);
+            version_after_session_1 = state.value.version;
+            assert_eq!(state.value.version, 4);
         }
 
         // Session 2: Recover and verify version
@@ -260,8 +260,8 @@ mod cas_version_continuity {
             let prims = ptp.open();
             let state = prims.state_cell.read(&run_id, "cell").unwrap().unwrap();
 
-            assert_eq!(state.value, values::int(3));
-            assert_eq!(state.version, version_after_session_1);
+            assert_eq!(state.value.value, values::int(3));
+            assert_eq!(state.value.version, version_after_session_1);
 
             // CAS with old version fails
             let result = prims.state_cell.cas(&run_id, "cell", 3, values::int(999));
@@ -271,11 +271,12 @@ mod cas_version_continuity {
             let new_version = prims
                 .state_cell
                 .cas(&run_id, "cell", 4, values::int(4))
-                .unwrap();
+                .unwrap()
+                .value;
             assert_eq!(new_version, 5);
 
             let state = prims.state_cell.read(&run_id, "cell").unwrap().unwrap();
-            assert_eq!(state.version, 5);
+            assert_eq!(state.value.version, 5);
         }
     }
 
@@ -309,7 +310,7 @@ mod cas_version_continuity {
 
             // Value should be 10
             let state = prims.state_cell.read(&run_id, "counter").unwrap().unwrap();
-            assert_eq!(state.value, values::int(10));
+            assert_eq!(state.value.value, values::int(10));
 
             // Transition again
             prims
@@ -324,7 +325,7 @@ mod cas_version_continuity {
                 .unwrap();
 
             let state = prims.state_cell.read(&run_id, "counter").unwrap().unwrap();
-            assert_eq!(state.value, values::int(15));
+            assert_eq!(state.value.value, values::int(15));
         }
     }
 }
@@ -442,7 +443,8 @@ mod index_recovery {
                     vec![],
                     values::null(),
                 )
-                .unwrap();
+                .unwrap()
+                .value;
             prims
                 .trace_store
                 .record_child(
@@ -642,7 +644,7 @@ mod multiple_recovery_cycles {
             );
             assert_eq!(prims.event_log.len(&run_id).unwrap(), 5);
             let state = prims.state_cell.read(&run_id, "state").unwrap().unwrap();
-            assert_eq!(state.value, values::int(5));
+            assert_eq!(state.value.value, values::int(5));
         }
     }
 }

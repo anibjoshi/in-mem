@@ -237,8 +237,8 @@ fn test_state_cell_version_survives_recovery() {
 
     // Verify before crash
     let state = state_cell.read(&run_id, "counter").unwrap().unwrap();
-    assert_eq!(state.version, 4);
-    assert_eq!(state.value, Value::I64(30));
+    assert_eq!(state.value.version, 4);
+    assert_eq!(state.value.value, Value::I64(30));
 
     // Simulate crash
     drop(state_cell);
@@ -250,14 +250,14 @@ fn test_state_cell_version_survives_recovery() {
 
     // Version is correct (4, not 1)
     let state = state_cell.read(&run_id, "counter").unwrap().unwrap();
-    assert_eq!(state.version, 4);
-    assert_eq!(state.value, Value::I64(30));
+    assert_eq!(state.value.version, 4);
+    assert_eq!(state.value.value, Value::I64(30));
 
     // CAS works with correct version
-    let new_version = state_cell
+    let new_versioned = state_cell
         .cas(&run_id, "counter", 4, Value::I64(40))
         .unwrap();
-    assert_eq!(new_version, 5);
+    assert_eq!(new_versioned.value, 5);
 
     // CAS with old version fails
     let result = state_cell.cas(&run_id, "counter", 4, Value::I64(999));
@@ -290,8 +290,8 @@ fn test_state_cell_set_survives_recovery() {
 
     // Value preserved
     let state = state_cell.read(&run_id, "status").unwrap().unwrap();
-    assert_eq!(state.value, Value::String("updated".into()));
-    assert_eq!(state.version, 2); // init = 1, set = 2
+    assert_eq!(state.value.value, Value::String("updated".into()));
+    assert_eq!(state.value.version, 2); // init = 1, set = 2
 }
 
 /// Test TraceStore data survives recovery
@@ -313,7 +313,8 @@ fn test_trace_store_survives_recovery() {
             vec![],
             Value::Null,
         )
-        .unwrap();
+        .unwrap()
+        .value; // Extract trace_id from Versioned
     let id2 = trace_store
         .record(
             &run_id,
@@ -326,7 +327,8 @@ fn test_trace_store_survives_recovery() {
             vec![],
             Value::Null,
         )
-        .unwrap();
+        .unwrap()
+        .value; // Extract trace_id from Versioned
     let id3 = trace_store
         .record(
             &run_id,
@@ -339,7 +341,8 @@ fn test_trace_store_survives_recovery() {
             vec![],
             Value::Null,
         )
-        .unwrap();
+        .unwrap()
+        .value; // Extract trace_id from Versioned
 
     // Verify before crash
     assert_eq!(trace_store.count(&run_id).unwrap(), 3);
@@ -356,13 +359,13 @@ fn test_trace_store_survives_recovery() {
     assert_eq!(trace_store.count(&run_id).unwrap(), 3);
 
     let trace1 = trace_store.get(&run_id, &id1).unwrap().unwrap();
-    assert!(matches!(trace1.trace_type, TraceType::Thought { .. }));
+    assert!(matches!(trace1.value.trace_type, TraceType::Thought { .. }));
 
     let trace2 = trace_store.get(&run_id, &id2).unwrap().unwrap();
-    assert!(matches!(trace2.trace_type, TraceType::ToolCall { .. }));
+    assert!(matches!(trace2.value.trace_type, TraceType::ToolCall { .. }));
 
     let trace3 = trace_store.get(&run_id, &id3).unwrap().unwrap();
-    assert!(matches!(trace3.trace_type, TraceType::Decision { .. }));
+    assert!(matches!(trace3.value.trace_type, TraceType::Decision { .. }));
 }
 
 /// Test TraceStore type indices survive recovery
@@ -467,7 +470,8 @@ fn test_trace_parent_child_survives_recovery() {
             vec![],
             Value::Null,
         )
-        .unwrap();
+        .unwrap()
+        .value; // Extract trace_id from Versioned
 
     // Create child traces
     let child1_id = trace_store
@@ -481,7 +485,8 @@ fn test_trace_parent_child_survives_recovery() {
             vec![],
             Value::Null,
         )
-        .unwrap();
+        .unwrap()
+        .value; // Extract trace_id from Versioned
     let child2_id = trace_store
         .record_child(
             &run_id,
@@ -493,7 +498,8 @@ fn test_trace_parent_child_survives_recovery() {
             vec![],
             Value::Null,
         )
-        .unwrap();
+        .unwrap()
+        .value; // Extract trace_id from Versioned
 
     // Verify children before crash
     let children = trace_store.get_children(&run_id, &parent_id).unwrap();
@@ -513,10 +519,10 @@ fn test_trace_parent_child_survives_recovery() {
 
     // Children have correct parent_id
     let child1 = trace_store.get(&run_id, &child1_id).unwrap().unwrap();
-    assert_eq!(child1.parent_id, Some(parent_id.clone()));
+    assert_eq!(child1.value.parent_id, Some(parent_id.clone()));
 
     let child2 = trace_store.get(&run_id, &child2_id).unwrap().unwrap();
-    assert_eq!(child2.parent_id, Some(parent_id.clone()));
+    assert_eq!(child2.value.parent_id, Some(parent_id.clone()));
 }
 
 /// Test RunIndex status survives recovery
@@ -530,7 +536,7 @@ fn test_run_index_status_survives_recovery() {
 
     // Create run with metadata
     let run_meta = run_index.create_run("test-run").unwrap();
-    let run_name = run_meta.name.clone();
+    let run_name = run_meta.value.name.clone();
 
     // Update status (use Paused instead of default Active)
     run_index
@@ -547,9 +553,9 @@ fn test_run_index_status_survives_recovery() {
 
     // Verify before crash
     let run = run_index.get_run(&run_name).unwrap().unwrap();
-    assert_eq!(run.status, RunStatus::Paused);
-    assert!(run.tags.contains(&"important".to_string()));
-    assert!(run.tags.contains(&"batch-1".to_string()));
+    assert_eq!(run.value.status, RunStatus::Paused);
+    assert!(run.value.tags.contains(&"important".to_string()));
+    assert!(run.value.tags.contains(&"batch-1".to_string()));
 
     // Simulate crash
     drop(run_index);
@@ -561,10 +567,10 @@ fn test_run_index_status_survives_recovery() {
 
     // Status preserved
     let recovered = run_index.get_run(&run_name).unwrap().unwrap();
-    assert_eq!(recovered.status, RunStatus::Paused);
-    assert!(recovered.tags.contains(&"important".to_string()));
-    assert!(recovered.tags.contains(&"batch-1".to_string()));
-    assert_eq!(recovered.name, "test-run");
+    assert_eq!(recovered.value.status, RunStatus::Paused);
+    assert!(recovered.value.tags.contains(&"important".to_string()));
+    assert!(recovered.value.tags.contains(&"batch-1".to_string()));
+    assert_eq!(recovered.value.name, "test-run");
 }
 
 /// Test RunIndex query survives recovery
@@ -582,10 +588,10 @@ fn test_run_index_query_survives_recovery() {
     let _run3 = run_index.create_run("run3").unwrap();
 
     run_index
-        .update_status(&run1.name, RunStatus::Completed)
+        .update_status(&run1.value.name, RunStatus::Completed)
         .unwrap();
     run_index
-        .update_status(&run2.name, RunStatus::Failed)
+        .update_status(&run2.value.name, RunStatus::Failed)
         .unwrap();
     // run3 stays Active (default)
 
@@ -621,8 +627,8 @@ fn test_run_delete_survives_recovery() {
     // Create two runs
     let meta1 = run_index.create_run("run1").unwrap();
     let meta2 = run_index.create_run("run2").unwrap();
-    let run1 = RunId::from_string(&meta1.run_id).unwrap();
-    let run2 = RunId::from_string(&meta2.run_id).unwrap();
+    let run1 = RunId::from_string(&meta1.value.run_id).unwrap();
+    let run2 = RunId::from_string(&meta2.value.run_id).unwrap();
 
     // Write data to both
     kv.put(&run1, "key", Value::I64(1)).unwrap();
@@ -692,7 +698,7 @@ fn test_cross_primitive_transaction_survives_recovery() {
     );
     assert_eq!(event_log.len(&run_id).unwrap(), 1);
     let state = state_cell.read(&run_id, "txn_state").unwrap().unwrap();
-    assert_eq!(state.value, Value::I64(42));
+    assert_eq!(state.value.value, Value::I64(42));
     assert_eq!(trace_store.count(&run_id).unwrap(), 1);
 }
 
@@ -764,7 +770,7 @@ fn test_all_primitives_recover_together() {
 
         // Create run
         let run_meta = run_index.create_run("full-test").unwrap();
-        run_id = RunId::from_string(&run_meta.run_id).unwrap();
+        run_id = RunId::from_string(&run_meta.value.run_id).unwrap();
 
         // Populate all primitives
         kv.put(&run_id, "full_key", Value::String("full_value".into()))
@@ -805,7 +811,7 @@ fn test_all_primitives_recover_together() {
 
         // RunIndex
         let run = run_index.get_run("full-test").unwrap().unwrap();
-        assert_eq!(run.name, "full-test");
+        assert_eq!(run.value.name, "full-test");
 
         // KV
         assert_eq!(
@@ -820,8 +826,8 @@ fn test_all_primitives_recover_together() {
 
         // StateCell
         let state = state_cell.read(&run_id, "full_state").unwrap().unwrap();
-        assert_eq!(state.value, Value::I64(100));
-        assert_eq!(state.version, 2);
+        assert_eq!(state.value.value, Value::I64(100));
+        assert_eq!(state.value.version, 2);
 
         // TraceStore
         assert_eq!(trace_store.count(&run_id).unwrap(), 1);

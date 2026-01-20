@@ -62,7 +62,7 @@ mod typetag_isolation {
 
         let state = tp.state_cell.read(&run_id, "data").unwrap();
         assert!(state.is_some());
-        assert_eq!(state.unwrap().value, values::string("state-value"));
+        assert_eq!(state.unwrap().value.value, values::string("state-value"));
     }
 
     #[test]
@@ -206,8 +206,8 @@ mod run_namespace_isolation {
         let state1 = tp.state_cell.read(&run1, "counter").unwrap().unwrap();
         let state2 = tp.state_cell.read(&run2, "counter").unwrap().unwrap();
 
-        assert_eq!(state1.value, values::int(100));
-        assert_eq!(state2.value, values::int(200));
+        assert_eq!(state1.value.value, values::int(100));
+        assert_eq!(state2.value.value, values::int(200));
     }
 
     #[test]
@@ -337,7 +337,7 @@ mod facade_identity {
         // Read with new handle
         let sc2 = StateCell::new(tp.db.clone());
         let state = sc2.read(&run_id, "cell").unwrap().unwrap();
-        assert_eq!(state.value, values::int(100));
+        assert_eq!(state.value.value, values::int(100));
     }
 
     #[test]
@@ -550,7 +550,7 @@ mod value_type_safety {
             .unwrap();
 
         let state = tp.state_cell.read(&run_id, "complex").unwrap().unwrap();
-        assert_eq!(state.value, complex);
+        assert_eq!(state.value.value, complex);
     }
 }
 
@@ -742,7 +742,7 @@ mod no_hidden_writes {
         // Init cell
         tp.state_cell.init(&run_id, "cell", values::int(1)).unwrap();
         let state1 = tp.state_cell.read(&run_id, "cell").unwrap().unwrap();
-        let v1 = state1.version;
+        let v1 = state1.value.version;
 
         // Failed CAS attempt via transaction
         use in_mem_primitives::extensions::*;
@@ -754,8 +754,8 @@ mod no_hidden_writes {
 
         // Version should not have changed
         let state2 = tp.state_cell.read(&run_id, "cell").unwrap().unwrap();
-        assert_eq!(state2.version, v1, "Version changed despite abort");
-        assert_eq!(state2.value, values::int(1), "Value changed despite abort");
+        assert_eq!(state2.value.version, v1, "Version changed despite abort");
+        assert_eq!(state2.value.value, values::int(1), "Value changed despite abort");
     }
 
     #[test]
@@ -787,7 +787,7 @@ mod no_hidden_writes {
             values::int(2)
         );
         assert_eq!(
-            tp.state_cell.read(&run_id, "cell").unwrap().unwrap().value,
+            tp.state_cell.read(&run_id, "cell").unwrap().unwrap().value.value,
             values::int(3)
         );
     }

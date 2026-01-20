@@ -205,8 +205,8 @@ fn statecell_version_monotonicity() {
         sc.set(&run_id, "counter", Value::I64(i)).unwrap();
 
         let state = sc.read(&run_id, "counter").unwrap().unwrap();
-        assert_eq!(state.version, (i + 1) as u64, "version should increment");
-        assert_eq!(state.value, Value::I64(i), "value should update");
+        assert_eq!(state.value.version, (i + 1) as u64, "version should increment");
+        assert_eq!(state.value.value, Value::I64(i), "value should update");
     }
 }
 
@@ -231,7 +231,8 @@ fn tracestore_fast_path_equals_transaction_read() {
             vec!["important".into()],
             Value::Null,
         )
-        .unwrap();
+        .unwrap()
+        .value; // Extract trace_id from Versioned
 
     let trace2_id = ts
         .record(
@@ -245,7 +246,8 @@ fn tracestore_fast_path_equals_transaction_read() {
             vec![],
             Value::Null,
         )
-        .unwrap();
+        .unwrap()
+        .value; // Extract trace_id from Versioned
 
     // Fast path reads
     let fast1 = ts.get(&run_id, &trace1_id).unwrap();
@@ -257,9 +259,9 @@ fn tracestore_fast_path_equals_transaction_read() {
     let txn2 = ts.get_in_transaction(&run_id, &trace2_id).unwrap();
     let txn_missing = ts.get_in_transaction(&run_id, "nonexistent").unwrap();
 
-    // Must be identical
-    assert_eq!(fast1, txn1, "trace1 must match");
-    assert_eq!(fast2, txn2, "trace2 must match");
+    // Values must be identical (version metadata may differ between paths)
+    assert_eq!(fast1.as_ref().map(|v| &v.value), txn1.as_ref().map(|v| &v.value), "trace1 values must match");
+    assert_eq!(fast2.as_ref().map(|v| &v.value), txn2.as_ref().map(|v| &v.value), "trace2 values must match");
     assert_eq!(fast_missing, txn_missing, "missing trace must match");
 }
 
@@ -282,7 +284,8 @@ fn tracestore_parent_child_relationship_preserved() {
             vec![],
             Value::Null,
         )
-        .unwrap();
+        .unwrap()
+        .value; // Extract trace_id from Versioned
 
     let child_id = ts
         .record_child(
@@ -297,11 +300,12 @@ fn tracestore_parent_child_relationship_preserved() {
             vec![],
             Value::Null,
         )
-        .unwrap();
+        .unwrap()
+        .value; // Extract trace_id from Versioned
 
     // Fast path should see correct relationship
     let child = ts.get(&run_id, &child_id).unwrap().unwrap();
-    assert_eq!(child.parent_id, Some(parent_id.clone()));
+    assert_eq!(child.value.parent_id, Some(parent_id.clone()));
 
     // Tree reconstruction should work with fast path reads
     let tree = ts.get_tree(&run_id, &parent_id).unwrap().unwrap();
@@ -339,7 +343,8 @@ fn all_primitives_run_isolation() {
             vec![],
             Value::Null,
         )
-        .unwrap();
+        .unwrap()
+        .value; // Extract trace_id from Versioned
 
     // Write to run2
     kv.put(&run2, "key", Value::I64(2)).unwrap();
@@ -355,7 +360,8 @@ fn all_primitives_run_isolation() {
             vec![],
             Value::Null,
         )
-        .unwrap();
+        .unwrap()
+        .value; // Extract trace_id from Versioned
 
     // Fast path reads should maintain run isolation
     assert_eq!(kv.get(&run1, "key").unwrap().map(|v| v.value), Some(Value::I64(1)));
@@ -368,13 +374,13 @@ fn all_primitives_run_isolation() {
 
     let state1 = sc.read(&run1, "cell").unwrap().unwrap();
     let state2 = sc.read(&run2, "cell").unwrap().unwrap();
-    assert_eq!(state1.value, Value::I64(1));
-    assert_eq!(state2.value, Value::I64(2));
+    assert_eq!(state1.value.value, Value::I64(1));
+    assert_eq!(state2.value.value, Value::I64(2));
 
     let t1 = ts.get(&run1, &trace1_id).unwrap().unwrap();
     let t2 = ts.get(&run2, &trace2_id).unwrap().unwrap();
-    assert!(matches!(t1.trace_type, TraceType::Thought { content, .. } if content == "run1"));
-    assert!(matches!(t2.trace_type, TraceType::Thought { content, .. } if content == "run2"));
+    assert!(matches!(t1.value.trace_type, TraceType::Thought { content, .. } if content == "run1"));
+    assert!(matches!(t2.value.trace_type, TraceType::Thought { content, .. } if content == "run2"));
 
     // Cross-run reads should return None
     assert!(ts.get(&run1, &trace2_id).unwrap().is_none());

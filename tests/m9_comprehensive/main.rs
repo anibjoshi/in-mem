@@ -43,3 +43,5 @@ mod tier5_seven_invariants;
 // Tier 6: Primitive Conformance Tests (Epic 64)
 mod tier6_kv_conformance;
 mod tier6_event_conformance;
+mod tier6_state_conformance;
+mod tier6_trace_conformance;

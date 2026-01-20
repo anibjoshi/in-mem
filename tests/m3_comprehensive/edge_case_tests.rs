@@ -284,9 +284,10 @@ mod boundary_values {
                 vec![],
                 values::null(),
             )
-            .unwrap();
+            .unwrap()
+            .value;
         let trace = tp.trace_store.get(&tp.run_id, &id).unwrap().unwrap();
-        assert!(matches!(trace.trace_type, TraceType::Custom { name, .. } if name.is_empty()));
+        assert!(matches!(trace.value.trace_type, TraceType::Custom { name, .. } if name.is_empty()));
     }
 }
 
@@ -413,9 +414,10 @@ mod unicode_and_special {
                 vec![],
                 values::null(),
             )
-            .unwrap();
+            .unwrap()
+            .value;
         let trace = tp.trace_store.get(&tp.run_id, &id).unwrap().unwrap();
-        assert!(matches!(trace.trace_type, TraceType::Custom { name, .. } if name == unicode_type));
+        assert!(matches!(trace.value.trace_type, TraceType::Custom { name, .. } if name == unicode_type));
     }
 }
 
@@ -564,7 +566,7 @@ mod concurrent_edge_cases {
         // Final value should be total increments
         let state = tp.state_cell.read(&run_id, "counter").unwrap().unwrap();
         assert_eq!(
-            state.value,
+            state.value.value,
             values::int((num_threads * increments_per_thread) as i64)
         );
     }
@@ -613,7 +615,7 @@ mod delete_edge_cases {
             .init(&tp.run_id, "cell", values::int(2))
             .unwrap();
         let state = tp.state_cell.read(&tp.run_id, "cell").unwrap().unwrap();
-        assert_eq!(state.value, values::int(2));
-        assert_eq!(state.version, 1); // Version resets after delete
+        assert_eq!(state.value.value, values::int(2));
+        assert_eq!(state.value.version, 1); // Version resets after delete
     }
 }

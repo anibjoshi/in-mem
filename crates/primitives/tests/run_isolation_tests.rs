@@ -103,12 +103,12 @@ fn test_state_cell_isolation() {
     let state1 = state_cell.read(&run1, "counter").unwrap().unwrap();
     let state2 = state_cell.read(&run2, "counter").unwrap().unwrap();
 
-    assert_eq!(state1.value, Value::I64(0));
-    assert_eq!(state2.value, Value::I64(100));
+    assert_eq!(state1.value.value, Value::I64(0));
+    assert_eq!(state2.value.value, Value::I64(100));
 
     // Both start at version 1
-    assert_eq!(state1.version, 1);
-    assert_eq!(state2.version, 1);
+    assert_eq!(state1.value.version, 1);
+    assert_eq!(state2.value.version, 1);
 
     // CAS on run1 doesn't affect run2
     state_cell.cas(&run1, "counter", 1, Value::I64(10)).unwrap();
@@ -116,10 +116,10 @@ fn test_state_cell_isolation() {
     let state1 = state_cell.read(&run1, "counter").unwrap().unwrap();
     let state2 = state_cell.read(&run2, "counter").unwrap().unwrap();
 
-    assert_eq!(state1.value, Value::I64(10));
-    assert_eq!(state1.version, 2);
-    assert_eq!(state2.value, Value::I64(100)); // Unchanged
-    assert_eq!(state2.version, 1); // Unchanged
+    assert_eq!(state1.value.value, Value::I64(10));
+    assert_eq!(state1.value.version, 2);
+    assert_eq!(state2.value.value, Value::I64(100)); // Unchanged
+    assert_eq!(state2.value.version, 1); // Unchanged
 }
 
 /// Test TraceStore isolation - queries respect run boundaries
@@ -257,11 +257,11 @@ fn test_cross_run_query_isolation() {
     // (run2 only has key0-key4, run1 has key0-key9)
     // Actually both have overlapping key names, but different values
     assert_eq!(
-        state_cell.read(&run1, "state").unwrap().unwrap().value,
+        state_cell.read(&run1, "state").unwrap().unwrap().value.value,
         Value::String("run1".into())
     );
     assert_eq!(
-        state_cell.read(&run2, "state").unwrap().unwrap().value,
+        state_cell.read(&run2, "state").unwrap().unwrap().value.value,
         Value::String("run2".into())
     );
 }
@@ -281,8 +281,8 @@ fn test_run_delete_isolation() {
     let meta1 = run_index.create_run("run1").unwrap();
     let meta2 = run_index.create_run("run2").unwrap();
 
-    let run1 = RunId::from_string(&meta1.run_id).unwrap();
-    let run2 = RunId::from_string(&meta2.run_id).unwrap();
+    let run1 = RunId::from_string(&meta1.value.run_id).unwrap();
+    let run2 = RunId::from_string(&meta2.value.run_id).unwrap();
 
     // Write data to both runs
     kv.put(&run1, "key", Value::I64(1)).unwrap();
@@ -386,10 +386,10 @@ fn test_state_cell_cas_isolation() {
     let s1 = state_cell.read(&run1, "cell").unwrap().unwrap();
     let s2 = state_cell.read(&run2, "cell").unwrap().unwrap();
 
-    assert_eq!(s1.value, Value::I64(10));
-    assert_eq!(s1.version, 2);
-    assert_eq!(s2.value, Value::I64(20));
-    assert_eq!(s2.version, 2);
+    assert_eq!(s1.value.value, Value::I64(10));
+    assert_eq!(s1.value.version, 2);
+    assert_eq!(s2.value.value, Value::I64(20));
+    assert_eq!(s2.value.version, 2);
 }
 
 /// Test EventLog chain isolation - chains are independent per run
@@ -453,7 +453,8 @@ fn test_trace_parent_child_isolation() {
             vec![],
             Value::Null,
         )
-        .unwrap();
+        .unwrap()
+        .value; // Extract trace_id from Versioned
 
     let _child1 = trace_store
         .record_child(
@@ -481,7 +482,8 @@ fn test_trace_parent_child_isolation() {
             vec![],
             Value::Null,
         )
-        .unwrap();
+        .unwrap()
+        .value; // Extract trace_id from Versioned
 
     let _child2 = trace_store
         .record_child(

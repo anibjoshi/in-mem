@@ -68,8 +68,8 @@ mod primitives_are_projections {
 
         // New facade sees same data
         let state = state_cell_2.read(&run_id, "cell_1").unwrap().unwrap();
-        assert_eq!(state.value, values::int(200));
-        assert!(state.version >= 1);
+        assert_eq!(state.value.value, values::int(200));
+        assert!(state.value.version >= 1);
     }
 
     #[test]
@@ -90,14 +90,15 @@ mod primitives_are_projections {
                 vec![],
                 values::null(),
             )
-            .unwrap();
+            .unwrap()
+            .value;
 
         // Create new TraceStore facade
         let trace_store_2 = TraceStore::new(tp.db.clone());
 
         // New facade can retrieve the trace
         let trace = trace_store_2.get(&run_id, &trace_id).unwrap().unwrap();
-        assert!(matches!(trace.trace_type, TraceType::Thought { .. }));
+        assert!(matches!(trace.value.trace_type, TraceType::Thought { .. }));
     }
 
     #[test]
@@ -413,10 +414,11 @@ mod replay_metadata_contract {
                 vec![],
                 values::null(),
             )
-            .unwrap();
+            .unwrap()
+            .value;
 
         let trace = tp.trace_store.get(&run_id, &trace_id).unwrap().unwrap();
-        assert!(matches!(trace.trace_type, TraceType::Thought { .. }));
+        assert!(matches!(trace.value.trace_type, TraceType::Thought { .. }));
     }
 
     #[test]
@@ -436,10 +438,11 @@ mod replay_metadata_contract {
                 vec![],
                 values::null(),
             )
-            .unwrap();
+            .unwrap()
+            .value;
 
         let trace = tp.trace_store.get(&run_id, &trace_id).unwrap().unwrap();
-        assert!(trace.timestamp > 0);
+        assert!(trace.value.timestamp > 0);
     }
 
     #[test]
@@ -459,7 +462,8 @@ mod replay_metadata_contract {
                 vec![],
                 values::null(),
             )
-            .unwrap();
+            .unwrap()
+            .value;
         let child_id = tp
             .trace_store
             .record_child(
@@ -472,10 +476,11 @@ mod replay_metadata_contract {
                 vec![],
                 values::null(),
             )
-            .unwrap();
+            .unwrap()
+            .value;
 
         let child = tp.trace_store.get(&run_id, &child_id).unwrap().unwrap();
-        assert_eq!(child.parent_id, Some(parent_id));
+        assert_eq!(child.value.parent_id, Some(parent_id));
     }
 
     #[test]
@@ -495,10 +500,11 @@ mod replay_metadata_contract {
                 vec![],
                 values::null(),
             )
-            .unwrap();
+            .unwrap()
+            .value;
 
         let root = tp.trace_store.get(&run_id, &root_id).unwrap().unwrap();
-        assert_eq!(root.parent_id, None);
+        assert_eq!(root.value.parent_id, None);
     }
 
     #[test]

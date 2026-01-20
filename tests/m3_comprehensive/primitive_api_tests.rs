@@ -386,12 +386,13 @@ mod statecell_api {
         let version = tp
             .state_cell
             .init(&tp.run_id, "cell", values::int(0))
-            .unwrap();
+            .unwrap()
+            .value;
         assert_eq!(version, 1);
 
         let state = tp.state_cell.read(&tp.run_id, "cell").unwrap().unwrap();
-        assert_eq!(state.value, values::int(0));
-        assert_eq!(state.version, 1);
+        assert_eq!(state.value.value, values::int(0));
+        assert_eq!(state.value.version, 1);
     }
 
     #[test]
@@ -422,12 +423,13 @@ mod statecell_api {
         let new_version = tp
             .state_cell
             .cas(&tp.run_id, "cell", 1, values::int(20))
-            .unwrap();
+            .unwrap()
+            .value;
         assert_eq!(new_version, 2);
 
         let state = tp.state_cell.read(&tp.run_id, "cell").unwrap().unwrap();
-        assert_eq!(state.value, values::int(20));
-        assert_eq!(state.version, 2);
+        assert_eq!(state.value.value, values::int(20));
+        assert_eq!(state.value.version, 2);
     }
 
     #[test]
@@ -442,7 +444,7 @@ mod statecell_api {
 
         // Value unchanged
         let state = tp.state_cell.read(&tp.run_id, "cell").unwrap().unwrap();
-        assert_eq!(state.value, values::int(10));
+        assert_eq!(state.value.value, values::int(10));
     }
 
     #[test]
@@ -455,11 +457,12 @@ mod statecell_api {
         let new_version = tp
             .state_cell
             .set(&tp.run_id, "cell", values::int(100))
-            .unwrap();
+            .unwrap()
+            .value;
         assert!(new_version > 1);
 
         let state = tp.state_cell.read(&tp.run_id, "cell").unwrap().unwrap();
-        assert_eq!(state.value, values::int(100));
+        assert_eq!(state.value.value, values::int(100));
     }
 
     #[test]
@@ -470,11 +473,12 @@ mod statecell_api {
         let version = tp
             .state_cell
             .set(&tp.run_id, "new_cell", values::int(42))
-            .unwrap();
+            .unwrap()
+            .value;
         assert!(version >= 1);
 
         let state = tp.state_cell.read(&tp.run_id, "new_cell").unwrap().unwrap();
-        assert_eq!(state.value, values::int(42));
+        assert_eq!(state.value.value, values::int(42));
     }
 
     #[test]
@@ -532,7 +536,7 @@ mod statecell_api {
         assert_eq!(result.0, 1);
 
         let state = tp.state_cell.read(&tp.run_id, "counter").unwrap().unwrap();
-        assert_eq!(state.value, values::int(1));
+        assert_eq!(state.value.value, values::int(1));
     }
 
     #[test]
@@ -555,7 +559,7 @@ mod statecell_api {
         assert_eq!(result, 10);
 
         let state = tp.state_cell.read(&tp.run_id, "counter").unwrap().unwrap();
-        assert_eq!(state.value, values::int(10));
+        assert_eq!(state.value.value, values::int(10));
     }
 }
 
@@ -580,10 +584,11 @@ mod tracestore_api {
                 vec![],
                 Value::Null,
             )
-            .unwrap();
+            .unwrap()
+            .value;
 
         let trace = tp.trace_store.get(&tp.run_id, &trace_id).unwrap().unwrap();
-        assert!(matches!(trace.trace_type, TraceType::Thought { .. }));
+        assert!(matches!(trace.value.trace_type, TraceType::Thought { .. }));
     }
 
     #[test]
@@ -602,10 +607,11 @@ mod tracestore_api {
                 vec!["tag1".to_string(), "tag2".to_string()],
                 values::map(vec![("key", values::int(42))]),
             )
-            .unwrap();
+            .unwrap()
+            .value;
 
         let trace = tp.trace_store.get(&tp.run_id, &trace_id).unwrap().unwrap();
-        assert_eq!(trace.tags, vec!["tag1".to_string(), "tag2".to_string()]);
+        assert_eq!(trace.value.tags, vec!["tag1".to_string(), "tag2".to_string()]);
     }
 
     #[test]
@@ -624,7 +630,8 @@ mod tracestore_api {
                 vec![],
                 Value::Null,
             )
-            .unwrap();
+            .unwrap()
+            .value;
 
         // Create child trace
         let child_id = tp
@@ -639,10 +646,11 @@ mod tracestore_api {
                 vec![],
                 Value::Null,
             )
-            .unwrap();
+            .unwrap()
+            .value;
 
         let child = tp.trace_store.get(&tp.run_id, &child_id).unwrap().unwrap();
-        assert_eq!(child.parent_id, Some(parent_id));
+        assert_eq!(child.value.parent_id, Some(parent_id));
     }
 
     #[test]
@@ -711,7 +719,8 @@ mod tracestore_api {
                 vec![],
                 Value::Null,
             )
-            .unwrap();
+            .unwrap()
+            .value;
 
         // Add children
         tp.trace_store

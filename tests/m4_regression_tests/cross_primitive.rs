@@ -99,8 +99,8 @@ fn cross_run_complete_isolation() {
 
         let state_a = state.read(&run_a, "cell").unwrap().unwrap();
         let state_b = state.read(&run_b, "cell").unwrap().unwrap();
-        assert_eq!(state_a.value, Value::I64(100));
-        assert_eq!(state_b.value, Value::I64(200));
+        assert_eq!(state_a.value.value, Value::I64(100));
+        assert_eq!(state_b.value.value, Value::I64(200));
 
         assert_eq!(traces.count(&run_a).unwrap(), 1);
         assert_eq!(traces.count(&run_b).unwrap(), 1);
@@ -245,7 +245,7 @@ fn mixed_primitive_sequence() {
         assert_eq!(kv.get(&run_id, "step").unwrap().map(|v| v.value), Some(Value::I64(4)));
         assert_eq!(events.len(&run_id).unwrap(), 2);
         assert_eq!(
-            state.read(&run_id, "progress").unwrap().unwrap().value,
+            state.read(&run_id, "progress").unwrap().unwrap().value.value,
             Value::I64(2)
         );
         assert_eq!(traces.count(&run_id).unwrap(), 1);
@@ -337,7 +337,7 @@ fn data_survives_facade_recreation() {
         );
         assert_eq!(events2.len(&run_id).unwrap(), 1);
         assert_eq!(
-            state2.read(&run_id, "saved").unwrap().unwrap().value,
+            state2.read(&run_id, "saved").unwrap().unwrap().value.value,
             Value::I64(777)
         );
 

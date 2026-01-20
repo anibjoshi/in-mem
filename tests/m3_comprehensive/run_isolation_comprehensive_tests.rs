@@ -67,7 +67,7 @@ mod n_run_isolation {
 
             // StateCell isolation
             let state = tp.state_cell.read(run, "state").unwrap().unwrap();
-            assert_eq!(state.value, values::int(i as i64));
+            assert_eq!(state.value.value, values::int(i as i64));
 
             // TraceStore isolation
             let traces = tp
@@ -427,7 +427,8 @@ mod cross_run_leakage_prevention {
                 vec![],
                 values::null(),
             )
-            .unwrap();
+            .unwrap()
+            .value;
         let id2 = tp
             .trace_store
             .record(
@@ -439,7 +440,8 @@ mod cross_run_leakage_prevention {
                 vec![],
                 values::null(),
             )
-            .unwrap();
+            .unwrap()
+            .value;
         let id3 = tp
             .trace_store
             .record(
@@ -451,7 +453,8 @@ mod cross_run_leakage_prevention {
                 vec![],
                 values::null(),
             )
-            .unwrap();
+            .unwrap()
+            .value;
 
         // list() returns only traces for that run
         let run1_traces = tp.trace_store.list(&run1).unwrap();

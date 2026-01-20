@@ -88,7 +88,8 @@ mod atomic_operations {
                 vec![],
                 Value::Null,
             )
-            .unwrap();
+            .unwrap()
+            .value;
 
         tp.state_cell
             .set(&run_id, "counter", values::int(1))
@@ -107,7 +108,7 @@ mod atomic_operations {
             .unwrap();
 
         let state = tp.state_cell.read(&run_id, "counter").unwrap().unwrap();
-        assert_eq!(state.value, values::int(1));
+        assert_eq!(state.value.value, values::int(1));
         assert_eq!(tp.trace_store.count(&run_id).unwrap(), 2);
     }
 }
@@ -152,7 +153,7 @@ mod read_your_writes {
             .init(&run_id, "cell", values::string("hello"))
             .unwrap();
         let state = tp.state_cell.read(&run_id, "cell").unwrap().unwrap();
-        assert_eq!(state.value, values::string("hello"));
+        assert_eq!(state.value.value, values::string("hello"));
     }
 
     #[test]
@@ -165,8 +166,8 @@ mod read_your_writes {
             .cas(&run_id, "cell", 1, values::int(10))
             .unwrap();
         let state = tp.state_cell.read(&run_id, "cell").unwrap().unwrap();
-        assert_eq!(state.value, values::int(10));
-        assert_eq!(state.version, 2);
+        assert_eq!(state.value.value, values::int(10));
+        assert_eq!(state.value.version, 2);
     }
 
     #[test]
@@ -185,10 +186,11 @@ mod read_your_writes {
                 vec![],
                 Value::Null,
             )
-            .unwrap();
+            .unwrap()
+            .value;
         let trace = tp.trace_store.get(&run_id, &trace_id).unwrap().unwrap();
         assert!(
-            matches!(trace.trace_type, TraceType::Custom { data, .. } if data == values::bool_val(true))
+            matches!(trace.value.trace_type, TraceType::Custom { data, .. } if data == values::bool_val(true))
         );
     }
 
@@ -223,7 +225,7 @@ mod read_your_writes {
         assert_eq!(tp.kv.get(&run_id, "step2").unwrap().map(|v| v.value), Some(values::int(2)));
         assert_eq!(tp.event_log.len(&run_id).unwrap(), 2);
         let state = tp.state_cell.read(&run_id, "step").unwrap().unwrap();
-        assert_eq!(state.value, values::int(2));
+        assert_eq!(state.value.value, values::int(2));
     }
 }
 
@@ -275,7 +277,7 @@ mod multi_primitive_persistence {
             let event = prims.event_log.read(&run_id, 0).unwrap().unwrap();
             assert_eq!(event.value.payload, values::int(200));
             let state = prims.state_cell.read(&run_id, "cell").unwrap().unwrap();
-            assert_eq!(state.value, values::int(300));
+            assert_eq!(state.value.value, values::int(300));
             let traces = prims.trace_store.query_by_type(&run_id, "trace").unwrap();
             assert!(
                 matches!(&traces[0].trace_type, TraceType::Custom { data, .. } if *data == values::int(400))

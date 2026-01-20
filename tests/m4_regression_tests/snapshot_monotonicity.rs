@@ -195,15 +195,16 @@ fn statecell_version_monotonicity() {
 
         while reader_running.load(Ordering::Relaxed) {
             if let Ok(Some(s)) = reader_state.read(&reader_run_id, "counter") {
-                if s.version < max_version {
+                let version = s.value.version;
+                if version < max_version {
                     reader_violated.store(true, Ordering::Relaxed);
                     eprintln!(
                         "MONOTONICITY VIOLATED: saw version {} after {}",
-                        s.version, max_version
+                        version, max_version
                     );
                 }
-                if s.version > max_version {
-                    max_version = s.version;
+                if version > max_version {
+                    max_version = version;
                 }
             }
         }
@@ -378,10 +379,10 @@ mod monotonicity_unit_tests {
         let run_id = RunId::new();
 
         let mut versions = Vec::new();
-        versions.push(state.init(&run_id, "x", Value::I64(0)).unwrap());
+        versions.push(state.init(&run_id, "x", Value::I64(0)).unwrap().value);
 
         for i in 1..10 {
-            let v = state.set(&run_id, "x", Value::I64(i)).unwrap();
+            let v = state.set(&run_id, "x", Value::I64(i)).unwrap().value;
             versions.push(v);
         }
 
