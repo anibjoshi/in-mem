@@ -84,8 +84,8 @@ fn kv_no_version_regression_under_writes() {
         let mut last_value = 0i64;
 
         for _ in 0..1000 {
-            if let Ok(Some(value)) = reader_kv.get(&reader_run_id, "counter") {
-                if let Value::I64(current) = value {
+            if let Ok(Some(versioned)) = reader_kv.get(&reader_run_id, "counter") {
+                if let Value::I64(current) = versioned.value {
                     // Value should never decrease (version regression proxy)
                     if current < last_value {
                         reader_regression.store(true, Ordering::Relaxed);
@@ -237,9 +237,9 @@ fn eventlog_sequence_stability() {
             // Check sequence monotonicity
             for (i, event) in range.iter().enumerate() {
                 assert_eq!(
-                    event.sequence, i as u64,
+                    event.value.sequence, i as u64,
                     "SEQUENCE MISMATCH: expected {}, got {}",
-                    i, event.sequence
+                    i, event.value.sequence
                 );
             }
 
@@ -288,14 +288,14 @@ fn eventlog_no_sequence_regression() {
 
         for _ in 0..200 {
             if let Ok(Some(head)) = reader_events.head(&reader_run_id) {
-                if head.sequence < max_seq {
+                if head.value.sequence < max_seq {
                     reader_regression.store(true, Ordering::Relaxed);
                     eprintln!(
                         "SEQUENCE REGRESSION: head sequence {} < previous max {}",
-                        head.sequence, max_seq
+                        head.value.sequence, max_seq
                     );
                 }
-                max_seq = max_seq.max(head.sequence);
+                max_seq = max_seq.max(head.value.sequence);
             }
             thread::sleep(Duration::from_micros(50));
         }
@@ -367,7 +367,7 @@ mod monotonicity_unit_tests {
 
         for _ in 0..10 {
             let v = kv.get(&run_id, "x").unwrap();
-            assert_eq!(v, Some(Value::I64(42)));
+            assert_eq!(v.map(|v| v.value), Some(Value::I64(42)));
         }
     }
 

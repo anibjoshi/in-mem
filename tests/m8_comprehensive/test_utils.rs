@@ -370,8 +370,8 @@ impl CapturedDbState {
         let mut kv_entries = HashMap::new();
         if let Ok(keys) = kv.list(&run_id, None) {
             for key in keys {
-                if let Ok(Some(value)) = kv.get(&run_id, &key) {
-                    kv_entries.insert(key.to_string(), format!("{:?}", value));
+                if let Ok(Some(versioned)) = kv.get(&run_id, &key) {
+                    kv_entries.insert(key.to_string(), format!("{:?}", versioned.value));
                 }
             }
         }

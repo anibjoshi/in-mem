@@ -48,9 +48,9 @@ fn kv_fast_path_equals_transaction_read() {
     let txn2 = kv.get_in_transaction(&run_id, "key2").unwrap();
     let txn_missing = kv.get_in_transaction(&run_id, "missing").unwrap();
 
-    // Must be identical
-    assert_eq!(fast1, txn1, "key1 values must match");
-    assert_eq!(fast2, txn2, "key2 values must match");
+    // Values must be identical (metadata like version/timestamp may differ between paths)
+    assert_eq!(fast1.as_ref().map(|v| &v.value), txn1.as_ref().map(|v| &v.value), "key1 values must match");
+    assert_eq!(fast2.as_ref().map(|v| &v.value), txn2.as_ref().map(|v| &v.value), "key2 values must match");
     assert_eq!(fast_missing, txn_missing, "missing key must match");
 }
 
@@ -62,20 +62,20 @@ fn kv_fast_path_observes_latest_committed() {
 
     // Initial value
     kv.put(&run_id, "key", Value::I64(1)).unwrap();
-    assert_eq!(kv.get(&run_id, "key").unwrap(), Some(Value::I64(1)));
+    assert_eq!(kv.get(&run_id, "key").unwrap().map(|v| v.value), Some(Value::I64(1)));
 
     // Update value
     kv.put(&run_id, "key", Value::I64(2)).unwrap();
-    assert_eq!(kv.get(&run_id, "key").unwrap(), Some(Value::I64(2)));
+    assert_eq!(kv.get(&run_id, "key").unwrap().map(|v| v.value), Some(Value::I64(2)));
 
     // Update again
     kv.put(&run_id, "key", Value::I64(3)).unwrap();
-    assert_eq!(kv.get(&run_id, "key").unwrap(), Some(Value::I64(3)));
+    assert_eq!(kv.get(&run_id, "key").unwrap().map(|v| v.value), Some(Value::I64(3)));
 
-    // Fast path and transaction should agree
+    // Fast path and transaction should agree on value
     assert_eq!(
-        kv.get(&run_id, "key").unwrap(),
-        kv.get_in_transaction(&run_id, "key").unwrap()
+        kv.get(&run_id, "key").unwrap().map(|v| v.value),
+        kv.get_in_transaction(&run_id, "key").unwrap().map(|v| v.value)
     );
 }
 
@@ -106,8 +106,8 @@ fn kv_batch_get_snapshot_consistency() {
     let results = kv.get_many(&run_id, &["a", "b"]).unwrap();
 
     // Both values should be from the same snapshot
-    assert_eq!(results[0], Some(Value::I64(100)));
-    assert_eq!(results[1], Some(Value::I64(200)));
+    assert_eq!(results[0].as_ref().map(|v| v.value.clone()), Some(Value::I64(100)));
+    assert_eq!(results[1].as_ref().map(|v| v.value.clone()), Some(Value::I64(200)));
 }
 
 // ============================================================================
@@ -358,13 +358,13 @@ fn all_primitives_run_isolation() {
         .unwrap();
 
     // Fast path reads should maintain run isolation
-    assert_eq!(kv.get(&run1, "key").unwrap(), Some(Value::I64(1)));
-    assert_eq!(kv.get(&run2, "key").unwrap(), Some(Value::I64(2)));
+    assert_eq!(kv.get(&run1, "key").unwrap().map(|v| v.value), Some(Value::I64(1)));
+    assert_eq!(kv.get(&run2, "key").unwrap().map(|v| v.value), Some(Value::I64(2)));
 
     let event1 = log.read(&run1, 0).unwrap().unwrap();
     let event2 = log.read(&run2, 0).unwrap().unwrap();
-    assert_eq!(event1.payload, Value::I64(1));
-    assert_eq!(event2.payload, Value::I64(2));
+    assert_eq!(event1.value.payload, Value::I64(1));
+    assert_eq!(event2.value.payload, Value::I64(2));
 
     let state1 = sc.read(&run1, "cell").unwrap().unwrap();
     let state2 = sc.read(&run2, "cell").unwrap().unwrap();
@@ -391,17 +391,17 @@ fn fast_path_observes_committed_data_only() {
     kv.put(&run_id, "key", Value::I64(1)).unwrap();
 
     // Fast path should see the committed value
-    assert_eq!(kv.get(&run_id, "key").unwrap(), Some(Value::I64(1)));
+    assert_eq!(kv.get(&run_id, "key").unwrap().map(|v| v.value), Some(Value::I64(1)));
 
     // Update in a new transaction
     kv.put(&run_id, "key", Value::I64(2)).unwrap();
 
     // Fast path should see the new committed value
-    assert_eq!(kv.get(&run_id, "key").unwrap(), Some(Value::I64(2)));
+    assert_eq!(kv.get(&run_id, "key").unwrap().map(|v| v.value), Some(Value::I64(2)));
 
     // Transaction read should match
     assert_eq!(
-        kv.get_in_transaction(&run_id, "key").unwrap(),
+        kv.get_in_transaction(&run_id, "key").unwrap().map(|v| v.value),
         Some(Value::I64(2))
     );
 }

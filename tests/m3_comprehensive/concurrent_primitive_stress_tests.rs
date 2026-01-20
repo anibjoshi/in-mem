@@ -10,6 +10,7 @@
 //! - Cross-primitive stress
 
 use crate::test_utils::{concurrent, values, TestPrimitives};
+use in_mem_core::contract::Version;
 use in_mem_core::value::Value;
 use in_mem_primitives::TraceType;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -164,11 +165,13 @@ mod eventlog_stress {
             move |i, (tp, run_id)| {
                 let mut sequences = Vec::new();
                 for _ in 0..appends_per_thread {
-                    if let Ok((seq, _)) =
+                    if let Ok(version) =
                         tp.event_log
                             .append(run_id, &format!("thread_{}", i), values::null())
                     {
-                        sequences.push(seq);
+                        if let Version::Sequence(seq) = version {
+                            sequences.push(seq);
+                        }
                     }
                 }
                 sequences
@@ -214,7 +217,7 @@ mod eventlog_stress {
             .read_range(&run_id, 0, num_events as u64)
             .unwrap();
         for (i, event) in events.iter().enumerate() {
-            assert_eq!(event.sequence, i as u64);
+            assert_eq!(event.value.sequence, i as u64);
         }
     }
 

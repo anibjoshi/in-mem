@@ -229,7 +229,7 @@ fn kv_aba_delete_recreate() {
             .unwrap();
 
         // 2. Read it back (establishes baseline)
-        let v1 = kv.get(&run_id, "key").unwrap();
+        let v1 = kv.get(&run_id, "key").unwrap().map(|v| v.value);
         assert_eq!(v1, Some(Value::String("original".to_string())));
 
         // 3. Delete it
@@ -245,7 +245,7 @@ fn kv_aba_delete_recreate() {
             .unwrap();
 
         // 6. Verify it's back
-        let recreated = kv.get(&run_id, "key").unwrap();
+        let recreated = kv.get(&run_id, "key").unwrap().map(|v| v.value);
         assert_eq!(recreated, Some(Value::String("original".to_string())));
 
         // Key insight: Even though the value looks the same, any version-based

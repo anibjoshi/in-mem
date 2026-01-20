@@ -42,7 +42,7 @@ fn test_kv_survives_recovery() {
 
     // Verify before crash
     assert_eq!(
-        kv.get(&run_id, "key1").unwrap(),
+        kv.get(&run_id, "key1").unwrap().map(|v| v.value),
         Some(Value::String("value1".into()))
     );
 
@@ -56,12 +56,12 @@ fn test_kv_survives_recovery() {
 
     // Data survived
     assert_eq!(
-        kv.get(&run_id, "key1").unwrap(),
+        kv.get(&run_id, "key1").unwrap().map(|v| v.value),
         Some(Value::String("value1".into()))
     );
-    assert_eq!(kv.get(&run_id, "key2").unwrap(), Some(Value::I64(42)));
+    assert_eq!(kv.get(&run_id, "key2").unwrap().map(|v| v.value), Some(Value::I64(42)));
     assert_eq!(
-        kv.get(&run_id, "nested/path/key").unwrap(),
+        kv.get(&run_id, "nested/path/key").unwrap().map(|v| v.value),
         Some(Value::Bool(true))
     );
 
@@ -69,7 +69,7 @@ fn test_kv_survives_recovery() {
     kv.put(&run_id, "key3", Value::String("after_recovery".into()))
         .unwrap();
     assert_eq!(
-        kv.get(&run_id, "key3").unwrap(),
+        kv.get(&run_id, "key3").unwrap().map(|v| v.value),
         Some(Value::String("after_recovery".into()))
     );
 }
@@ -114,22 +114,29 @@ fn test_event_log_chain_survives_recovery() {
     let (db, temp_dir, run_id) = setup();
     let path = get_path(&temp_dir);
 
+    use in_mem_core::contract::Version;
+
     let event_log = EventLog::new(db.clone());
 
     // Append multiple events (sequences are 0-based)
-    let (seq0, hash0) = event_log
+    event_log
         .append(&run_id, "event1", Value::String("payload1".into()))
         .unwrap();
-    let (seq1, hash1) = event_log
+    event_log
         .append(&run_id, "event2", Value::String("payload2".into()))
         .unwrap();
-    let (seq2, hash2) = event_log
+    event_log
         .append(&run_id, "event3", Value::String("payload3".into()))
         .unwrap();
 
-    assert_eq!(seq0, 0);
-    assert_eq!(seq1, 1);
-    assert_eq!(seq2, 2);
+    // Read to get hashes before crash
+    let pre_event0 = event_log.read(&run_id, 0).unwrap().unwrap();
+    let pre_event1 = event_log.read(&run_id, 1).unwrap().unwrap();
+    let pre_event2 = event_log.read(&run_id, 2).unwrap().unwrap();
+
+    let hash0 = pre_event0.value.hash;
+    let hash1 = pre_event1.value.hash;
+    let hash2 = pre_event2.value.hash;
 
     // Verify chain before crash
     let verification = event_log.verify_chain(&run_id).unwrap();
@@ -151,23 +158,23 @@ fn test_event_log_chain_survives_recovery() {
 
     // Events readable with correct hashes
     let event0 = event_log.read(&run_id, 0).unwrap().unwrap();
-    assert_eq!(event0.event_type, "event1");
-    assert_eq!(event0.payload, Value::String("payload1".into()));
-    assert_eq!(event0.hash, hash0);
+    assert_eq!(event0.value.event_type, "event1");
+    assert_eq!(event0.value.payload, Value::String("payload1".into()));
+    assert_eq!(event0.value.hash, hash0);
 
     let event2 = event_log.read(&run_id, 2).unwrap().unwrap();
-    assert_eq!(event2.hash, hash2);
+    assert_eq!(event2.value.hash, hash2);
 
     // Hash chaining preserved - event1 prev_hash points to event0's hash
     let event1 = event_log.read(&run_id, 1).unwrap().unwrap();
-    assert_eq!(event1.prev_hash, hash0);
-    assert_eq!(event1.hash, hash1);
+    assert_eq!(event1.value.prev_hash, hash0);
+    assert_eq!(event1.value.hash, hash1);
 
     // Sequence continues correctly (not restarted)
-    let (seq3, _) = event_log
+    let v3 = event_log
         .append(&run_id, "event4", Value::String("payload4".into()))
         .unwrap();
-    assert_eq!(seq3, 3); // Not 0 (would be restart)
+    assert!(matches!(v3, Version::Sequence(3))); // Not 0 (would be restart)
 
     // Chain still valid after new append
     let verification = event_log.verify_chain(&run_id).unwrap();
@@ -201,9 +208,9 @@ fn test_event_log_range_survives_recovery() {
     // Range query works
     let events = event_log.read_range(&run_id, 1, 4).unwrap();
     assert_eq!(events.len(), 3);
-    assert_eq!(events[0].sequence, 1);
-    assert_eq!(events[1].sequence, 2);
-    assert_eq!(events[2].sequence, 3);
+    assert_eq!(events[0].value.sequence, 1);
+    assert_eq!(events[1].value.sequence, 2);
+    assert_eq!(events[2].value.sequence, 3);
 }
 
 /// Test StateCell version survives recovery
@@ -640,7 +647,7 @@ fn test_run_delete_survives_recovery() {
 
     // run2 data preserved
     assert!(run_index.get_run("run2").unwrap().is_some());
-    assert_eq!(kv.get(&run2, "key").unwrap(), Some(Value::I64(2)));
+    assert_eq!(kv.get(&run2, "key").unwrap().map(|v| v.value), Some(Value::I64(2)));
 }
 
 /// Test cross-primitive transaction survives recovery
@@ -680,7 +687,7 @@ fn test_cross_primitive_transaction_survives_recovery() {
 
     // All operations survived
     assert_eq!(
-        kv.get(&run_id, "txn_key").unwrap(),
+        kv.get(&run_id, "txn_key").unwrap().map(|v| v.value),
         Some(Value::String("txn_value".into()))
     );
     assert_eq!(event_log.len(&run_id).unwrap(), 1);
@@ -709,7 +716,7 @@ fn test_multiple_recovery_cycles() {
         let kv = KVStore::new(db.clone());
 
         // Verify cycle 1 data
-        assert_eq!(kv.get(&run_id, "cycle1").unwrap(), Some(Value::I64(1)));
+        assert_eq!(kv.get(&run_id, "cycle1").unwrap().map(|v| v.value), Some(Value::I64(1)));
 
         // Add cycle 2 data
         kv.put(&run_id, "cycle2", Value::I64(2)).unwrap();
@@ -721,8 +728,8 @@ fn test_multiple_recovery_cycles() {
         let kv = KVStore::new(db.clone());
 
         // Verify all previous data
-        assert_eq!(kv.get(&run_id, "cycle1").unwrap(), Some(Value::I64(1)));
-        assert_eq!(kv.get(&run_id, "cycle2").unwrap(), Some(Value::I64(2)));
+        assert_eq!(kv.get(&run_id, "cycle1").unwrap().map(|v| v.value), Some(Value::I64(1)));
+        assert_eq!(kv.get(&run_id, "cycle2").unwrap().map(|v| v.value), Some(Value::I64(2)));
 
         // Add cycle 3 data
         kv.put(&run_id, "cycle3", Value::I64(3)).unwrap();
@@ -733,9 +740,9 @@ fn test_multiple_recovery_cycles() {
         let db = Arc::new(Database::open(&path).unwrap());
         let kv = KVStore::new(db.clone());
 
-        assert_eq!(kv.get(&run_id, "cycle1").unwrap(), Some(Value::I64(1)));
-        assert_eq!(kv.get(&run_id, "cycle2").unwrap(), Some(Value::I64(2)));
-        assert_eq!(kv.get(&run_id, "cycle3").unwrap(), Some(Value::I64(3)));
+        assert_eq!(kv.get(&run_id, "cycle1").unwrap().map(|v| v.value), Some(Value::I64(1)));
+        assert_eq!(kv.get(&run_id, "cycle2").unwrap().map(|v| v.value), Some(Value::I64(2)));
+        assert_eq!(kv.get(&run_id, "cycle3").unwrap().map(|v| v.value), Some(Value::I64(3)));
     }
 }
 
@@ -802,14 +809,14 @@ fn test_all_primitives_recover_together() {
 
         // KV
         assert_eq!(
-            kv.get(&run_id, "full_key").unwrap(),
+            kv.get(&run_id, "full_key").unwrap().map(|v| v.value),
             Some(Value::String("full_value".into()))
         );
 
         // EventLog
         assert_eq!(event_log.len(&run_id).unwrap(), 1);
         let event = event_log.read(&run_id, 0).unwrap().unwrap();
-        assert_eq!(event.payload, Value::I64(999));
+        assert_eq!(event.value.payload, Value::I64(999));
 
         // StateCell
         let state = state_cell.read(&run_id, "full_state").unwrap().unwrap();

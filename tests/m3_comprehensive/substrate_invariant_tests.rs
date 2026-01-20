@@ -7,6 +7,7 @@
 //! - No implicit coupling between primitives
 
 use crate::test_utils::{values, PersistentTestPrimitives, TestPrimitives};
+use in_mem_core::contract::Version;
 use in_mem_primitives::{EventLog, KVStore, RunIndex, StateCell, TraceStore, TraceType};
 
 // =============================================================================
@@ -44,8 +45,8 @@ mod primitives_are_projections {
         // The new facade sees the same data - proving data is in storage, not facade
         let events = event_log_2.read_range(&run_id, 0, 10).unwrap();
         assert_eq!(events.len(), 2);
-        assert_eq!(events[0].event_type, "event_type_1");
-        assert_eq!(events[1].event_type, "event_type_2");
+        assert_eq!(events[0].value.event_type, "event_type_1");
+        assert_eq!(events[1].value.event_type, "event_type_2");
     }
 
     #[test]
@@ -115,9 +116,9 @@ mod primitives_are_projections {
         let kv_2 = KVStore::new(tp.db.clone());
 
         // New facade sees same data
-        assert_eq!(kv_2.get(&run_id, "key_1").unwrap(), Some(values::int(42)));
+        assert_eq!(kv_2.get(&run_id, "key_1").unwrap().map(|v| v.value), Some(values::int(42)));
         assert_eq!(
-            kv_2.get(&run_id, "key_2").unwrap(),
+            kv_2.get(&run_id, "key_2").unwrap().map(|v| v.value),
             Some(values::string("hello"))
         );
     }
@@ -166,7 +167,7 @@ mod primitives_are_projections {
         {
             let prims = ptp.open();
             assert_eq!(
-                prims.kv.get(&run_id, "persistent_key").unwrap(),
+                prims.kv.get(&run_id, "persistent_key").unwrap().map(|v| v.value),
                 Some(values::int(999))
             );
             assert_eq!(prims.event_log.len(&run_id).unwrap(), 1);
@@ -243,7 +244,7 @@ mod cross_primitive_ordering {
             .unwrap();
 
         // Read all primitives
-        let kv_val = tp.kv.get(&run_id, "counter").unwrap();
+        let kv_val = tp.kv.get(&run_id, "counter").unwrap().map(|v| v.value);
         let events = tp.event_log.read_range(&run_id, 0, 100).unwrap();
         let state = tp.state_cell.read(&run_id, "state").unwrap();
 
@@ -265,7 +266,7 @@ mod cross_primitive_ordering {
         tp.kv.put(&run_id, "key", values::int(3)).unwrap();
 
         // Last write wins
-        assert_eq!(tp.kv.get(&run_id, "key").unwrap(), Some(values::int(3)));
+        assert_eq!(tp.kv.get(&run_id, "key").unwrap().map(|v| v.value), Some(values::int(3)));
     }
 
     #[test]
@@ -285,11 +286,11 @@ mod cross_primitive_ordering {
             .unwrap();
 
         let events = tp.event_log.read_range(&run_id, 0, 10).unwrap();
-        assert_eq!(events[0].event_type, "first");
-        assert_eq!(events[1].event_type, "second");
-        assert_eq!(events[2].event_type, "third");
-        assert!(events[0].sequence < events[1].sequence);
-        assert!(events[1].sequence < events[2].sequence);
+        assert_eq!(events[0].value.event_type, "first");
+        assert_eq!(events[1].value.event_type, "second");
+        assert_eq!(events[2].value.event_type, "third");
+        assert!(events[0].value.sequence < events[1].value.sequence);
+        assert!(events[1].value.sequence < events[2].value.sequence);
     }
 }
 
@@ -315,13 +316,14 @@ mod replay_metadata_contract {
         let tp = TestPrimitives::new();
         let run_id = tp.run_id;
 
-        let (seq, _) = tp
+        let version = tp
             .event_log
             .append(&run_id, "event", values::null())
             .unwrap();
+        let Version::Sequence(seq) = version else { panic!("Expected Sequence version") };
 
         let event = tp.event_log.read(&run_id, seq).unwrap().unwrap();
-        assert_eq!(event.sequence, seq);
+        assert_eq!(event.value.sequence, seq);
     }
 
     #[test]
@@ -330,14 +332,15 @@ mod replay_metadata_contract {
         let tp = TestPrimitives::new();
         let run_id = tp.run_id;
 
-        let (seq, _) = tp
+        let version = tp
             .event_log
             .append(&run_id, "event", values::null())
             .unwrap();
+        let Version::Sequence(seq) = version else { panic!("Expected Sequence version") };
 
         let event = tp.event_log.read(&run_id, seq).unwrap().unwrap();
         // Timestamp should be non-zero (set at creation time)
-        assert!(event.timestamp > 0);
+        assert!(event.value.timestamp > 0);
     }
 
     #[test]
@@ -346,13 +349,14 @@ mod replay_metadata_contract {
         let tp = TestPrimitives::new();
         let run_id = tp.run_id;
 
-        let (seq, _) = tp
+        let version = tp
             .event_log
             .append(&run_id, "tool_call", values::string("data"))
             .unwrap();
+        let Version::Sequence(seq) = version else { panic!("Expected Sequence version") };
 
         let event = tp.event_log.read(&run_id, seq).unwrap().unwrap();
-        assert_eq!(event.event_type, "tool_call");
+        assert_eq!(event.value.event_type, "tool_call");
     }
 
     #[test]
@@ -364,14 +368,15 @@ mod replay_metadata_contract {
         tp.event_log
             .append(&run_id, "first", values::null())
             .unwrap();
-        let (seq, _) = tp
+        let version = tp
             .event_log
             .append(&run_id, "second", values::null())
             .unwrap();
+        let Version::Sequence(seq) = version else { panic!("Expected Sequence version") };
 
         let event = tp.event_log.read(&run_id, seq).unwrap().unwrap();
         // Second event's prev_hash should be non-zero (points to first)
-        assert_ne!(event.prev_hash, [0u8; 32]);
+        assert_ne!(event.value.prev_hash, [0u8; 32]);
     }
 
     #[test]
@@ -380,14 +385,15 @@ mod replay_metadata_contract {
         let tp = TestPrimitives::new();
         let run_id = tp.run_id;
 
-        let (seq, hash) = tp
+        let version = tp
             .event_log
             .append(&run_id, "event", values::null())
             .unwrap();
+        let Version::Sequence(seq) = version else { panic!("Expected Sequence version") };
 
         let event = tp.event_log.read(&run_id, seq).unwrap().unwrap();
-        assert_eq!(event.hash, hash);
-        assert_ne!(event.hash, [0u8; 32]);
+        // Read the event back to get the hash
+        assert_ne!(event.value.hash, [0u8; 32]);
     }
 
     #[test]

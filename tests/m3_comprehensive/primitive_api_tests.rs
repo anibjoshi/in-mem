@@ -8,6 +8,7 @@
 //! - RunIndex: create_run/get_run/update_status/fail_run/complete_run/delete_run
 
 use crate::test_utils::{values, TestPrimitives};
+use in_mem_core::contract::Version;
 use in_mem_core::value::Value;
 use in_mem_primitives::{RunStatus, TraceType};
 
@@ -29,7 +30,7 @@ mod kvstore_api {
     fn test_put_and_get() {
         let tp = TestPrimitives::new();
         tp.kv.put(&tp.run_id, "key", values::int(42)).unwrap();
-        let result = tp.kv.get(&tp.run_id, "key").unwrap();
+        let result = tp.kv.get(&tp.run_id, "key").unwrap().map(|v| v.value);
         assert_eq!(result, Some(values::int(42)));
     }
 
@@ -38,7 +39,7 @@ mod kvstore_api {
         let tp = TestPrimitives::new();
         tp.kv.put(&tp.run_id, "key", values::int(1)).unwrap();
         tp.kv.put(&tp.run_id, "key", values::int(2)).unwrap();
-        let result = tp.kv.get(&tp.run_id, "key").unwrap();
+        let result = tp.kv.get(&tp.run_id, "key").unwrap().map(|v| v.value);
         assert_eq!(result, Some(values::int(2)));
     }
 
@@ -108,12 +109,12 @@ mod kvstore_api {
 
         // I64
         tp.kv.put(&tp.run_id, "int", values::int(42)).unwrap();
-        assert_eq!(tp.kv.get(&tp.run_id, "int").unwrap(), Some(values::int(42)));
+        assert_eq!(tp.kv.get(&tp.run_id, "int").unwrap().map(|v| v.value), Some(values::int(42)));
 
         // F64
         tp.kv.put(&tp.run_id, "float", values::float(3.14)).unwrap();
         assert_eq!(
-            tp.kv.get(&tp.run_id, "float").unwrap(),
+            tp.kv.get(&tp.run_id, "float").unwrap().map(|v| v.value),
             Some(values::float(3.14))
         );
 
@@ -122,7 +123,7 @@ mod kvstore_api {
             .put(&tp.run_id, "string", values::string("hello"))
             .unwrap();
         assert_eq!(
-            tp.kv.get(&tp.run_id, "string").unwrap(),
+            tp.kv.get(&tp.run_id, "string").unwrap().map(|v| v.value),
             Some(values::string("hello"))
         );
 
@@ -131,20 +132,20 @@ mod kvstore_api {
             .put(&tp.run_id, "bool", values::bool_val(true))
             .unwrap();
         assert_eq!(
-            tp.kv.get(&tp.run_id, "bool").unwrap(),
+            tp.kv.get(&tp.run_id, "bool").unwrap().map(|v| v.value),
             Some(values::bool_val(true))
         );
 
         // Null
         tp.kv.put(&tp.run_id, "null", values::null()).unwrap();
-        assert_eq!(tp.kv.get(&tp.run_id, "null").unwrap(), Some(values::null()));
+        assert_eq!(tp.kv.get(&tp.run_id, "null").unwrap().map(|v| v.value), Some(values::null()));
 
         // Bytes
         tp.kv
             .put(&tp.run_id, "bytes", values::bytes(&[1, 2, 3]))
             .unwrap();
         assert_eq!(
-            tp.kv.get(&tp.run_id, "bytes").unwrap(),
+            tp.kv.get(&tp.run_id, "bytes").unwrap().map(|v| v.value),
             Some(values::bytes(&[1, 2, 3]))
         );
 
@@ -201,28 +202,32 @@ mod eventlog_api {
     use super::*;
 
     #[test]
-    fn test_append_returns_sequence_and_hash() {
+    fn test_append_returns_sequence_version() {
         let tp = TestPrimitives::new();
-        let (seq, hash) = tp
+        let version = tp
             .event_log
             .append(&tp.run_id, "event", values::null())
             .unwrap();
+        let Version::Sequence(seq) = version else { panic!("Expected Sequence version") };
         assert_eq!(seq, 0);
-        assert_ne!(hash, [0u8; 32]);
+        // Read back to verify hash is non-zero
+        let event = tp.event_log.read(&tp.run_id, seq).unwrap().unwrap();
+        assert_ne!(event.value.hash, [0u8; 32]);
     }
 
     #[test]
     fn test_read_single_event() {
         let tp = TestPrimitives::new();
-        let (seq, _) = tp
+        let version = tp
             .event_log
             .append(&tp.run_id, "test_event", values::int(42))
             .unwrap();
+        let Version::Sequence(seq) = version else { panic!("Expected Sequence version") };
 
         let event = tp.event_log.read(&tp.run_id, seq).unwrap().unwrap();
-        assert_eq!(event.sequence, seq);
-        assert_eq!(event.event_type, "test_event");
-        assert_eq!(event.payload, values::int(42));
+        assert_eq!(event.value.sequence, seq);
+        assert_eq!(event.value.event_type, "test_event");
+        assert_eq!(event.value.payload, values::int(42));
     }
 
     #[test]
@@ -244,9 +249,9 @@ mod eventlog_api {
         // read_range(start, end) reads from start to end (exclusive)
         let events = tp.event_log.read_range(&tp.run_id, 1, 4).unwrap();
         assert_eq!(events.len(), 3);
-        assert_eq!(events[0].sequence, 1);
-        assert_eq!(events[1].sequence, 2);
-        assert_eq!(events[2].sequence, 3);
+        assert_eq!(events[0].value.sequence, 1);
+        assert_eq!(events[1].value.sequence, 2);
+        assert_eq!(events[2].value.sequence, 3);
     }
 
     #[test]
@@ -270,8 +275,8 @@ mod eventlog_api {
             .unwrap();
 
         let head = tp.event_log.head(&tp.run_id).unwrap().unwrap();
-        assert_eq!(head.event_type, "third");
-        assert_eq!(head.sequence, 2);
+        assert_eq!(head.value.event_type, "third");
+        assert_eq!(head.value.sequence, 2);
     }
 
     #[test]
@@ -344,7 +349,7 @@ mod eventlog_api {
         let type_a_events = tp.event_log.read_by_type(&tp.run_id, "type_a").unwrap();
         assert_eq!(type_a_events.len(), 3);
         for event in &type_a_events {
-            assert_eq!(event.event_type, "type_a");
+            assert_eq!(event.value.event_type, "type_a");
         }
     }
 

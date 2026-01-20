@@ -35,35 +35,8 @@ use in_mem_engine::{Database, RetryConfig};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-/// Current state of a cell
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct State {
-    /// Current value
-    pub value: Value,
-    /// Version number (monotonically increasing)
-    pub version: u64,
-    /// Last update timestamp (milliseconds since epoch)
-    pub updated_at: i64,
-}
-
-impl State {
-    /// Create a new state with version 1
-    pub fn new(value: Value) -> Self {
-        Self {
-            value,
-            version: 1,
-            updated_at: Self::now(),
-        }
-    }
-
-    /// Get current timestamp in milliseconds
-    fn now() -> i64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as i64
-    }
-}
+// Re-export State from core
+pub use in_mem_core::primitives::State;
 
 /// Serialize a struct to Value::String for storage
 fn to_stored_value<T: Serialize>(v: &T) -> Value {

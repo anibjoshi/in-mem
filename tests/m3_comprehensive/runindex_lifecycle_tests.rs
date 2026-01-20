@@ -326,7 +326,7 @@ mod archived_is_terminal {
         tp.run_index.archive_run("test-run").unwrap();
 
         // Data should still be accessible (soft delete)
-        assert_eq!(tp.kv.get(&run_id, "key").unwrap(), Some(values::int(42)));
+        assert_eq!(tp.kv.get(&run_id, "key").unwrap().map(|v| v.value), Some(values::int(42)));
         assert_eq!(tp.event_log.len(&run_id).unwrap(), 1);
     }
 
@@ -529,7 +529,7 @@ mod cascading_delete {
 
         // run-2 data intact
         assert_eq!(
-            tp.kv.get(&run_id2, "key").unwrap(),
+            tp.kv.get(&run_id2, "key").unwrap().map(|v| v.value),
             Some(values::string("run2"))
         );
         assert_eq!(tp.event_log.len(&run_id2).unwrap(), 1);

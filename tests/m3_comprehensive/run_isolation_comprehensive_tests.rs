@@ -52,18 +52,18 @@ mod n_run_isolation {
         for (i, run) in runs.iter().enumerate() {
             // KV isolation
             assert_eq!(
-                tp.kv.get(run, "counter").unwrap(),
+                tp.kv.get(run, "counter").unwrap().map(|v| v.value),
                 Some(values::int(i as i64))
             );
             assert_eq!(
-                tp.kv.get(run, "name").unwrap(),
+                tp.kv.get(run, "name").unwrap().map(|v| v.value),
                 Some(values::string(&format!("run_{}", i)))
             );
 
             // EventLog isolation
             let events = tp.event_log.read_range(run, 0, 100).unwrap();
             assert_eq!(events.len(), 1);
-            assert_eq!(events[0].event_type, format!("init_{}", i));
+            assert_eq!(events[0].value.event_type, format!("init_{}", i));
 
             // StateCell isolation
             let state = tp.state_cell.read(run, "state").unwrap().unwrap();
@@ -90,7 +90,7 @@ mod n_run_isolation {
 
         // Verify isolation
         for (i, run) in runs.iter().enumerate() {
-            assert_eq!(tp.kv.get(run, "id").unwrap(), Some(values::int(i as i64)));
+            assert_eq!(tp.kv.get(run, "id").unwrap().map(|v| v.value), Some(values::int(i as i64)));
         }
     }
 
@@ -108,7 +108,7 @@ mod n_run_isolation {
         // Each run has its own value
         for (i, run) in runs.iter().enumerate() {
             assert_eq!(
-                tp.kv.get(run, "shared_key").unwrap(),
+                tp.kv.get(run, "shared_key").unwrap().map(|v| v.value),
                 Some(values::int(i as i64))
             );
         }
@@ -152,7 +152,7 @@ mod concurrent_run_operations {
         // Verify each run has correct data
         for (i, run) in runs.iter().enumerate() {
             assert_eq!(
-                tp.kv.get(run, "value").unwrap(),
+                tp.kv.get(run, "value").unwrap().map(|v| v.value),
                 Some(values::int(i as i64))
             );
             let events = tp.event_log.read_range(run, 0, 10).unwrap();
@@ -181,7 +181,7 @@ mod concurrent_run_operations {
             (tp.clone(), runs.clone()),
             |i, (tp, runs)| {
                 let run = &runs[i];
-                tp.kv.get(run, "value").unwrap()
+                tp.kv.get(run, "value").unwrap().map(|v| v.value)
             },
         );
 
@@ -209,7 +209,7 @@ mod concurrent_run_operations {
         // Verify all runs were created with correct data
         for (i, run) in results.iter().enumerate() {
             assert_eq!(
-                tp.kv.get(run, "creator").unwrap(),
+                tp.kv.get(run, "creator").unwrap().map(|v| v.value),
                 Some(values::int(i as i64))
             );
         }
@@ -248,10 +248,10 @@ mod run_delete_isolation {
         tp.run_index.delete_run(&meta_a.name).unwrap();
 
         // Run B data untouched
-        assert_eq!(tp.kv.get(&run_b, "key").unwrap(), Some(values::string("b")));
+        assert_eq!(tp.kv.get(&run_b, "key").unwrap().map(|v| v.value), Some(values::string("b")));
         let events = tp.event_log.read_range(&run_b, 0, 10).unwrap();
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].event_type, "event_b");
+        assert_eq!(events[0].value.event_type, "event_b");
 
         // Note: Deleting from RunIndex doesn't delete the actual primitive data
         // That would be a separate cleanup operation
@@ -381,7 +381,7 @@ mod cross_run_leakage_prevention {
         let run2_events = tp.event_log.read_range(&run2, 0, 100).unwrap();
 
         assert_eq!(run1_events.len(), 1);
-        assert_eq!(run1_events[0].event_type, "run1_event");
+        assert_eq!(run1_events[0].value.event_type, "run1_event");
 
         assert_eq!(run2_events.len(), 2);
     }
@@ -477,18 +477,18 @@ mod cross_run_leakage_prevention {
             .unwrap();
 
         // run2 cannot see run1's data
-        assert_eq!(tp.kv.get(&run2, "secret").unwrap(), None);
+        assert!(tp.kv.get(&run2, "secret").unwrap().is_none());
 
         // Writing to run2 with same key doesn't affect run1
         tp.kv
             .put(&run2, "secret", values::string("run2_secret"))
             .unwrap();
         assert_eq!(
-            tp.kv.get(&run1, "secret").unwrap(),
+            tp.kv.get(&run1, "secret").unwrap().map(|v| v.value),
             Some(values::string("run1_secret"))
         );
         assert_eq!(
-            tp.kv.get(&run2, "secret").unwrap(),
+            tp.kv.get(&run2, "secret").unwrap().map(|v| v.value),
             Some(values::string("run2_secret"))
         );
     }

@@ -627,7 +627,7 @@ mod tests {
         kv.put(&run_id, "key1", Value::String("value1".into()))
             .unwrap();
         let result = kv.get(&run_id, "key1").unwrap();
-        assert_eq!(result, Some(Value::String("value1".into())));
+        assert_eq!(result.map(|v| v.value), Some(Value::String("value1".into())));
     }
 
     #[test]
@@ -650,7 +650,7 @@ mod tests {
             .unwrap();
 
         let result = kv.get(&run_id, "key1").unwrap();
-        assert_eq!(result, Some(Value::String("value2".into())));
+        assert_eq!(result.map(|v| v.value), Some(Value::String("value2".into())));
     }
 
     #[test]
@@ -699,11 +699,11 @@ mod tests {
 
         // Each run sees its own value
         assert_eq!(
-            kv.get(&run1, "shared-key").unwrap(),
+            kv.get(&run1, "shared-key").unwrap().map(|v| v.value),
             Some(Value::String("run1-value".into()))
         );
         assert_eq!(
-            kv.get(&run2, "shared-key").unwrap(),
+            kv.get(&run2, "shared-key").unwrap().map(|v| v.value),
             Some(Value::String("run2-value".into()))
         );
     }
@@ -726,11 +726,13 @@ mod tests {
         assert!(result.is_some());
 
         // Verify the value is wrapped with TTL metadata
-        if let Some(Value::Map(map)) = result {
-            assert!(map.contains_key("value"));
-            assert!(map.contains_key("expires_at"));
-        } else {
-            panic!("Expected Value::Map with TTL metadata");
+        if let Some(versioned) = result {
+            if let Value::Map(map) = versioned.value {
+                assert!(map.contains_key("value"));
+                assert!(map.contains_key("expires_at"));
+            } else {
+                panic!("Expected Value::Map with TTL metadata");
+            }
         }
     }
 
@@ -750,15 +752,15 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            kv.get(&run_id, "key1").unwrap(),
+            kv.get(&run_id, "key1").unwrap().map(|v| v.value),
             Some(Value::String("val1".into()))
         );
         assert_eq!(
-            kv.get(&run_id, "key2").unwrap(),
+            kv.get(&run_id, "key2").unwrap().map(|v| v.value),
             Some(Value::String("val2".into()))
         );
         assert_eq!(
-            kv.get(&run_id, "key3").unwrap(),
+            kv.get(&run_id, "key3").unwrap().map(|v| v.value),
             Some(Value::String("val3".into()))
         );
     }
@@ -863,8 +865,8 @@ mod tests {
         assert_eq!(pairs.len(), 2);
 
         let pairs_map: std::collections::HashMap<_, _> = pairs.into_iter().collect();
-        assert_eq!(pairs_map.get("key1"), Some(&Value::String("val1".into())));
-        assert_eq!(pairs_map.get("key2"), Some(&Value::String("val2".into())));
+        assert_eq!(pairs_map.get("key1").map(|v| &v.value), Some(&Value::String("val1".into())));
+        assert_eq!(pairs_map.get("key2").map(|v| &v.value), Some(&Value::String("val2".into())));
     }
 
     #[test]
@@ -935,31 +937,31 @@ mod tests {
         kv.put(&run_id, "string", Value::String("hello".into()))
             .unwrap();
         assert_eq!(
-            kv.get(&run_id, "string").unwrap(),
+            kv.get(&run_id, "string").unwrap().map(|v| v.value),
             Some(Value::String("hello".into()))
         );
 
         // Integer
         kv.put(&run_id, "int", Value::I64(42)).unwrap();
-        assert_eq!(kv.get(&run_id, "int").unwrap(), Some(Value::I64(42)));
+        assert_eq!(kv.get(&run_id, "int").unwrap().map(|v| v.value), Some(Value::I64(42)));
 
         // Float
         kv.put(&run_id, "float", Value::F64(3.14)).unwrap();
-        assert_eq!(kv.get(&run_id, "float").unwrap(), Some(Value::F64(3.14)));
+        assert_eq!(kv.get(&run_id, "float").unwrap().map(|v| v.value), Some(Value::F64(3.14)));
 
         // Boolean
         kv.put(&run_id, "bool", Value::Bool(true)).unwrap();
-        assert_eq!(kv.get(&run_id, "bool").unwrap(), Some(Value::Bool(true)));
+        assert_eq!(kv.get(&run_id, "bool").unwrap().map(|v| v.value), Some(Value::Bool(true)));
 
         // Null
         kv.put(&run_id, "null", Value::Null).unwrap();
-        assert_eq!(kv.get(&run_id, "null").unwrap(), Some(Value::Null));
+        assert_eq!(kv.get(&run_id, "null").unwrap().map(|v| v.value), Some(Value::Null));
 
         // Bytes
         kv.put(&run_id, "bytes", Value::Bytes(vec![1, 2, 3]))
             .unwrap();
         assert_eq!(
-            kv.get(&run_id, "bytes").unwrap(),
+            kv.get(&run_id, "bytes").unwrap().map(|v| v.value),
             Some(Value::Bytes(vec![1, 2, 3]))
         );
 

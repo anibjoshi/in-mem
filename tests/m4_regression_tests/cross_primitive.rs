@@ -91,8 +91,8 @@ fn cross_run_complete_isolation() {
             .unwrap();
 
         // Verify isolation
-        assert_eq!(kv.get(&run_a, "key").unwrap(), Some(Value::I64(100)));
-        assert_eq!(kv.get(&run_b, "key").unwrap(), Some(Value::I64(200)));
+        assert_eq!(kv.get(&run_a, "key").unwrap().map(|v| v.value), Some(Value::I64(100)));
+        assert_eq!(kv.get(&run_b, "key").unwrap().map(|v| v.value), Some(Value::I64(200)));
 
         assert_eq!(events.len(&run_a).unwrap(), 1);
         assert_eq!(events.len(&run_b).unwrap(), 1);
@@ -182,7 +182,7 @@ fn concurrent_runs_no_interference() {
                 // Verify own data
                 for i in 0..OPS_PER_RUN {
                     let expected = Value::I64(run_idx as i64 * 1000 + i as i64);
-                    let actual = kv.get(&run_id, &format!("key_{}", i)).unwrap();
+                    let actual = kv.get(&run_id, &format!("key_{}", i)).unwrap().map(|v| v.value);
                     assert_eq!(actual, Some(expected), "Run {} key {} mismatch", run_idx, i);
                 }
 
@@ -197,7 +197,7 @@ fn concurrent_runs_no_interference() {
     for (run_idx, run_id) in run_ids.iter().enumerate() {
         let sample_key = "key_50";
         let expected = Value::I64(run_idx as i64 * 1000 + 50);
-        let actual = kv.get(run_id, sample_key).unwrap();
+        let actual = kv.get(run_id, sample_key).unwrap().map(|v| v.value);
         assert_eq!(
             actual,
             Some(expected),
@@ -242,7 +242,7 @@ fn mixed_primitive_sequence() {
         events.append(&run_id, "log", Value::I64(4)).unwrap();
 
         // Verify all state is correct
-        assert_eq!(kv.get(&run_id, "step").unwrap(), Some(Value::I64(4)));
+        assert_eq!(kv.get(&run_id, "step").unwrap().map(|v| v.value), Some(Value::I64(4)));
         assert_eq!(events.len(&run_id).unwrap(), 2);
         assert_eq!(
             state.read(&run_id, "progress").unwrap().unwrap().value,
@@ -332,7 +332,7 @@ fn data_survives_facade_recreation() {
 
         // Data should still be there
         assert_eq!(
-            kv2.get(&run_id, "persistent").unwrap(),
+            kv2.get(&run_id, "persistent").unwrap().map(|v| v.value),
             Some(Value::I64(999))
         );
         assert_eq!(events2.len(&run_id).unwrap(), 1);

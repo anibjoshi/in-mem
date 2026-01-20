@@ -20,6 +20,7 @@
 pub mod contract; // M9 contract types
 pub mod error; // Story #10
 pub mod json; // M5 JSON types
+pub mod primitives; // M9 primitive types (Event, State, Trace, Vector types)
 pub mod run_types; // Run lifecycle types
 pub mod search_types; // M6 search types
 pub mod traits; // Story #11
@@ -43,6 +44,13 @@ pub use value::Value;
 pub use contract::{
     DocRef, EntityRef, PrimitiveType, RunName, RunNameError, Timestamp, Version, Versioned,
     VersionedValue, MAX_RUN_NAME_LENGTH,
+};
+
+// Re-export primitive types at crate root for convenience
+pub use primitives::{
+    ChainVerification, CollectionId, CollectionInfo, DistanceMetric, Event, JsonScalar,
+    MetadataFilter, State, StorageDtype, Trace, TraceTree, TraceType, VectorConfig, VectorEntry,
+    VectorId, VectorMatch,
 };
 
 // Backwards compatibility: PrimitiveKind is now PrimitiveType
