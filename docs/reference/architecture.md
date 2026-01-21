@@ -1,6 +1,6 @@
 # Architecture Overview
 
-Learn how **in-mem** works internally and why it's designed the way it is.
+Learn how **Strata** works internally and why it's designed the way it is.
 
 **Current Version**: 0.7.0 (M7 Durability, Snapshots & Replay)
 
@@ -48,7 +48,7 @@ Learn how **in-mem** works internally and why it's designed the way it is.
 
 ### Optimistic Concurrency Control (OCC)
 
-**in-mem** uses OCC with first-committer-wins conflict detection:
+**Strata** uses OCC with first-committer-wins conflict detection:
 
 1. **BEGIN**: Acquire snapshot (current version)
 2. **EXECUTE**: Read from snapshot, buffer writes
@@ -129,7 +129,7 @@ pub struct Primitive {
 
 ### Hybrid Search
 
-**in-mem** provides unified search across all primitives:
+**Strata** provides unified search across all primitives:
 
 ```
 SearchRequest → HybridSearch → [BM25 + Semantic] → RRF Fusion → SearchResponse
@@ -167,7 +167,7 @@ Periodic snapshots enable bounded recovery time.
 
 ```
 +------------------+
-| Magic (10 bytes) |  "INMEM_SNAP"
+| Magic (10 bytes) |  "STRATA_SNP"
 +------------------+
 | Version (4)      |  Format version
 +------------------+
