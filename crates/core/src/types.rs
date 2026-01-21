@@ -1,4 +1,4 @@
-//! Core types for in-mem database
+//! Core types for Strata database
 //!
 //! This module defines the foundational types:
 //! - RunId: Unique identifier for agent runs

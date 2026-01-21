@@ -1,4 +1,4 @@
-//! Primitives layer for in-mem
+//! Primitives layer for Strata
 //!
 //! Provides high-level primitives as stateless facades over the Database engine:
 //! - **KVStore**: General-purpose key-value storage

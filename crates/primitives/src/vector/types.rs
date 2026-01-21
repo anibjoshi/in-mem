@@ -1,6 +1,6 @@
 //! Core types for the Vector primitive
 //!
-//! This module re-exports canonical types from in-mem-core and defines
+//! This module re-exports canonical types from strata-core and defines
 //! implementation-specific types for vector storage and search.
 
 use serde_json::Value as JsonValue;

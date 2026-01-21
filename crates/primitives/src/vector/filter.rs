@@ -1,6 +1,6 @@
 //! Metadata filtering for vector search
 //!
-//! Re-exports canonical types from in-mem-core.
+//! Re-exports canonical types from strata-core.
 //! Supports only equality filtering on top-level scalar fields.
 //! Complex filters (ranges, nested paths, arrays) are deferred to future versions.
 

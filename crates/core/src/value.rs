@@ -1,4 +1,4 @@
-//! Value types for in-mem
+//! Value types for Strata
 //!
 //! This module defines:
 //! - Value: Unified enum for all primitive data types

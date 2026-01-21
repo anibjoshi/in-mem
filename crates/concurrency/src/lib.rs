@@ -1,4 +1,4 @@
-//! Concurrency layer for in-mem
+//! Concurrency layer for Strata
 //!
 //! This crate implements optimistic concurrency control (OCC) with:
 //! - TransactionContext: Read/write set tracking
