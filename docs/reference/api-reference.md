@@ -1,6 +1,6 @@
 # API Reference
 
-Complete API reference for **in-mem** v0.7.0 (M7 Durability, Snapshots & Replay).
+Complete API reference for **Strata** v0.7.0 (M7 Durability, Snapshots & Replay).
 
 ## Table of Contents
 
@@ -40,7 +40,7 @@ Complete API reference for **in-mem** v0.7.0 (M7 Durability, Snapshots & Replay)
 
 ### `Database`
 
-Main entry point for interacting with **in-mem**.
+Main entry point for interacting with **Strata**.
 
 ```rust
 pub struct Database {
@@ -87,7 +87,7 @@ pub fn open_with_mode<P: AsRef<Path>>(
 
 **Example**:
 ```rust
-use in_mem::{Database, DurabilityMode};
+use strata::{Database, DurabilityMode};
 
 // InMemory mode for tests (fastest, no persistence)
 let db = Database::open_with_mode("./data", DurabilityMode::InMemory)?;
@@ -1282,7 +1282,7 @@ impl PrimitiveStorageExt for VectorStore {
 Use extension traits for atomic operations across multiple primitives.
 
 ```rust
-use in_mem::primitives::{KVStoreExt, EventLogExt, StateCellExt, TraceStoreExt};
+use strata::primitives::{KVStoreExt, EventLogExt, StateCellExt, TraceStoreExt};
 
 db.transaction(&run_id, |txn| {
     txn.kv_put("key", Value::String("value".into()))?;

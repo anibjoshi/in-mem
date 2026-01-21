@@ -1,6 +1,6 @@
-# in-mem Reference Documentation
+# Strata Reference Documentation
 
-**in-mem** - a fast, durable, embedded database for AI agent workloads.
+**Strata** - a fast, durable, embedded database for AI agent workloads.
 
 **Current Version**: 0.7.0 (M7 Durability, Snapshots & Replay)
 
@@ -8,7 +8,7 @@
 
 - [Getting Started](getting-started.md) - Installation and quick start
 - [API Reference](api-reference.md) - Complete API documentation
-- [Architecture](architecture.md) - How in-mem works internally
+- [Architecture](architecture.md) - How Strata works internally
 - [Milestones](../milestones/MILESTONES.md) - Project roadmap
 
 ## Features
@@ -38,7 +38,7 @@
 ## Quick Start
 
 ```rust
-use in_mem::{Database, DurabilityMode, primitives::KVStore, Value};
+use strata::{Database, DurabilityMode, primitives::KVStore, Value};
 use std::sync::Arc;
 
 let db = Arc::new(Database::open_with_mode(

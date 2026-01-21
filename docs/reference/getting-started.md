@@ -1,6 +1,6 @@
-# Getting Started with in-mem
+# Getting Started with Strata
 
-**in-mem** is a fast, durable, embedded database designed for AI agent workloads.
+**Strata** is a fast, durable, embedded database designed for AI agent workloads.
 
 **Current Version**: 0.7.0 (M7 Durability, Snapshots & Replay)
 
@@ -8,13 +8,13 @@
 
 ```toml
 [dependencies]
-in-mem = "0.7"
+strata = "0.7"
 ```
 
 ## Quick Start
 
 ```rust
-use in_mem::{Database, DurabilityMode, primitives::KVStore, Value};
+use strata::{Database, DurabilityMode, primitives::KVStore, Value};
 use std::sync::Arc;
 
 // Open database
@@ -111,7 +111,7 @@ let active = runs.query_by_status(RunStatus::Active)?;
 ### JsonStore (M5)
 
 ```rust
-use in_mem::primitives::JsonStore;
+use strata::primitives::JsonStore;
 use serde_json::json;
 
 let json = JsonStore::new(db.clone());
@@ -134,7 +134,7 @@ json.array_push(&run_id, "config", "$.history", json!({"role": "user"}))?;
 ### Hybrid Search (M6)
 
 ```rust
-use in_mem::search::{SearchRequest, HybridSearch};
+use strata::search::{SearchRequest, HybridSearch};
 
 let search = HybridSearch::new(db.clone());
 
@@ -153,7 +153,7 @@ for result in response.results {
 ### Snapshots (M7)
 
 ```rust
-use in_mem::SnapshotConfig;
+use strata::SnapshotConfig;
 
 // Configure automatic snapshots
 db.configure_snapshots(SnapshotConfig {
@@ -171,7 +171,7 @@ println!("Snapshot created at {:?}", info.path);
 ### Recovery (M7)
 
 ```rust
-use in_mem::{Database, RecoveryOptions};
+use strata::{Database, RecoveryOptions};
 
 // Open with custom recovery options
 let db = Database::open_with_options(
@@ -233,7 +233,7 @@ for entry in &diff.modified {
 ## Cross-Primitive Transactions
 
 ```rust
-use in_mem::primitives::{KVStoreExt, EventLogExt, StateCellExt};
+use strata::primitives::{KVStoreExt, EventLogExt, StateCellExt};
 
 db.transaction(&run_id, |txn| {
     txn.kv_put("key", Value::String("value".into()))?;
