@@ -42,4 +42,4 @@ pub use conflict::{
 };
 
 // Re-export the SnapshotView trait from core for convenience
-pub use in_mem_core::traits::SnapshotView;
+pub use strata_core::traits::SnapshotView;

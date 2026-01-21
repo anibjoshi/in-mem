@@ -5,7 +5,7 @@
 //! Complex filters (ranges, nested paths, arrays) are deferred to future versions.
 
 // Re-export canonical filter types from core
-pub use in_mem_core::primitives::{JsonScalar, MetadataFilter};
+pub use strata_core::primitives::{JsonScalar, MetadataFilter};
 
 #[cfg(test)]
 mod tests {

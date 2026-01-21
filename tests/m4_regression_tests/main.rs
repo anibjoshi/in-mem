@@ -16,6 +16,7 @@ pub mod cross_primitive;
 pub mod eventlog_semantics;
 pub mod kill_switch;
 pub mod kv_semantics;
+pub mod m4_red_flags;
 pub mod snapshot_monotonicity;
 pub mod statecell_semantics;
 

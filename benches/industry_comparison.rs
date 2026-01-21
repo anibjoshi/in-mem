@@ -99,13 +99,13 @@ fn random_normalized_vector(dimension: usize, seed: u64) -> Vec<f32> {
 // In-Mem Imports
 // ============================================================================
 
-use in_mem_core::types::RunId;
-use in_mem_core::value::Value;
-use in_mem_engine::Database;
-use in_mem_primitives::{EventLog, JsonStore, KVStore, StateCell};
+use strata_core::types::RunId;
+use strata_core::value::Value;
+use strata_engine::Database;
+use strata_primitives::{EventLog, JsonStore, KVStore, StateCell};
 
 #[cfg(feature = "comparison-benchmarks")]
-use in_mem_primitives::vector::{DistanceMetric, VectorConfig, VectorStore};
+use strata_primitives::vector::{DistanceMetric, VectorConfig, VectorStore};
 
 // ============================================================================
 // KVStore Comparison: in-mem vs redb vs LMDB
@@ -403,8 +403,8 @@ fn json_comparison_insert(c: &mut Criterion) {
     let mut group = c.benchmark_group("json_comparison/insert");
     group.measurement_time(Duration::from_secs(10));
 
-    use in_mem_core::json::JsonValue;
-    use in_mem_core::types::JsonDocId;
+    use strata_core::json::JsonValue;
+    use strata_core::types::JsonDocId;
 
     // Create test documents
     let docs: Vec<serde_json::Value> = (0..100)
@@ -479,8 +479,8 @@ fn json_comparison_read(c: &mut Criterion) {
     let mut group = c.benchmark_group("json_comparison/read");
     group.measurement_time(Duration::from_secs(10));
 
-    use in_mem_core::json::JsonValue;
-    use in_mem_core::types::JsonDocId;
+    use strata_core::json::JsonValue;
+    use strata_core::types::JsonDocId;
 
     // Create and store test documents
     let docs: Vec<serde_json::Value> = (0..1000)
@@ -572,8 +572,8 @@ fn json_comparison_query(c: &mut Criterion) {
     let mut group = c.benchmark_group("json_comparison/query_by_field");
     group.measurement_time(Duration::from_secs(10));
 
-    use in_mem_core::json::JsonValue;
-    use in_mem_core::types::JsonDocId;
+    use strata_core::json::JsonValue;
+    use strata_core::types::JsonDocId;
 
     // Create test documents with varying scores
     let docs: Vec<serde_json::Value> = (0..1000)

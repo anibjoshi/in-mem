@@ -314,7 +314,7 @@ mod tests {
 /// ## Usage
 ///
 /// ```ignore
-/// use in_mem_core::{StrataError, StrataResult, EntityRef, Version};
+/// use strata_core::{StrataError, StrataResult, EntityRef, Version};
 ///
 /// fn example_operation() -> StrataResult<String> {
 ///     // Use ? operator naturally
