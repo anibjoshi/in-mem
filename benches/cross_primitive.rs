@@ -57,7 +57,7 @@ fn durability_label() -> &'static str {
     }
 }
 
-/// Create an in-memory database
+/// Create a Strata in-memory database
 fn create_db() -> Arc<Database> {
     Arc::new(Database::builder().in_memory().open_temp().unwrap())
 }

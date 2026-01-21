@@ -1,4 +1,4 @@
-//! Comprehensive Benchmark Suite for in-mem
+//! Comprehensive Benchmark Suite for Strata
 //!
 //! This benchmark suite answers three critical questions:
 //! 1. Is it fast enough for its intended workloads?

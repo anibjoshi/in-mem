@@ -90,7 +90,7 @@ fn durability_label() -> &'static str {
     }
 }
 
-/// Create a VectorStore backed by in-memory database
+/// Create a VectorStore backed by Strata in-memory database
 fn create_vector_store() -> (VectorStore, Arc<Database>) {
     let db = Database::builder().in_memory().open_temp().unwrap();
     let db = Arc::new(db);

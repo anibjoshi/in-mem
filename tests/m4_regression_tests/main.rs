@@ -3,9 +3,9 @@
 //! This module provides utilities for running semantic equivalence tests
 //! across different durability modes.
 
-use in_mem_core::types::RunId;
-use in_mem_durability::wal::DurabilityMode;
-use in_mem_engine::Database;
+use strata_core::types::RunId;
+use strata_durability::wal::DurabilityMode;
+use strata_engine::Database;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
