@@ -57,6 +57,13 @@ pub struct VectorHeap {
     /// This value is NEVER decremented, even after deletions.
     /// MUST be persisted in snapshots to maintain ID uniqueness across restarts.
     /// Without this, recovery could reuse IDs and break replay determinism.
+    ///
+    /// # Memory Ordering
+    ///
+    /// Uses Relaxed ordering for fetch_add because:
+    /// 1. fetch_add is atomic and guarantees each caller gets a unique value
+    /// 2. No other memory operations are synchronized by this counter
+    /// 3. The uniqueness guarantee comes from the atomic operation, not ordering
     next_id: AtomicU64,
 
     /// Version counter for snapshot consistency

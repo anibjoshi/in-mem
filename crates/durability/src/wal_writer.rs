@@ -35,7 +35,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
 /// WAL Writer with transaction framing support
@@ -137,10 +137,10 @@ impl WalWriter {
 
             Some(thread::spawn(move || {
                 debug!(path = %path_for_log.display(), "Starting async fsync thread");
-                while !shutdown.load(Ordering::Relaxed) {
+                while !shutdown.load(Ordering::Acquire) {
                     thread::sleep(interval);
 
-                    if shutdown.load(Ordering::Relaxed) {
+                    if shutdown.load(Ordering::Acquire) {
                         break;
                     }
 
@@ -518,14 +518,22 @@ impl WalWriter {
 impl Drop for WalWriter {
     fn drop(&mut self) {
         // Shutdown async fsync thread
-        self.shutdown.store(true, Ordering::Relaxed);
+        // Uses Release ordering to ensure writes before drop are visible to the background thread
+        self.shutdown.store(true, Ordering::Release);
 
         if let Some(handle) = self.fsync_thread.take() {
-            let _ = handle.join();
+            if let Err(e) = handle.join() {
+                error!("WalWriter fsync thread panicked on drop: {:?}", e);
+            }
         }
 
-        // Final sync
-        let _ = self.sync();
+        // Final sync - log errors but don't panic in drop
+        if let Err(e) = self.sync() {
+            warn!(
+                error = %e,
+                "WalWriter final sync on drop failed - data may not be durable"
+            );
+        }
     }
 }
 

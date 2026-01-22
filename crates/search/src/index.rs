@@ -223,8 +223,10 @@ impl InvertedIndex {
     // ========================================================================
 
     /// Get total number of indexed documents
+    ///
+    /// Uses Acquire ordering to ensure visibility of updates from other threads.
     pub fn total_docs(&self) -> usize {
-        self.total_docs.load(Ordering::Relaxed)
+        self.total_docs.load(Ordering::Acquire)
     }
 
     /// Get document frequency for a term
@@ -233,20 +235,24 @@ impl InvertedIndex {
     }
 
     /// Get average document length
+    ///
+    /// Uses Acquire ordering to ensure consistent visibility of both counters.
     pub fn avg_doc_len(&self) -> f32 {
-        let total = self.total_docs.load(Ordering::Relaxed);
+        let total = self.total_docs.load(Ordering::Acquire);
         if total == 0 {
             return 0.0;
         }
-        self.total_doc_len.load(Ordering::Relaxed) as f32 / total as f32
+        self.total_doc_len.load(Ordering::Acquire) as f32 / total as f32
     }
 
     /// Compute IDF for a term
     ///
     /// Uses standard IDF formula with smoothing:
     /// IDF(t) = ln((N - df + 0.5) / (df + 0.5) + 1)
+    ///
+    /// Uses Acquire ordering to ensure visibility of document count updates.
     pub fn compute_idf(&self, term: &str) -> f32 {
-        let n = self.total_docs.load(Ordering::Relaxed) as f32;
+        let n = self.total_docs.load(Ordering::Acquire) as f32;
         let df = self.doc_freq(term) as f32;
         ((n - df + 0.5) / (df + 0.5) + 1.0).ln()
     }
