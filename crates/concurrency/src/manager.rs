@@ -115,6 +115,17 @@ impl TransactionManager {
     /// Allocate next commit version (increment global version)
     ///
     /// Per spec Section 6.1: Version incremented ONCE for the whole transaction.
+    ///
+    /// # Version Gaps
+    ///
+    /// Version gaps may occur if a transaction fails after version allocation
+    /// but before successful commit (e.g., WAL write failure). Consumers should
+    /// not assume version numbers are contiguous. A gap means the version was
+    /// allocated but no data was committed with that version.
+    ///
+    /// This is by design - version allocation is atomic and non-blocking,
+    /// while failure handling during commit does not attempt to "return"
+    /// the allocated version.
     pub fn allocate_version(&self) -> u64 {
         self.version.fetch_add(1, Ordering::SeqCst) + 1
     }
