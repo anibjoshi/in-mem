@@ -1,8 +1,8 @@
 # M11: Public API & SDK Contract Specification
 
 **Status**: Freeze Candidate
-**Version**: 1.0
-**Last Updated**: 2026-01-21
+**Version**: 1.1
+**Last Updated**: 2026-01-22
 **Goal**: Freeze the public contract so all downstream surfaces (wire, CLI, Rust SDK, server) use consistent semantics
 
 ---
@@ -343,6 +343,7 @@ enum Version {
 | `SerializationError` | Value encode/decode failure | |
 | `StorageError` | Disk, WAL, or IO failure | |
 | `InternalError` | Bug or invariant violation | |
+| `Overflow` | Numeric overflow/underflow | Structural |
 
 ### 8.2 Conflict vs ConstraintViolation
 
@@ -375,6 +376,7 @@ The `details` field includes a `reason` for `ConstraintViolation`:
 - `vector_dim_mismatch`
 - `root_not_object`
 - `reserved_prefix`
+- `run_closed`
 
 ---
 
@@ -416,6 +418,7 @@ The following conditions **always** produce explicit errors:
 | `use_run` on non-existent run | `NotFound` |
 | CAS on wrong primitive type | `WrongType` |
 | `incr` on non-Int value | `WrongType` |
+| `incr` causes overflow/underflow | `Overflow` |
 
 ### 9.3 Guarantees
 
@@ -484,6 +487,7 @@ The following conditions **always** produce explicit errors:
 |-----------|-----------|--------|-------|
 | `xadd` | `(stream, payload: Object)` | `Version` | Returns event ID as Version |
 | `xrange` | `(stream, start?, end?, limit?)` | `Vec<Versioned<Value>>` | |
+| `xlen` | `(stream)` | `u64` | Count of events in stream |
 
 **xrange default behavior:** No bounds = all events. This can be expensive for large streams.
 
@@ -735,6 +739,7 @@ Every facade operation desugars to exactly one substrate operation pattern.
 |--------|-----------|
 | `xadd(stream, payload)` | `event_append(default, stream, payload)` |
 | `xrange(stream, start, end, limit)` | `event_range(default, stream, start, end, limit)` |
+| `xlen(stream)` | `event_range(default, stream, None, None, None).len()` |
 
 ### 12.4 Vector Operations
 
@@ -809,7 +814,7 @@ Every facade operation desugars to exactly one substrate operation pattern.
 **Facade operations:**
 - `kv.set`, `kv.get`, `kv.getv`, `kv.mget`, `kv.mset`, `kv.delete`, `kv.exists`, `kv.exists_many`, `kv.incr`
 - `json.set`, `json.get`, `json.getv`, `json.del`, `json.merge`
-- `event.add`, `event.range`
+- `event.add`, `event.range`, `event.len`
 - `vector.set`, `vector.get`, `vector.del`
 - `state.cas_set`, `state.get`
 - `history.list`, `history.get_at`, `history.latest_version`
@@ -931,7 +936,7 @@ MessagePack is optional for M11 but defined for future use.
 | `get`, `json_get`, `cas_get` | `Value` or `null` |
 | `getv`, `json_getv`, `vget` | `Versioned<Value>` or `null` |
 | `mget` | `Array<Value or null>` |
-| `delete`, `exists_many`, `json_del` | `int64` |
+| `delete`, `exists_many`, `json_del`, `xlen` | `int64` |
 | `exists`, `vdel`, `cas_set` | `bool` |
 | `incr` | `int64` |
 | `xadd` | `Version` |
@@ -965,6 +970,7 @@ strata json.merge doc $ '{"age": 30}'
 # Events
 strata xadd stream '{"type":"login"}'  # prints: {"type":"sequence","value":1}
 strata xrange stream
+strata xlen stream              # prints: (integer) 1
 
 # Vectors
 strata vset doc1 "[0.1, 0.2, 0.3]" '{"tag":"test"}'
@@ -980,6 +986,10 @@ strata cas.set mykey 999 0     # prints: (integer) 0 (mismatch)
 # History
 strata history mykey
 strata history mykey --limit 10
+
+# System
+strata runs                     # prints: list of RunInfo objects
+strata capabilities             # prints: capabilities JSON object
 ```
 
 ### 14.2 Output Conventions
@@ -1371,6 +1381,7 @@ json_merge(key, path, value) → ()
 # Events
 xadd(stream, payload) → Version
 xrange(stream, start?, end?, limit?) → Vec<Versioned<Value>>
+xlen(stream) → u64
 
 # Vectors
 vset(key, vector, metadata) → ()

@@ -3,6 +3,7 @@
 **Status**: Freeze Candidate
 **Author**: Architecture Team
 **Created**: 2026-01-21
+**Updated**: 2026-01-22
 **Milestone**: 11 - Public API & SDK Contract
 
 ---
@@ -503,6 +504,7 @@ enum Version {
 | `SerializationError` | Value encode/decode failure | |
 | `StorageError` | Disk, WAL, or IO failure | |
 | `InternalError` | Bug or invariant violation | |
+| `Overflow` | Numeric overflow/underflow | Structural |
 
 ### 8.2 Wire Error Shape
 
@@ -529,6 +531,7 @@ enum Version {
 - `vector_dim_mismatch`
 - `root_not_object`
 - `reserved_prefix`
+- `run_closed`
 
 ### 8.4 Error-Producing Conditions
 
@@ -546,6 +549,9 @@ enum Version {
 | Vector dimension mismatch | `ConstraintViolation` |
 | CAS on wrong primitive type | `WrongType` |
 | `incr` on non-Int value | `WrongType` |
+| `incr` causes overflow/underflow | `Overflow` |
+| Operating on closed run | `ConstraintViolation` |
+| Using stale/committed transaction handle | `Conflict` |
 
 ---
 
@@ -621,7 +627,7 @@ Used for CAS when `expected = None` (key missing, not value null).
 **Facade:**
 `kv.set`, `kv.get`, `kv.getv`, `kv.mget`, `kv.mset`, `kv.delete`, `kv.exists`, `kv.exists_many`, `kv.incr`,
 `json.set`, `json.get`, `json.getv`, `json.del`, `json.merge`,
-`event.add`, `event.range`,
+`event.add`, `event.range`, `event.len`,
 `vector.set`, `vector.get`, `vector.del`,
 `state.cas_set`, `state.get`,
 `history.list`, `history.get_at`, `history.latest_version`,

@@ -1,71 +1,20 @@
-# Epic 80: Value Model Stabilization
+# Epic 80: Value Model & Wire Encoding
 
-**Goal**: Finalize and freeze the canonical Value model with all 8 types, equality semantics, and size limits
+**Goal**: Freeze the canonical value model with all eight types, version types, Versioned<T> structure, and wire encoding
 
 **Dependencies**: M10 complete
-
-**Milestone**: M11a (Core Contract & API)
-
----
-
-## Test-Driven Development Protocol
-
-> **CRITICAL**: This epic follows strict Test-Driven Development (TDD). Tests are written FIRST, then implementation.
-
-### The TDD Cycle
-
-1. **Write the test** - Define expected behavior before writing any implementation
-2. **Run the test** - Verify it fails (red)
-3. **Write minimal implementation** - Just enough to pass the test
-4. **Run the test** - Verify it passes (green)
-5. **Refactor** - Clean up while keeping tests green
-
-### NEVER Modify Tests to Make Them Pass
-
-> **ABSOLUTE RULE**: When a test fails, the problem is in the implementation, NOT the test.
-
-**FORBIDDEN behaviors:**
-- Changing test assertions to match buggy output
-- Weakening test conditions (e.g., `==` to `!=`, exact match to contains)
-- Removing test cases that expose bugs
-- Adding `#[ignore]` to failing tests
-- Changing expected values to match actual (wrong) values
-
-**REQUIRED behaviors:**
-- Investigate WHY the test fails
-- Fix the implementation to match the specification
-- If the spec is wrong, get explicit approval before changing both spec AND test
-- Document any spec changes in the epic
-
-**Example of WRONG approach:**
-```rust
-#[test]
-fn test_int_not_equal_float() {
-    // WRONG: Changed test because implementation was buggy
-    assert_eq!(Value::Int(1), Value::Float(1.0)); // Was: assert_ne!
-}
-```
-
-**Example of CORRECT approach:**
-```rust
-#[test]
-fn test_int_not_equal_float() {
-    // Spec says Int(1) != Float(1.0) - NO TYPE COERCION
-    // If this fails, fix Value::eq(), not this test
-    assert_ne!(Value::Int(1), Value::Float(1.0));
-}
-```
 
 ---
 
 ## Scope
 
-- Finalize `Value` enum with all 8 types
-- Float edge cases (NaN, Infinity, -0.0, subnormals)
-- Value equality with IEEE-754 semantics
-- No implicit type coercion
-- Size limits (keys, strings, bytes, arrays, objects, nesting)
-- Key validation rules
+- Value enum with 8 canonical types
+- Value equality semantics (structural, IEEE-754 floats)
+- Value size limits and validation
+- Version tagged union (Txn/Sequence/Counter)
+- Versioned<T> structure finalization
+- RunId format (UUID + "default" literal)
+- JSON wire encoding with special wrappers ($bytes, $f64, $absent)
 
 ---
 
@@ -73,228 +22,59 @@ fn test_int_not_equal_float() {
 
 | Story | Description | Priority |
 |-------|-------------|----------|
-| #560 | Value Enum Finalization | FOUNDATION |
-| #561 | Float Edge Case Handling | CRITICAL |
-| #562 | Value Equality Semantics | CRITICAL |
-| #563 | No Type Coercion Verification | CRITICAL |
-| #564 | Size Limits Implementation | CRITICAL |
-| #565 | Key Validation Rules | CRITICAL |
+| #550 | Value Enum Implementation (8 types) | FOUNDATION |
+| #551 | Value Equality Semantics (structural, IEEE-754 floats) | FOUNDATION |
+| #552 | Value Size Limits and Validation | CRITICAL |
+| #553 | Version Tagged Union (Txn/Sequence/Counter) | CRITICAL |
+| #554 | Versioned<T> Structure Finalization | CRITICAL |
+| #555 | RunId Format (UUID + "default" literal) | CRITICAL |
+| #556 | JSON Wire Encoding (basic types) | CRITICAL |
+| #557 | $bytes Wrapper (base64 encoding) | CRITICAL |
+| #558 | $f64 Wrapper (NaN, ±Inf, -0.0) | CRITICAL |
+| #559 | $absent Wrapper (for CAS) | HIGH |
 
 ---
 
-## Story #560: Value Enum Finalization
+## Story #550: Value Enum Implementation
 
-**File**: `crates/core/src/value.rs`
+**File**: `crates/core/src/value/types.rs` (NEW)
 
-**Deliverable**: Finalized Value enum with all 8 canonical types
+**Deliverable**: Canonical Value enum with exactly 8 variants
 
-### Tests FIRST
+### Design
+
+The Value enum is the single public value model for Strata. All data flowing through the API uses this type.
 
 ```rust
-#[cfg(test)]
-mod value_construction_tests {
-    use super::*;
+/// Canonical Strata value type
+///
+/// This is the ONLY public value model. All surfaces (wire, CLI, SDK) use this.
+#[derive(Debug, Clone)]
+pub enum Value {
+    /// JSON null
+    Null,
 
-    // === Null Tests ===
+    /// Boolean value
+    Bool(bool),
 
-    #[test]
-    fn test_null_construction() {
-        let v = Value::Null;
-        assert!(matches!(v, Value::Null));
-    }
+    /// 64-bit signed integer
+    Int(i64),
 
-    // === Bool Tests ===
+    /// IEEE-754 double-precision float
+    /// Preserves NaN, +Inf, -Inf, -0.0
+    Float(f64),
 
-    #[test]
-    fn test_bool_true_construction() {
-        let v = Value::Bool(true);
-        assert!(matches!(v, Value::Bool(true)));
-    }
+    /// UTF-8 string
+    String(String),
 
-    #[test]
-    fn test_bool_false_construction() {
-        let v = Value::Bool(false);
-        assert!(matches!(v, Value::Bool(false)));
-    }
+    /// Binary data (distinct from String)
+    Bytes(Vec<u8>),
 
-    // === Int Tests ===
+    /// Ordered array of values
+    Array(Vec<Value>),
 
-    #[test]
-    fn test_int_positive_construction() {
-        let v = Value::Int(123);
-        assert!(matches!(v, Value::Int(123)));
-    }
-
-    #[test]
-    fn test_int_negative_construction() {
-        let v = Value::Int(-456);
-        assert!(matches!(v, Value::Int(-456)));
-    }
-
-    #[test]
-    fn test_int_zero_construction() {
-        let v = Value::Int(0);
-        assert!(matches!(v, Value::Int(0)));
-    }
-
-    #[test]
-    fn test_int_max_construction() {
-        let v = Value::Int(i64::MAX);
-        assert!(matches!(v, Value::Int(i64::MAX)));
-    }
-
-    #[test]
-    fn test_int_min_construction() {
-        let v = Value::Int(i64::MIN);
-        assert!(matches!(v, Value::Int(i64::MIN)));
-    }
-
-    // === Float Tests ===
-
-    #[test]
-    fn test_float_positive_construction() {
-        let v = Value::Float(1.23);
-        match v {
-            Value::Float(f) => assert!((f - 1.23).abs() < f64::EPSILON),
-            _ => panic!("Expected Float"),
-        }
-    }
-
-    #[test]
-    fn test_float_negative_construction() {
-        let v = Value::Float(-4.56);
-        match v {
-            Value::Float(f) => assert!((f - (-4.56)).abs() < f64::EPSILON),
-            _ => panic!("Expected Float"),
-        }
-    }
-
-    #[test]
-    fn test_float_zero_construction() {
-        let v = Value::Float(0.0);
-        match v {
-            Value::Float(f) => assert_eq!(f, 0.0),
-            _ => panic!("Expected Float"),
-        }
-    }
-
-    // === String Tests ===
-
-    #[test]
-    fn test_string_empty_construction() {
-        let v = Value::String(String::new());
-        assert!(matches!(v, Value::String(ref s) if s.is_empty()));
-    }
-
-    #[test]
-    fn test_string_ascii_construction() {
-        let v = Value::String("hello".to_string());
-        assert!(matches!(v, Value::String(ref s) if s == "hello"));
-    }
-
-    #[test]
-    fn test_string_unicode_construction() {
-        let v = Value::String("こんにちは".to_string());
-        assert!(matches!(v, Value::String(ref s) if s == "こんにちは"));
-    }
-
-    #[test]
-    fn test_string_emoji_construction() {
-        let v = Value::String("🚀🎉".to_string());
-        assert!(matches!(v, Value::String(ref s) if s == "🚀🎉"));
-    }
-
-    // === Bytes Tests ===
-
-    #[test]
-    fn test_bytes_empty_construction() {
-        let v = Value::Bytes(vec![]);
-        assert!(matches!(v, Value::Bytes(ref b) if b.is_empty()));
-    }
-
-    #[test]
-    fn test_bytes_binary_construction() {
-        let v = Value::Bytes(vec![0, 255, 128]);
-        assert!(matches!(v, Value::Bytes(ref b) if b == &[0, 255, 128]));
-    }
-
-    #[test]
-    fn test_bytes_all_values_construction() {
-        let all_bytes: Vec<u8> = (0..=255).collect();
-        let v = Value::Bytes(all_bytes.clone());
-        assert!(matches!(v, Value::Bytes(ref b) if b == &all_bytes));
-    }
-
-    // === Array Tests ===
-
-    #[test]
-    fn test_array_empty_construction() {
-        let v = Value::Array(vec![]);
-        assert!(matches!(v, Value::Array(ref a) if a.is_empty()));
-    }
-
-    #[test]
-    fn test_array_single_element_construction() {
-        let v = Value::Array(vec![Value::Int(1)]);
-        assert!(matches!(v, Value::Array(ref a) if a.len() == 1));
-    }
-
-    #[test]
-    fn test_array_mixed_types_construction() {
-        let v = Value::Array(vec![
-            Value::Int(1),
-            Value::String("hello".to_string()),
-            Value::Bool(true),
-        ]);
-        assert!(matches!(v, Value::Array(ref a) if a.len() == 3));
-    }
-
-    #[test]
-    fn test_array_nested_construction() {
-        let v = Value::Array(vec![
-            Value::Array(vec![Value::Int(1)]),
-        ]);
-        match &v {
-            Value::Array(outer) => {
-                assert_eq!(outer.len(), 1);
-                assert!(matches!(&outer[0], Value::Array(_)));
-            }
-            _ => panic!("Expected Array"),
-        }
-    }
-
-    // === Object Tests ===
-
-    #[test]
-    fn test_object_empty_construction() {
-        let v = Value::Object(HashMap::new());
-        assert!(matches!(v, Value::Object(ref o) if o.is_empty()));
-    }
-
-    #[test]
-    fn test_object_single_entry_construction() {
-        let mut map = HashMap::new();
-        map.insert("key".to_string(), Value::Int(42));
-        let v = Value::Object(map);
-        assert!(matches!(v, Value::Object(ref o) if o.len() == 1));
-    }
-
-    #[test]
-    fn test_object_nested_construction() {
-        let mut inner = HashMap::new();
-        inner.insert("inner_key".to_string(), Value::Int(1));
-
-        let mut outer = HashMap::new();
-        outer.insert("outer_key".to_string(), Value::Object(inner));
-
-        let v = Value::Object(outer);
-        match &v {
-            Value::Object(o) => {
-                assert!(matches!(o.get("outer_key"), Some(Value::Object(_))));
-            }
-            _ => panic!("Expected Object"),
-        }
-    }
+    /// String-keyed object (key order not preserved)
+    Object(HashMap<String, Value>),
 }
 ```
 
@@ -303,42 +83,69 @@ mod value_construction_tests {
 ```rust
 use std::collections::HashMap;
 
-/// Canonical Strata Value type
-///
-/// This is the ONLY public value model. All API surfaces use this type.
-/// After M11, this enum is FROZEN and cannot change without major version bump.
-#[derive(Debug, Clone)]
-pub enum Value {
-    /// JSON null / absence of value
-    Null,
-
-    /// Boolean true or false
-    Bool(bool),
-
-    /// 64-bit signed integer
-    /// Range: -9,223,372,036,854,775,808 to 9,223,372,036,854,775,807
-    Int(i64),
-
-    /// 64-bit IEEE-754 floating point
-    /// Supports: NaN, +Inf, -Inf, -0.0, subnormals
-    Float(f64),
-
-    /// UTF-8 encoded string
-    String(String),
-
-    /// Arbitrary binary data
-    /// NOT equivalent to String - distinct type
-    Bytes(Vec<u8>),
-
-    /// Ordered sequence of values
-    Array(Vec<Value>),
-
-    /// String-keyed map of values
-    Object(HashMap<String, Value>),
-}
-
 impl Value {
-    /// Returns the type name as a string (for error messages)
+    /// Check if value is null
+    pub fn is_null(&self) -> bool {
+        matches!(self, Value::Null)
+    }
+
+    /// Get as bool if Bool variant
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Value::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+
+    /// Get as i64 if Int variant
+    pub fn as_int(&self) -> Option<i64> {
+        match self {
+            Value::Int(i) => Some(*i),
+            _ => None,
+        }
+    }
+
+    /// Get as f64 if Float variant
+    pub fn as_float(&self) -> Option<f64> {
+        match self {
+            Value::Float(f) => Some(*f),
+            _ => None,
+        }
+    }
+
+    /// Get as &str if String variant
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Value::String(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// Get as &[u8] if Bytes variant
+    pub fn as_bytes(&self) -> Option<&[u8]> {
+        match self {
+            Value::Bytes(b) => Some(b),
+            _ => None,
+        }
+    }
+
+    /// Get as &[Value] if Array variant
+    pub fn as_array(&self) -> Option<&[Value]> {
+        match self {
+            Value::Array(a) => Some(a),
+            _ => None,
+        }
+    }
+
+    /// Get as &HashMap if Object variant
+    pub fn as_object(&self) -> Option<&HashMap<String, Value>> {
+        match self {
+            Value::Object(o) => Some(o),
+            _ => None,
+        }
+    }
+
+    /// Get type name for error messages
     pub fn type_name(&self) -> &'static str {
         match self {
             Value::Null => "Null",
@@ -351,550 +158,88 @@ impl Value {
             Value::Object(_) => "Object",
         }
     }
+}
 
-    /// Check if this value is null
-    pub fn is_null(&self) -> bool {
-        matches!(self, Value::Null)
+// Convenience From implementations
+impl From<bool> for Value {
+    fn from(v: bool) -> Self {
+        Value::Bool(v)
     }
+}
 
-    /// Try to get as bool
-    pub fn as_bool(&self) -> Option<bool> {
-        match self {
-            Value::Bool(b) => Some(*b),
-            _ => None,
-        }
+impl From<i64> for Value {
+    fn from(v: i64) -> Self {
+        Value::Int(v)
     }
+}
 
-    /// Try to get as i64
-    pub fn as_int(&self) -> Option<i64> {
-        match self {
-            Value::Int(i) => Some(*i),
-            _ => None,
-        }
+impl From<i32> for Value {
+    fn from(v: i32) -> Self {
+        Value::Int(v as i64)
     }
+}
 
-    /// Try to get as f64
-    pub fn as_float(&self) -> Option<f64> {
-        match self {
-            Value::Float(f) => Some(*f),
-            _ => None,
-        }
+impl From<f64> for Value {
+    fn from(v: f64) -> Self {
+        Value::Float(v)
     }
+}
 
-    /// Try to get as string slice
-    pub fn as_str(&self) -> Option<&str> {
-        match self {
-            Value::String(s) => Some(s),
-            _ => None,
-        }
+impl From<String> for Value {
+    fn from(v: String) -> Self {
+        Value::String(v)
     }
+}
 
-    /// Try to get as bytes slice
-    pub fn as_bytes(&self) -> Option<&[u8]> {
-        match self {
-            Value::Bytes(b) => Some(b),
-            _ => None,
-        }
+impl From<&str> for Value {
+    fn from(v: &str) -> Self {
+        Value::String(v.to_string())
     }
+}
 
-    /// Try to get as array slice
-    pub fn as_array(&self) -> Option<&[Value]> {
-        match self {
-            Value::Array(a) => Some(a),
-            _ => None,
-        }
+impl From<Vec<u8>> for Value {
+    fn from(v: Vec<u8>) -> Self {
+        Value::Bytes(v)
     }
+}
 
-    /// Try to get as object reference
-    pub fn as_object(&self) -> Option<&HashMap<String, Value>> {
-        match self {
-            Value::Object(o) => Some(o),
-            _ => None,
-        }
+impl From<Vec<Value>> for Value {
+    fn from(v: Vec<Value>) -> Self {
+        Value::Array(v)
+    }
+}
+
+impl From<HashMap<String, Value>> for Value {
+    fn from(v: HashMap<String, Value>) -> Self {
+        Value::Object(v)
     }
 }
 ```
 
 ### Acceptance Criteria
 
-- [ ] Value enum has exactly 8 variants: Null, Bool, Int, Float, String, Bytes, Array, Object
-- [ ] All construction tests pass
-- [ ] Type accessor methods work correctly
-- [ ] `type_name()` returns correct strings
-- [ ] No additional variants or type aliases
+- [ ] `Value` enum with exactly 8 variants: Null, Bool, Int(i64), Float(f64), String, Bytes, Array, Object
+- [ ] Type accessor methods (as_bool, as_int, as_float, as_str, as_bytes, as_array, as_object)
+- [ ] `type_name()` for error messages
+- [ ] From implementations for common types
+- [ ] No implicit type coercion between variants
 
 ---
 
-## Story #561: Float Edge Case Handling
+## Story #551: Value Equality Semantics
 
-**File**: `crates/core/src/value.rs`
+**File**: `crates/core/src/value/equality.rs` (NEW)
 
-**Deliverable**: Correct handling of IEEE-754 special float values
+**Deliverable**: Structural equality with IEEE-754 float semantics
 
-### Tests FIRST
+### Design
 
-```rust
-#[cfg(test)]
-mod float_edge_case_tests {
-    use super::*;
-
-    // === NaN Tests ===
-
-    #[test]
-    fn test_nan_construction() {
-        let v = Value::Float(f64::NAN);
-        match v {
-            Value::Float(f) => assert!(f.is_nan()),
-            _ => panic!("Expected Float"),
-        }
-    }
-
-    #[test]
-    fn test_nan_is_nan() {
-        let f = f64::NAN;
-        assert!(f.is_nan());
-    }
-
-    // === Infinity Tests ===
-
-    #[test]
-    fn test_positive_infinity_construction() {
-        let v = Value::Float(f64::INFINITY);
-        match v {
-            Value::Float(f) => {
-                assert!(f.is_infinite());
-                assert!(f.is_sign_positive());
-            }
-            _ => panic!("Expected Float"),
-        }
-    }
-
-    #[test]
-    fn test_negative_infinity_construction() {
-        let v = Value::Float(f64::NEG_INFINITY);
-        match v {
-            Value::Float(f) => {
-                assert!(f.is_infinite());
-                assert!(f.is_sign_negative());
-            }
-            _ => panic!("Expected Float"),
-        }
-    }
-
-    // === Negative Zero Tests ===
-
-    #[test]
-    fn test_negative_zero_construction() {
-        let v = Value::Float(-0.0);
-        match v {
-            Value::Float(f) => {
-                assert_eq!(f, 0.0); // -0.0 == 0.0 per IEEE-754
-                assert!(f.is_sign_negative()); // But sign is preserved
-            }
-            _ => panic!("Expected Float"),
-        }
-    }
-
-    #[test]
-    fn test_negative_zero_sign_preserved() {
-        let v = Value::Float(-0.0);
-        match v {
-            Value::Float(f) => {
-                // Bit pattern must be preserved
-                assert_eq!(f.to_bits(), (-0.0_f64).to_bits());
-            }
-            _ => panic!("Expected Float"),
-        }
-    }
-
-    // === Extreme Values ===
-
-    #[test]
-    fn test_float_max_construction() {
-        let v = Value::Float(f64::MAX);
-        match v {
-            Value::Float(f) => assert_eq!(f, f64::MAX),
-            _ => panic!("Expected Float"),
-        }
-    }
-
-    #[test]
-    fn test_float_min_positive_construction() {
-        let v = Value::Float(f64::MIN_POSITIVE);
-        match v {
-            Value::Float(f) => assert_eq!(f, f64::MIN_POSITIVE),
-            _ => panic!("Expected Float"),
-        }
-    }
-
-    #[test]
-    fn test_float_subnormal_construction() {
-        // Smallest subnormal
-        let subnormal = f64::from_bits(1);
-        assert!(subnormal.is_subnormal());
-
-        let v = Value::Float(subnormal);
-        match v {
-            Value::Float(f) => {
-                assert!(f.is_subnormal());
-                assert_eq!(f.to_bits(), 1);
-            }
-            _ => panic!("Expected Float"),
-        }
-    }
-
-    #[test]
-    fn test_float_precision_preserved() {
-        // This value cannot be exactly represented in f32
-        let precise = 1.0000000000000002_f64;
-        let v = Value::Float(precise);
-        match v {
-            Value::Float(f) => {
-                assert_eq!(f.to_bits(), precise.to_bits());
-            }
-            _ => panic!("Expected Float"),
-        }
-    }
-
-    // === Float Helper Methods ===
-
-    #[test]
-    fn test_is_special_float_nan() {
-        let v = Value::Float(f64::NAN);
-        assert!(v.is_special_float());
-    }
-
-    #[test]
-    fn test_is_special_float_infinity() {
-        let v = Value::Float(f64::INFINITY);
-        assert!(v.is_special_float());
-    }
-
-    #[test]
-    fn test_is_special_float_neg_zero() {
-        let v = Value::Float(-0.0);
-        assert!(v.is_special_float());
-    }
-
-    #[test]
-    fn test_is_special_float_normal() {
-        let v = Value::Float(1.5);
-        assert!(!v.is_special_float());
-    }
-}
-```
-
-### Implementation
-
-```rust
-impl Value {
-    /// Check if this is a special float value requiring wire encoding wrapper
-    ///
-    /// Special floats: NaN, +Inf, -Inf, -0.0
-    /// These require `{"$f64": "..."}` wrapper in JSON wire encoding.
-    pub fn is_special_float(&self) -> bool {
-        match self {
-            Value::Float(f) => {
-                f.is_nan() || f.is_infinite() || (f == &0.0 && f.is_sign_negative())
-            }
-            _ => false,
-        }
-    }
-
-    /// Get the special float kind if this is a special float
-    pub fn special_float_kind(&self) -> Option<SpecialFloatKind> {
-        match self {
-            Value::Float(f) => {
-                if f.is_nan() {
-                    Some(SpecialFloatKind::NaN)
-                } else if *f == f64::INFINITY {
-                    Some(SpecialFloatKind::PositiveInfinity)
-                } else if *f == f64::NEG_INFINITY {
-                    Some(SpecialFloatKind::NegativeInfinity)
-                } else if *f == 0.0 && f.is_sign_negative() {
-                    Some(SpecialFloatKind::NegativeZero)
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
-    }
-}
-
-/// Kinds of special float values
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SpecialFloatKind {
-    NaN,
-    PositiveInfinity,
-    NegativeInfinity,
-    NegativeZero,
-}
-
-impl SpecialFloatKind {
-    /// Convert to wire encoding string
-    pub fn to_wire_string(&self) -> &'static str {
-        match self {
-            SpecialFloatKind::NaN => "NaN",
-            SpecialFloatKind::PositiveInfinity => "+Inf",
-            SpecialFloatKind::NegativeInfinity => "-Inf",
-            SpecialFloatKind::NegativeZero => "-0.0",
-        }
-    }
-
-    /// Parse from wire encoding string
-    pub fn from_wire_string(s: &str) -> Option<Self> {
-        match s {
-            "NaN" => Some(SpecialFloatKind::NaN),
-            "+Inf" => Some(SpecialFloatKind::PositiveInfinity),
-            "-Inf" => Some(SpecialFloatKind::NegativeInfinity),
-            "-0.0" => Some(SpecialFloatKind::NegativeZero),
-            _ => None,
-        }
-    }
-
-    /// Convert to f64 value
-    pub fn to_f64(&self) -> f64 {
-        match self {
-            SpecialFloatKind::NaN => f64::NAN,
-            SpecialFloatKind::PositiveInfinity => f64::INFINITY,
-            SpecialFloatKind::NegativeInfinity => f64::NEG_INFINITY,
-            SpecialFloatKind::NegativeZero => -0.0,
-        }
-    }
-}
-```
-
-### Acceptance Criteria
-
-- [ ] NaN constructs and is identified correctly
-- [ ] +Inf and -Inf construct and are identified correctly
-- [ ] -0.0 constructs with sign preserved
-- [ ] Subnormal floats are not flushed to zero
-- [ ] Full f64 precision is preserved
-- [ ] `is_special_float()` correctly identifies special values
-- [ ] `SpecialFloatKind` wire encoding strings match spec
-
----
-
-## Story #562: Value Equality Semantics
-
-**File**: `crates/core/src/value.rs`
-
-**Deliverable**: Correct equality implementation following IEEE-754 and no-coercion rules
-
-### Tests FIRST
-
-```rust
-#[cfg(test)]
-mod equality_tests {
-    use super::*;
-
-    // === Same Type Equality ===
-
-    #[test]
-    fn test_null_equals_null() {
-        assert_eq!(Value::Null, Value::Null);
-    }
-
-    #[test]
-    fn test_bool_true_equals_true() {
-        assert_eq!(Value::Bool(true), Value::Bool(true));
-    }
-
-    #[test]
-    fn test_bool_false_equals_false() {
-        assert_eq!(Value::Bool(false), Value::Bool(false));
-    }
-
-    #[test]
-    fn test_bool_true_not_equals_false() {
-        assert_ne!(Value::Bool(true), Value::Bool(false));
-    }
-
-    #[test]
-    fn test_int_equals_same_int() {
-        assert_eq!(Value::Int(42), Value::Int(42));
-    }
-
-    #[test]
-    fn test_int_not_equals_different_int() {
-        assert_ne!(Value::Int(42), Value::Int(43));
-    }
-
-    #[test]
-    fn test_float_equals_same_float() {
-        assert_eq!(Value::Float(3.14), Value::Float(3.14));
-    }
-
-    #[test]
-    fn test_string_equals_same_string() {
-        assert_eq!(
-            Value::String("hello".to_string()),
-            Value::String("hello".to_string())
-        );
-    }
-
-    #[test]
-    fn test_string_not_equals_different_string() {
-        assert_ne!(
-            Value::String("hello".to_string()),
-            Value::String("world".to_string())
-        );
-    }
-
-    #[test]
-    fn test_bytes_equals_same_bytes() {
-        assert_eq!(
-            Value::Bytes(vec![1, 2, 3]),
-            Value::Bytes(vec![1, 2, 3])
-        );
-    }
-
-    #[test]
-    fn test_array_equals_same_elements() {
-        assert_eq!(
-            Value::Array(vec![Value::Int(1), Value::Int(2)]),
-            Value::Array(vec![Value::Int(1), Value::Int(2)])
-        );
-    }
-
-    #[test]
-    fn test_array_not_equals_different_order() {
-        assert_ne!(
-            Value::Array(vec![Value::Int(1), Value::Int(2)]),
-            Value::Array(vec![Value::Int(2), Value::Int(1)])
-        );
-    }
-
-    #[test]
-    fn test_object_equals_same_entries() {
-        let mut map1 = HashMap::new();
-        map1.insert("a".to_string(), Value::Int(1));
-
-        let mut map2 = HashMap::new();
-        map2.insert("a".to_string(), Value::Int(1));
-
-        assert_eq!(Value::Object(map1), Value::Object(map2));
-    }
-
-    #[test]
-    fn test_object_equals_regardless_of_insertion_order() {
-        let mut map1 = HashMap::new();
-        map1.insert("a".to_string(), Value::Int(1));
-        map1.insert("b".to_string(), Value::Int(2));
-
-        let mut map2 = HashMap::new();
-        map2.insert("b".to_string(), Value::Int(2));
-        map2.insert("a".to_string(), Value::Int(1));
-
-        assert_eq!(Value::Object(map1), Value::Object(map2));
-    }
-
-    // === IEEE-754 Float Equality ===
-
-    #[test]
-    fn test_nan_not_equals_nan() {
-        // CRITICAL: NaN != NaN per IEEE-754
-        assert_ne!(Value::Float(f64::NAN), Value::Float(f64::NAN));
-    }
-
-    #[test]
-    fn test_different_nan_payloads_not_equal() {
-        let nan1 = f64::from_bits(0x7ff8000000000001);
-        let nan2 = f64::from_bits(0x7ff8000000000002);
-        assert!(nan1.is_nan() && nan2.is_nan());
-        assert_ne!(Value::Float(nan1), Value::Float(nan2));
-    }
-
-    #[test]
-    fn test_positive_infinity_equals_positive_infinity() {
-        assert_eq!(Value::Float(f64::INFINITY), Value::Float(f64::INFINITY));
-    }
-
-    #[test]
-    fn test_negative_infinity_equals_negative_infinity() {
-        assert_eq!(Value::Float(f64::NEG_INFINITY), Value::Float(f64::NEG_INFINITY));
-    }
-
-    #[test]
-    fn test_positive_infinity_not_equals_negative_infinity() {
-        assert_ne!(Value::Float(f64::INFINITY), Value::Float(f64::NEG_INFINITY));
-    }
-
-    #[test]
-    fn test_negative_zero_equals_positive_zero() {
-        // CRITICAL: -0.0 == 0.0 per IEEE-754
-        assert_eq!(Value::Float(-0.0), Value::Float(0.0));
-    }
-
-    // === Cross-Type Inequality (NO COERCION) ===
-
-    #[test]
-    fn test_null_not_equals_bool() {
-        assert_ne!(Value::Null, Value::Bool(false));
-    }
-
-    #[test]
-    fn test_null_not_equals_int_zero() {
-        assert_ne!(Value::Null, Value::Int(0));
-    }
-
-    #[test]
-    fn test_null_not_equals_empty_string() {
-        assert_ne!(Value::Null, Value::String(String::new()));
-    }
-
-    #[test]
-    fn test_int_one_not_equals_float_one() {
-        // CRITICAL: No type coercion - Int(1) != Float(1.0)
-        assert_ne!(Value::Int(1), Value::Float(1.0));
-    }
-
-    #[test]
-    fn test_int_zero_not_equals_float_zero() {
-        // CRITICAL: No type coercion
-        assert_ne!(Value::Int(0), Value::Float(0.0));
-    }
-
-    #[test]
-    fn test_bool_true_not_equals_int_one() {
-        // CRITICAL: No type coercion
-        assert_ne!(Value::Bool(true), Value::Int(1));
-    }
-
-    #[test]
-    fn test_bool_false_not_equals_int_zero() {
-        // CRITICAL: No type coercion
-        assert_ne!(Value::Bool(false), Value::Int(0));
-    }
-
-    #[test]
-    fn test_string_not_equals_bytes() {
-        // CRITICAL: String("abc") != Bytes([97, 98, 99])
-        assert_ne!(
-            Value::String("abc".to_string()),
-            Value::Bytes(vec![97, 98, 99])
-        );
-    }
-
-    #[test]
-    fn test_empty_array_not_equals_null() {
-        assert_ne!(Value::Array(vec![]), Value::Null);
-    }
-
-    #[test]
-    fn test_empty_object_not_equals_null() {
-        assert_ne!(Value::Object(HashMap::new()), Value::Null);
-    }
-
-    #[test]
-    fn test_string_number_not_equals_int() {
-        // "123" != Int(123)
-        assert_ne!(Value::String("123".to_string()), Value::Int(123));
-    }
-}
-```
+Equality follows these rules:
+- Structural equality only (no total ordering)
+- No implicit type coercions (`Int(1) != Float(1.0)`)
+- IEEE-754 float equality: `NaN != NaN`, `-0.0 == 0.0`
+- Bytes are not strings
+- Object key order is irrelevant
 
 ### Implementation
 
@@ -902,412 +247,138 @@ mod equality_tests {
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            // Same types
             (Value::Null, Value::Null) => true,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Int(a), Value::Int(b)) => a == b,
             (Value::Float(a), Value::Float(b)) => {
-                // IEEE-754 equality: NaN != NaN, but -0.0 == 0.0
+                // IEEE-754 equality: NaN != NaN, -0.0 == 0.0
                 a == b
             }
             (Value::String(a), Value::String(b)) => a == b,
             (Value::Bytes(a), Value::Bytes(b)) => a == b,
-            (Value::Array(a), Value::Array(b)) => a == b,
-            (Value::Object(a), Value::Object(b)) => a == b,
-
-            // Different types: NEVER equal (NO TYPE COERCION)
+            (Value::Array(a), Value::Array(b)) => {
+                a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x == y)
+            }
+            (Value::Object(a), Value::Object(b)) => {
+                // Same keys and recursive value equality
+                a.len() == b.len()
+                    && a.iter().all(|(k, v)| b.get(k).map_or(false, |bv| v == bv))
+            }
+            // Different types are never equal
             _ => false,
         }
     }
 }
 
-impl Eq for Value {}
+// Note: We intentionally do NOT implement Eq because Float(f64) is not reflexive (NaN != NaN)
 
-// NOTE: We implement Eq even though Float doesn't satisfy reflexivity (NaN != NaN).
-// This is intentional - our equality semantics follow IEEE-754.
-// HashMaps of Values will work correctly because we also implement Hash consistently.
+impl Value {
+    /// Check if two values are structurally equal for CAS operations
+    ///
+    /// This is the same as PartialEq but explicit for documentation.
+    pub fn cas_equals(&self, other: &Value) -> bool {
+        self == other
+    }
 
-impl std::hash::Hash for Value {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        // Discriminant first for type distinction
-        std::mem::discriminant(self).hash(state);
-
+    /// Check if value contains NaN (for debugging/testing)
+    pub fn contains_nan(&self) -> bool {
         match self {
-            Value::Null => {}
-            Value::Bool(b) => b.hash(state),
-            Value::Int(i) => i.hash(state),
-            Value::Float(f) => {
-                // Hash the bits for consistency
-                // Note: -0.0 and 0.0 have different bits but equal values
-                // We normalize to 0.0 bits for hashing
-                if *f == 0.0 {
-                    0u64.hash(state);
-                } else {
-                    f.to_bits().hash(state);
-                }
-            }
-            Value::String(s) => s.hash(state),
-            Value::Bytes(b) => b.hash(state),
-            Value::Array(a) => {
-                a.len().hash(state);
-                for v in a {
-                    v.hash(state);
-                }
-            }
-            Value::Object(o) => {
-                // Hash entries in sorted order for determinism
-                let mut entries: Vec<_> = o.iter().collect();
-                entries.sort_by_key(|(k, _)| *k);
-                entries.len().hash(state);
-                for (k, v) in entries {
-                    k.hash(state);
-                    v.hash(state);
-                }
-            }
+            Value::Float(f) => f.is_nan(),
+            Value::Array(arr) => arr.iter().any(|v| v.contains_nan()),
+            Value::Object(obj) => obj.values().any(|v| v.contains_nan()),
+            _ => false,
         }
     }
 }
-```
 
-### Acceptance Criteria
-
-- [ ] Same-type equality works correctly
-- [ ] NaN != NaN (IEEE-754 semantics)
-- [ ] -0.0 == 0.0 (IEEE-754 semantics)
-- [ ] +Inf == +Inf, -Inf == -Inf
-- [ ] Different types are NEVER equal (no coercion)
-- [ ] Int(1) != Float(1.0) - CRITICAL
-- [ ] String("abc") != Bytes([97,98,99]) - CRITICAL
-- [ ] Hash implementation is consistent with equality
-
----
-
-## Story #563: No Type Coercion Verification
-
-**File**: `crates/core/src/value.rs` (tests), `crates/api/src/facade.rs` (tests)
-
-**Deliverable**: Comprehensive tests proving no type coercion occurs anywhere
-
-### Tests FIRST
-
-```rust
 #[cfg(test)]
-mod no_coercion_tests {
+mod tests {
     use super::*;
 
-    /// These tests verify the NO TYPE COERCION rule.
-    /// If any test fails, the implementation is WRONG.
-    /// DO NOT modify these tests - fix the implementation.
-
     #[test]
-    fn nc_001_int_one_not_float_one() {
+    fn test_int_float_not_equal() {
+        // Critical invariant: Int(1) != Float(1.0)
         assert_ne!(Value::Int(1), Value::Float(1.0));
     }
 
     #[test]
-    fn nc_002_int_zero_not_float_zero() {
-        assert_ne!(Value::Int(0), Value::Float(0.0));
+    fn test_nan_not_equal_to_itself() {
+        let nan1 = Value::Float(f64::NAN);
+        let nan2 = Value::Float(f64::NAN);
+        assert_ne!(nan1, nan2);
     }
 
     #[test]
-    fn nc_003_int_max_not_float() {
-        assert_ne!(Value::Int(i64::MAX), Value::Float(i64::MAX as f64));
+    fn test_negative_zero_equals_positive_zero() {
+        let neg_zero = Value::Float(-0.0);
+        let pos_zero = Value::Float(0.0);
+        assert_eq!(neg_zero, pos_zero);
     }
 
     #[test]
-    fn nc_004_string_not_bytes() {
-        // Even when the bytes are the UTF-8 encoding of the string
-        let s = "abc";
-        let b = s.as_bytes().to_vec();
-        assert_ne!(Value::String(s.to_string()), Value::Bytes(b));
+    fn test_bytes_not_equal_to_string() {
+        let bytes = Value::Bytes(vec![72, 101, 108, 108, 111]); // "Hello"
+        let string = Value::String("Hello".to_string());
+        assert_ne!(bytes, string);
     }
 
     #[test]
-    fn nc_005_null_not_empty_string() {
-        assert_ne!(Value::Null, Value::String(String::new()));
-    }
+    fn test_object_key_order_irrelevant() {
+        let mut obj1 = HashMap::new();
+        obj1.insert("a".to_string(), Value::Int(1));
+        obj1.insert("b".to_string(), Value::Int(2));
 
-    #[test]
-    fn nc_006_null_not_zero() {
-        assert_ne!(Value::Null, Value::Int(0));
-    }
+        let mut obj2 = HashMap::new();
+        obj2.insert("b".to_string(), Value::Int(2));
+        obj2.insert("a".to_string(), Value::Int(1));
 
-    #[test]
-    fn nc_007_null_not_false() {
-        assert_ne!(Value::Null, Value::Bool(false));
-    }
-
-    #[test]
-    fn nc_008_empty_array_not_null() {
-        assert_ne!(Value::Array(vec![]), Value::Null);
-    }
-
-    #[test]
-    fn nc_009_empty_object_not_null() {
-        assert_ne!(Value::Object(HashMap::new()), Value::Null);
-    }
-
-    #[test]
-    fn nc_010_bool_true_not_int_one() {
-        assert_ne!(Value::Bool(true), Value::Int(1));
-    }
-
-    #[test]
-    fn nc_011_bool_false_not_int_zero() {
-        assert_ne!(Value::Bool(false), Value::Int(0));
-    }
-
-    #[test]
-    fn nc_012_string_number_not_int() {
-        assert_ne!(Value::String("123".to_string()), Value::Int(123));
-    }
-
-    #[test]
-    fn nc_013_no_implicit_string_to_bytes() {
-        // Cannot compare String to Bytes - they are different types
-        let s = Value::String("test".to_string());
-        let b = Value::Bytes(b"test".to_vec());
-        assert_ne!(s, b);
-    }
-
-    #[test]
-    fn nc_014_no_implicit_int_promotion() {
-        // Int should never be promoted to Float
-        let i = Value::Int(42);
-        let f = Value::Float(42.0);
-        assert_ne!(i, f);
-
-        // Type is preserved
-        assert!(matches!(i, Value::Int(42)));
-        assert!(matches!(f, Value::Float(_)));
-    }
-
-    #[test]
-    fn nc_015_cas_respects_type_distinction() {
-        // This test verifies that CAS operations fail when types differ
-        // even if the "logical value" seems the same
-        //
-        // Expected: CAS(key, expected=Int(1), new=X) FAILS if actual value is Float(1.0)
-        //
-        // This is tested at the API level in facade tests
+        assert_eq!(Value::Object(obj1), Value::Object(obj2));
     }
 }
 ```
 
 ### Acceptance Criteria
 
-- [ ] All NC-* tests pass
-- [ ] CAS operations fail on type mismatch even for "same logical value"
-- [ ] No implicit widening (Int → Float)
-- [ ] No implicit encoding (String → Bytes)
-- [ ] No truthiness coercion (Bool ↔ Int)
-- [ ] No nullish coercion (Null ↔ empty/zero)
+- [ ] `PartialEq` implementation for Value
+- [ ] `Int(1) != Float(1.0)` - no numeric widening
+- [ ] `NaN != NaN` - IEEE-754 equality
+- [ ] `-0.0 == 0.0` - IEEE-754 equality
+- [ ] `Bytes` and `String` are never equal
+- [ ] Object key order is irrelevant for equality
+- [ ] Recursive equality for Array and Object
+- [ ] `cas_equals()` method for explicit CAS comparison
+- [ ] No `Eq` trait (floats prevent reflexivity)
 
 ---
 
-## Story #564: Size Limits Implementation
+## Story #552: Value Size Limits and Validation
 
-**File**: `crates/core/src/limits.rs` (NEW)
+**File**: `crates/core/src/value/limits.rs` (NEW)
 
-**Deliverable**: Configurable size limits with enforcement
-
-### Tests FIRST
-
-```rust
-#[cfg(test)]
-mod size_limit_tests {
-    use super::*;
-
-    // === Key Length Tests ===
-
-    #[test]
-    fn test_key_at_max_length() {
-        let limits = Limits::default();
-        let key = "x".repeat(limits.max_key_bytes);
-        assert!(limits.validate_key(&key).is_ok());
-    }
-
-    #[test]
-    fn test_key_exceeds_max_length() {
-        let limits = Limits::default();
-        let key = "x".repeat(limits.max_key_bytes + 1);
-        let result = limits.validate_key(&key);
-        assert!(matches!(result, Err(LimitError::KeyTooLong { .. })));
-    }
-
-    #[test]
-    fn test_key_much_larger_than_max() {
-        let limits = Limits::default();
-        let key = "x".repeat(10 * 1024); // 10KB
-        let result = limits.validate_key(&key);
-        assert!(matches!(result, Err(LimitError::KeyTooLong { .. })));
-    }
-
-    // === String Length Tests ===
-
-    #[test]
-    fn test_string_at_max_length() {
-        let limits = Limits::default();
-        let s = "x".repeat(limits.max_string_bytes);
-        let value = Value::String(s);
-        assert!(limits.validate_value(&value).is_ok());
-    }
-
-    #[test]
-    fn test_string_exceeds_max_length() {
-        let limits = Limits::default();
-        let s = "x".repeat(limits.max_string_bytes + 1);
-        let value = Value::String(s);
-        let result = limits.validate_value(&value);
-        assert!(matches!(result, Err(LimitError::ValueTooLarge { .. })));
-    }
-
-    // === Bytes Length Tests ===
-
-    #[test]
-    fn test_bytes_at_max_length() {
-        let limits = Limits::default();
-        let b = vec![0u8; limits.max_bytes_len];
-        let value = Value::Bytes(b);
-        assert!(limits.validate_value(&value).is_ok());
-    }
-
-    #[test]
-    fn test_bytes_exceeds_max_length() {
-        let limits = Limits::default();
-        let b = vec![0u8; limits.max_bytes_len + 1];
-        let value = Value::Bytes(b);
-        let result = limits.validate_value(&value);
-        assert!(matches!(result, Err(LimitError::ValueTooLarge { .. })));
-    }
-
-    // === Array Length Tests ===
-
-    #[test]
-    fn test_array_at_max_length() {
-        let limits = Limits::with_small_limits(); // Use small limits for test speed
-        let arr = vec![Value::Null; limits.max_array_len];
-        let value = Value::Array(arr);
-        assert!(limits.validate_value(&value).is_ok());
-    }
-
-    #[test]
-    fn test_array_exceeds_max_length() {
-        let limits = Limits::with_small_limits();
-        let arr = vec![Value::Null; limits.max_array_len + 1];
-        let value = Value::Array(arr);
-        let result = limits.validate_value(&value);
-        assert!(matches!(result, Err(LimitError::ValueTooLarge { .. })));
-    }
-
-    // === Object Entries Tests ===
-
-    #[test]
-    fn test_object_at_max_entries() {
-        let limits = Limits::with_small_limits();
-        let mut map = HashMap::new();
-        for i in 0..limits.max_object_entries {
-            map.insert(format!("key{}", i), Value::Null);
-        }
-        let value = Value::Object(map);
-        assert!(limits.validate_value(&value).is_ok());
-    }
-
-    #[test]
-    fn test_object_exceeds_max_entries() {
-        let limits = Limits::with_small_limits();
-        let mut map = HashMap::new();
-        for i in 0..=limits.max_object_entries {
-            map.insert(format!("key{}", i), Value::Null);
-        }
-        let value = Value::Object(map);
-        let result = limits.validate_value(&value);
-        assert!(matches!(result, Err(LimitError::ValueTooLarge { .. })));
-    }
-
-    // === Nesting Depth Tests ===
-
-    #[test]
-    fn test_nesting_at_max_depth() {
-        let limits = Limits::default();
-        let value = create_nested_array(limits.max_nesting_depth);
-        assert!(limits.validate_value(&value).is_ok());
-    }
-
-    #[test]
-    fn test_nesting_exceeds_max_depth() {
-        let limits = Limits::default();
-        let value = create_nested_array(limits.max_nesting_depth + 1);
-        let result = limits.validate_value(&value);
-        assert!(matches!(result, Err(LimitError::NestingTooDeep { .. })));
-    }
-
-    // === Vector Dimension Tests ===
-
-    #[test]
-    fn test_vector_at_max_dim() {
-        let limits = Limits::default();
-        let vec = vec![0.0f32; limits.max_vector_dim];
-        assert!(limits.validate_vector(&vec).is_ok());
-    }
-
-    #[test]
-    fn test_vector_exceeds_max_dim() {
-        let limits = Limits::default();
-        let vec = vec![0.0f32; limits.max_vector_dim + 1];
-        let result = limits.validate_vector(&vec);
-        assert!(matches!(result, Err(LimitError::VectorDimExceeded { .. })));
-    }
-
-    // === Custom Limits Tests ===
-
-    #[test]
-    fn test_custom_limits_respected() {
-        let limits = Limits {
-            max_key_bytes: 100,
-            ..Limits::default()
-        };
-
-        let key = "x".repeat(100);
-        assert!(limits.validate_key(&key).is_ok());
-
-        let key = "x".repeat(101);
-        assert!(limits.validate_key(&key).is_err());
-    }
-
-    // Helper function
-    fn create_nested_array(depth: usize) -> Value {
-        let mut value = Value::Null;
-        for _ in 0..depth {
-            value = Value::Array(vec![value]);
-        }
-        value
-    }
-}
-```
+**Deliverable**: Configurable size limits with validation
 
 ### Implementation
 
 ```rust
-/// Size limits for values and keys
+/// Value size limits (configurable at DB open)
 #[derive(Debug, Clone)]
-pub struct Limits {
-    /// Maximum key length in bytes (default: 1024)
+pub struct ValueLimits {
+    /// Maximum key length in UTF-8 bytes (default: 1024)
     pub max_key_bytes: usize,
 
-    /// Maximum string length in bytes (default: 16MB)
+    /// Maximum string value size (default: 16 MiB)
     pub max_string_bytes: usize,
 
-    /// Maximum bytes length (default: 16MB)
+    /// Maximum bytes value size (default: 16 MiB)
     pub max_bytes_len: usize,
 
-    /// Maximum encoded value size in bytes (default: 32MB)
+    /// Maximum encoded value size (default: 32 MiB)
     pub max_value_bytes_encoded: usize,
 
-    /// Maximum array length (default: 1M elements)
+    /// Maximum array elements (default: 1,000,000)
     pub max_array_len: usize,
 
-    /// Maximum object entries (default: 1M entries)
+    /// Maximum object entries (default: 1,000,000)
     pub max_object_entries: usize,
 
     /// Maximum nesting depth (default: 128)
@@ -1317,13 +388,13 @@ pub struct Limits {
     pub max_vector_dim: usize,
 }
 
-impl Default for Limits {
+impl Default for ValueLimits {
     fn default() -> Self {
-        Limits {
+        ValueLimits {
             max_key_bytes: 1024,
-            max_string_bytes: 16 * 1024 * 1024,      // 16MB
-            max_bytes_len: 16 * 1024 * 1024,         // 16MB
-            max_value_bytes_encoded: 32 * 1024 * 1024, // 32MB
+            max_string_bytes: 16 * 1024 * 1024,      // 16 MiB
+            max_bytes_len: 16 * 1024 * 1024,         // 16 MiB
+            max_value_bytes_encoded: 32 * 1024 * 1024, // 32 MiB
             max_array_len: 1_000_000,
             max_object_entries: 1_000_000,
             max_nesting_depth: 128,
@@ -1332,399 +403,863 @@ impl Default for Limits {
     }
 }
 
-impl Limits {
-    /// Create limits with small values for testing
-    pub fn with_small_limits() -> Self {
-        Limits {
-            max_key_bytes: 100,
-            max_string_bytes: 1000,
-            max_bytes_len: 1000,
-            max_value_bytes_encoded: 2000,
-            max_array_len: 100,
-            max_object_entries: 100,
-            max_nesting_depth: 10,
-            max_vector_dim: 100,
+/// Constraint violation reason codes
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConstraintReason {
+    ValueTooLarge,
+    NestingTooDeep,
+    KeyTooLong,
+    VectorDimExceeded,
+    VectorDimMismatch,
+    RootNotObject,
+    ReservedPrefix,
+    RunClosed,
+}
+
+impl std::fmt::Display for ConstraintReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConstraintReason::ValueTooLarge => write!(f, "value_too_large"),
+            ConstraintReason::NestingTooDeep => write!(f, "nesting_too_deep"),
+            ConstraintReason::KeyTooLong => write!(f, "key_too_long"),
+            ConstraintReason::VectorDimExceeded => write!(f, "vector_dim_exceeded"),
+            ConstraintReason::VectorDimMismatch => write!(f, "vector_dim_mismatch"),
+            ConstraintReason::RootNotObject => write!(f, "root_not_object"),
+            ConstraintReason::ReservedPrefix => write!(f, "reserved_prefix"),
+            ConstraintReason::RunClosed => write!(f, "run_closed"),
         }
     }
+}
 
-    /// Validate a key
-    pub fn validate_key(&self, key: &str) -> Result<(), LimitError> {
-        let len = key.len();
-        if len > self.max_key_bytes {
-            return Err(LimitError::KeyTooLong {
-                actual: len,
-                max: self.max_key_bytes,
-            });
-        }
-        Ok(())
+impl ValueLimits {
+    /// Validate a value against limits
+    pub fn validate_value(&self, value: &Value) -> Result<(), ConstraintReason> {
+        self.validate_value_depth(value, 0)
     }
 
-    /// Validate a value
-    pub fn validate_value(&self, value: &Value) -> Result<(), LimitError> {
-        self.validate_value_impl(value, 0)
-    }
-
-    fn validate_value_impl(&self, value: &Value, depth: usize) -> Result<(), LimitError> {
+    fn validate_value_depth(&self, value: &Value, depth: usize) -> Result<(), ConstraintReason> {
         if depth > self.max_nesting_depth {
-            return Err(LimitError::NestingTooDeep {
-                actual: depth,
-                max: self.max_nesting_depth,
-            });
+            return Err(ConstraintReason::NestingTooDeep);
         }
 
         match value {
-            Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) => Ok(()),
-
             Value::String(s) => {
                 if s.len() > self.max_string_bytes {
-                    return Err(LimitError::ValueTooLarge {
-                        reason: "string_too_long".to_string(),
-                        actual: s.len(),
-                        max: self.max_string_bytes,
-                    });
+                    return Err(ConstraintReason::ValueTooLarge);
                 }
-                Ok(())
             }
-
             Value::Bytes(b) => {
                 if b.len() > self.max_bytes_len {
-                    return Err(LimitError::ValueTooLarge {
-                        reason: "bytes_too_long".to_string(),
-                        actual: b.len(),
-                        max: self.max_bytes_len,
-                    });
+                    return Err(ConstraintReason::ValueTooLarge);
                 }
-                Ok(())
             }
-
             Value::Array(arr) => {
                 if arr.len() > self.max_array_len {
-                    return Err(LimitError::ValueTooLarge {
-                        reason: "array_too_long".to_string(),
-                        actual: arr.len(),
-                        max: self.max_array_len,
-                    });
+                    return Err(ConstraintReason::ValueTooLarge);
                 }
-                for v in arr {
-                    self.validate_value_impl(v, depth + 1)?;
+                for item in arr {
+                    self.validate_value_depth(item, depth + 1)?;
                 }
-                Ok(())
             }
-
             Value::Object(obj) => {
                 if obj.len() > self.max_object_entries {
-                    return Err(LimitError::ValueTooLarge {
-                        reason: "object_too_many_entries".to_string(),
-                        actual: obj.len(),
-                        max: self.max_object_entries,
-                    });
+                    return Err(ConstraintReason::ValueTooLarge);
                 }
-                for v in obj.values() {
-                    self.validate_value_impl(v, depth + 1)?;
+                for (key, val) in obj {
+                    if key.len() > self.max_key_bytes {
+                        return Err(ConstraintReason::KeyTooLong);
+                    }
+                    self.validate_value_depth(val, depth + 1)?;
                 }
-                Ok(())
             }
+            _ => {}
         }
+
+        Ok(())
     }
 
-    /// Validate a vector
-    pub fn validate_vector(&self, vec: &[f32]) -> Result<(), LimitError> {
-        if vec.len() > self.max_vector_dim {
-            return Err(LimitError::VectorDimExceeded {
-                actual: vec.len(),
-                max: self.max_vector_dim,
-            });
+    /// Validate a key
+    pub fn validate_key(&self, key: &str) -> Result<(), KeyError> {
+        if key.is_empty() {
+            return Err(KeyError::EmptyKey);
+        }
+        if key.len() > self.max_key_bytes {
+            return Err(KeyError::TooLong);
+        }
+        if key.contains('\0') {
+            return Err(KeyError::ContainsNul);
+        }
+        if key.starts_with("_strata/") {
+            return Err(KeyError::ReservedPrefix);
         }
         Ok(())
     }
 }
 
-/// Limit validation errors
-#[derive(Debug, thiserror::Error)]
-pub enum LimitError {
-    #[error("Key too long: {actual} bytes exceeds maximum {max}")]
-    KeyTooLong { actual: usize, max: usize },
-
-    #[error("Value too large ({reason}): {actual} exceeds maximum {max}")]
-    ValueTooLarge { reason: String, actual: usize, max: usize },
-
-    #[error("Nesting too deep: {actual} levels exceeds maximum {max}")]
-    NestingTooDeep { actual: usize, max: usize },
-
-    #[error("Vector dimension exceeded: {actual} exceeds maximum {max}")]
-    VectorDimExceeded { actual: usize, max: usize },
+/// Key validation errors
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyError {
+    EmptyKey,
+    TooLong,
+    ContainsNul,
+    ReservedPrefix,
+    InvalidUtf8,
 }
 ```
 
 ### Acceptance Criteria
 
-- [ ] Default limits match spec (1024 key, 16MB string, 128 nesting, etc.)
-- [ ] `validate_key()` enforces key length
-- [ ] `validate_value()` enforces all value limits
-- [ ] Nesting depth is checked recursively
-- [ ] Vector dimension is validated
-- [ ] Custom limits are respected
-- [ ] Error types include actual and max values
+- [ ] `ValueLimits` with configurable defaults
+- [ ] `validate_value()` checks all limits recursively
+- [ ] `validate_key()` checks key constraints
+- [ ] `ConstraintReason` enum with all reason codes
+- [ ] Size limits: 1024 bytes keys, 16 MiB strings/bytes, 32 MiB encoded
+- [ ] Container limits: 1M array elements, 1M object entries
+- [ ] Nesting depth limit: 128
+- [ ] Vector dimension limit: 8192
+- [ ] Reserved prefix `_strata/` blocked
 
 ---
 
-## Story #565: Key Validation Rules
+## Story #553: Version Tagged Union
 
-**File**: `crates/core/src/key.rs` (NEW)
+**File**: `crates/core/src/contract/version.rs`
 
-**Deliverable**: Key validation with all rules from spec
-
-### Tests FIRST
-
-```rust
-#[cfg(test)]
-mod key_validation_tests {
-    use super::*;
-
-    // === Valid Keys ===
-
-    #[test]
-    fn test_valid_simple_key() {
-        assert!(validate_key("mykey").is_ok());
-    }
-
-    #[test]
-    fn test_valid_unicode_key() {
-        assert!(validate_key("日本語キー").is_ok());
-    }
-
-    #[test]
-    fn test_valid_emoji_key() {
-        assert!(validate_key("🔑key🔑").is_ok());
-    }
-
-    #[test]
-    fn test_valid_numeric_string_key() {
-        assert!(validate_key("12345").is_ok());
-    }
-
-    #[test]
-    fn test_valid_special_chars_key() {
-        assert!(validate_key("a-b_c.d:e/f").is_ok());
-    }
-
-    #[test]
-    fn test_valid_single_char_key() {
-        assert!(validate_key("a").is_ok());
-    }
-
-    #[test]
-    fn test_valid_whitespace_key() {
-        // Whitespace is allowed
-        assert!(validate_key("  spaces  ").is_ok());
-    }
-
-    #[test]
-    fn test_valid_newline_key() {
-        // Newlines are allowed
-        assert!(validate_key("line1\nline2").is_ok());
-    }
-
-    #[test]
-    fn test_valid_underscore_prefix() {
-        // _mykey is valid (not _strata/)
-        assert!(validate_key("_mykey").is_ok());
-    }
-
-    #[test]
-    fn test_valid_similar_to_reserved() {
-        // _stratafoo is valid (no slash after _strata)
-        assert!(validate_key("_stratafoo").is_ok());
-    }
-
-    // === Invalid Keys ===
-
-    #[test]
-    fn test_invalid_empty_key() {
-        let result = validate_key("");
-        assert!(matches!(result, Err(KeyError::Empty)));
-    }
-
-    #[test]
-    fn test_invalid_nul_byte() {
-        let result = validate_key("a\x00b");
-        assert!(matches!(result, Err(KeyError::ContainsNul)));
-    }
-
-    #[test]
-    fn test_invalid_nul_at_start() {
-        let result = validate_key("\x00abc");
-        assert!(matches!(result, Err(KeyError::ContainsNul)));
-    }
-
-    #[test]
-    fn test_invalid_nul_at_end() {
-        let result = validate_key("abc\x00");
-        assert!(matches!(result, Err(KeyError::ContainsNul)));
-    }
-
-    #[test]
-    fn test_invalid_reserved_prefix() {
-        let result = validate_key("_strata/foo");
-        assert!(matches!(result, Err(KeyError::ReservedPrefix)));
-    }
-
-    #[test]
-    fn test_invalid_reserved_prefix_exact() {
-        let result = validate_key("_strata/");
-        assert!(matches!(result, Err(KeyError::ReservedPrefix)));
-    }
-
-    #[test]
-    fn test_invalid_too_long() {
-        let key = "x".repeat(1025);
-        let result = validate_key(&key);
-        assert!(matches!(result, Err(KeyError::TooLong { .. })));
-    }
-
-    // === With Custom Limits ===
-
-    #[test]
-    fn test_key_with_custom_max_length() {
-        let limits = Limits { max_key_bytes: 10, ..Default::default() };
-
-        assert!(validate_key_with_limits("short", &limits).is_ok());
-        assert!(validate_key_with_limits("toolongkey!", &limits).is_err());
-    }
-}
-```
+**Deliverable**: Version enum with Txn/Sequence/Counter variants
 
 ### Implementation
 
 ```rust
-/// Validate a key using default limits
-pub fn validate_key(key: &str) -> Result<(), KeyError> {
-    validate_key_with_limits(key, &Limits::default())
+/// Version tagged union
+///
+/// Different primitives use different version semantics:
+/// - KV, JSON, Vector, Run: Transaction-based (Txn)
+/// - Events: Append-only sequence (Sequence)
+/// - StateCell: Per-entity counter (Counter)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Version {
+    /// Transaction-based version (KV, JSON, Vector, Run)
+    Txn(u64),
+
+    /// Sequence number (Events - append-only)
+    Sequence(u64),
+
+    /// Per-entity counter (StateCell)
+    Counter(u64),
 }
 
-/// Validate a key with custom limits
-pub fn validate_key_with_limits(key: &str, limits: &Limits) -> Result<(), KeyError> {
-    // Rule 1: Key cannot be empty
-    if key.is_empty() {
-        return Err(KeyError::Empty);
+impl Version {
+    /// Get the numeric value regardless of variant
+    pub fn value(&self) -> u64 {
+        match self {
+            Version::Txn(v) | Version::Sequence(v) | Version::Counter(v) => *v,
+        }
     }
 
-    // Rule 2: Key cannot contain NUL bytes
-    if key.contains('\x00') {
-        return Err(KeyError::ContainsNul);
+    /// Get the type name for wire encoding
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Version::Txn(_) => "txn",
+            Version::Sequence(_) => "sequence",
+            Version::Counter(_) => "counter",
+        }
     }
 
-    // Rule 3: Key cannot use reserved prefix
-    if key.starts_with("_strata/") {
-        return Err(KeyError::ReservedPrefix);
+    /// Check if two versions are comparable (same variant)
+    pub fn is_comparable_with(&self, other: &Version) -> bool {
+        std::mem::discriminant(self) == std::mem::discriminant(other)
     }
 
-    // Rule 4: Key cannot exceed max length
-    let len = key.len();
-    if len > limits.max_key_bytes {
-        return Err(KeyError::TooLong {
-            actual: len,
-            max: limits.max_key_bytes,
-        });
+    /// Compare versions (only valid for same variant)
+    ///
+    /// Returns None if versions are different types
+    pub fn compare(&self, other: &Version) -> Option<std::cmp::Ordering> {
+        if !self.is_comparable_with(other) {
+            return None;
+        }
+        Some(self.value().cmp(&other.value()))
     }
-
-    // Note: UTF-8 validity is guaranteed by Rust's &str type
-
-    Ok(())
 }
 
-/// Key validation errors
-#[derive(Debug, thiserror::Error)]
-pub enum KeyError {
-    #[error("Key cannot be empty")]
-    Empty,
-
-    #[error("Key cannot contain NUL bytes")]
-    ContainsNul,
-
-    #[error("Key cannot use reserved prefix '_strata/'")]
-    ReservedPrefix,
-
-    #[error("Key too long: {actual} bytes exceeds maximum {max}")]
-    TooLong { actual: usize, max: usize },
+impl std::fmt::Display for Version {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Version::Txn(v) => write!(f, "txn:{}", v),
+            Version::Sequence(v) => write!(f, "seq:{}", v),
+            Version::Counter(v) => write!(f, "ctr:{}", v),
+        }
+    }
 }
 ```
 
 ### Acceptance Criteria
 
-- [ ] Empty key rejected
-- [ ] NUL bytes rejected
-- [ ] `_strata/` prefix rejected
-- [ ] Length limit enforced
-- [ ] Unicode keys allowed
-- [ ] Emoji keys allowed
-- [ ] Whitespace/newlines allowed
-- [ ] `_mykey` allowed (not reserved)
-- [ ] `_stratafoo` allowed (no slash)
+- [ ] `Version` enum with Txn(u64), Sequence(u64), Counter(u64) variants
+- [ ] `value()` extracts numeric value
+- [ ] `type_name()` returns wire encoding type
+- [ ] `is_comparable_with()` checks same variant
+- [ ] `compare()` returns None for different variants
+- [ ] No comparison across version types (WrongType error at API layer)
+
+---
+
+## Story #554: Versioned<T> Structure Finalization
+
+**File**: `crates/core/src/contract/versioned.rs`
+
+**Deliverable**: Frozen Versioned<T> structure with microsecond timestamps
+
+### Implementation
+
+```rust
+/// Versioned wrapper for values
+///
+/// This structure is FROZEN and cannot change without major version bump.
+#[derive(Debug, Clone)]
+pub struct Versioned<T> {
+    /// The value
+    pub value: T,
+
+    /// Version (tagged union)
+    pub version: Version,
+
+    /// Timestamp in microseconds since Unix epoch
+    pub timestamp: u64,
+}
+
+impl<T> Versioned<T> {
+    /// Create a new versioned value
+    pub fn new(value: T, version: Version, timestamp: u64) -> Self {
+        Versioned {
+            value,
+            version,
+            timestamp,
+        }
+    }
+
+    /// Map the inner value
+    pub fn map<U, F: FnOnce(T) -> U>(self, f: F) -> Versioned<U> {
+        Versioned {
+            value: f(self.value),
+            version: self.version,
+            timestamp: self.timestamp,
+        }
+    }
+
+    /// Get reference to inner value
+    pub fn as_ref(&self) -> Versioned<&T> {
+        Versioned {
+            value: &self.value,
+            version: self.version,
+            timestamp: self.timestamp,
+        }
+    }
+}
+
+impl<T: Clone> Versioned<&T> {
+    /// Clone the inner value
+    pub fn cloned(self) -> Versioned<T> {
+        Versioned {
+            value: self.value.clone(),
+            version: self.version,
+            timestamp: self.timestamp,
+        }
+    }
+}
+
+/// Get current timestamp in microseconds since Unix epoch
+pub fn now_micros() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("Time went backwards")
+        .as_micros() as u64
+}
+```
+
+### Acceptance Criteria
+
+- [ ] `Versioned<T>` with value, version, timestamp fields
+- [ ] Timestamp is microseconds since Unix epoch (u64)
+- [ ] `map()` transforms inner value preserving version/timestamp
+- [ ] `as_ref()` provides reference without cloning
+- [ ] `now_micros()` utility for timestamp generation
+- [ ] Structure is frozen (documented, no changes without major version)
+
+---
+
+## Story #555: RunId Format
+
+**File**: `crates/core/src/contract/run_name.rs`
+
+**Deliverable**: RunId type with UUID format and "default" literal
+
+### Implementation
+
+```rust
+use uuid::Uuid;
+
+/// Run identifier
+///
+/// Can be either:
+/// - A UUID in lowercase hyphenated format (e.g., f47ac10b-58cc-4372-a567-0e02b2c3d479)
+/// - The literal string "default" for the default run
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RunId(String);
+
+/// The canonical default run name
+pub const DEFAULT_RUN: &str = "default";
+
+impl RunId {
+    /// Create the default run ID
+    pub fn default_run() -> Self {
+        RunId(DEFAULT_RUN.to_string())
+    }
+
+    /// Generate a new UUID-based run ID
+    pub fn generate() -> Self {
+        RunId(Uuid::new_v4().to_string())
+    }
+
+    /// Parse a run ID from a string
+    ///
+    /// Accepts:
+    /// - "default" (literal)
+    /// - Valid UUID in lowercase hyphenated format
+    pub fn parse(s: &str) -> Result<Self, RunIdError> {
+        if s == DEFAULT_RUN {
+            return Ok(RunId::default_run());
+        }
+
+        // Validate UUID format
+        Uuid::parse_str(s).map_err(|_| RunIdError::InvalidFormat)?;
+
+        // Ensure lowercase hyphenated
+        let normalized = s.to_lowercase();
+        if normalized != s {
+            return Err(RunIdError::NotLowercase);
+        }
+
+        Ok(RunId(s.to_string()))
+    }
+
+    /// Check if this is the default run
+    pub fn is_default(&self) -> bool {
+        self.0 == DEFAULT_RUN
+    }
+
+    /// Get the string representation
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for RunId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<RunId> for String {
+    fn from(id: RunId) -> String {
+        id.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunIdError {
+    InvalidFormat,
+    NotLowercase,
+}
+
+impl std::fmt::Display for RunIdError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RunIdError::InvalidFormat => write!(f, "Invalid run ID format"),
+            RunIdError::NotLowercase => write!(f, "Run ID must be lowercase"),
+        }
+    }
+}
+
+impl std::error::Error for RunIdError {}
+```
+
+### Acceptance Criteria
+
+- [ ] `RunId` type encapsulating run identifier
+- [ ] `default_run()` returns literal "default"
+- [ ] `generate()` creates new UUID
+- [ ] `parse()` validates format (UUID or "default")
+- [ ] `is_default()` checks for default run
+- [ ] UUID must be lowercase hyphenated
+- [ ] `DEFAULT_RUN` constant exported
+
+---
+
+## Story #556: JSON Wire Encoding (Basic Types)
+
+**File**: `crates/wire/src/json/value.rs` (NEW)
+
+**Deliverable**: JSON encoding for all 8 value types
+
+### Implementation
+
+```rust
+use crate::value::Value;
+use serde_json::{json, Value as JsonValue};
+
+/// Encode a Value to JSON
+pub fn encode_value(value: &Value) -> JsonValue {
+    match value {
+        Value::Null => JsonValue::Null,
+        Value::Bool(b) => JsonValue::Bool(*b),
+        Value::Int(i) => json!(*i),
+        Value::Float(f) => encode_float(*f),
+        Value::String(s) => JsonValue::String(s.clone()),
+        Value::Bytes(b) => encode_bytes(b),
+        Value::Array(arr) => {
+            JsonValue::Array(arr.iter().map(encode_value).collect())
+        }
+        Value::Object(obj) => {
+            let map: serde_json::Map<String, JsonValue> = obj
+                .iter()
+                .map(|(k, v)| (k.clone(), encode_value(v)))
+                .collect();
+            JsonValue::Object(map)
+        }
+    }
+}
+
+/// Decode JSON to a Value
+pub fn decode_value(json: &JsonValue) -> Result<Value, DecodeError> {
+    match json {
+        JsonValue::Null => Ok(Value::Null),
+        JsonValue::Bool(b) => Ok(Value::Bool(*b)),
+        JsonValue::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(Value::Int(i))
+            } else if let Some(f) = n.as_f64() {
+                Ok(Value::Float(f))
+            } else {
+                Err(DecodeError::InvalidNumber)
+            }
+        }
+        JsonValue::String(s) => Ok(Value::String(s.clone())),
+        JsonValue::Array(arr) => {
+            let values: Result<Vec<_>, _> = arr.iter().map(decode_value).collect();
+            Ok(Value::Array(values?))
+        }
+        JsonValue::Object(obj) => {
+            // Check for special wrappers
+            if let Some(result) = try_decode_wrapper(obj)? {
+                return Ok(result);
+            }
+
+            // Regular object
+            let mut map = HashMap::new();
+            for (k, v) in obj {
+                map.insert(k.clone(), decode_value(v)?);
+            }
+            Ok(Value::Object(map))
+        }
+    }
+}
+
+/// Try to decode a special wrapper ($bytes, $f64, $absent)
+fn try_decode_wrapper(obj: &serde_json::Map<String, JsonValue>) -> Result<Option<Value>, DecodeError> {
+    // Check for $bytes wrapper
+    if obj.len() == 1 {
+        if let Some(JsonValue::String(b64)) = obj.get("$bytes") {
+            let bytes = base64::decode(b64).map_err(|_| DecodeError::InvalidBase64)?;
+            return Ok(Some(Value::Bytes(bytes)));
+        }
+
+        if let Some(JsonValue::String(s)) = obj.get("$f64") {
+            let f = match s.as_str() {
+                "NaN" => f64::NAN,
+                "+Inf" => f64::INFINITY,
+                "-Inf" => f64::NEG_INFINITY,
+                "-0.0" => -0.0_f64,
+                _ => return Err(DecodeError::InvalidF64Wrapper),
+            };
+            return Ok(Some(Value::Float(f)));
+        }
+
+        if let Some(JsonValue::Bool(true)) = obj.get("$absent") {
+            return Err(DecodeError::AbsentNotAllowedHere);
+        }
+    }
+
+    Ok(None)
+}
+
+#[derive(Debug, Clone)]
+pub enum DecodeError {
+    InvalidNumber,
+    InvalidBase64,
+    InvalidF64Wrapper,
+    AbsentNotAllowedHere,
+}
+```
+
+### Acceptance Criteria
+
+- [ ] `encode_value()` converts Value to JSON
+- [ ] `decode_value()` converts JSON to Value
+- [ ] Null → `null`
+- [ ] Bool → `true`/`false`
+- [ ] Int → JSON number
+- [ ] Float (finite) → JSON number
+- [ ] String → JSON string
+- [ ] Array → JSON array
+- [ ] Object → JSON object
+- [ ] Wrapper detection for $bytes, $f64
+
+---
+
+## Story #557: $bytes Wrapper
+
+**File**: `crates/wire/src/json/wrappers.rs` (NEW)
+
+**Deliverable**: Base64 encoding for Bytes type
+
+### Implementation
+
+```rust
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+/// Encode bytes as $bytes wrapper
+pub fn encode_bytes(bytes: &[u8]) -> serde_json::Value {
+    let b64 = STANDARD.encode(bytes);
+    serde_json::json!({ "$bytes": b64 })
+}
+
+/// Decode $bytes wrapper
+pub fn decode_bytes(b64: &str) -> Result<Vec<u8>, base64::DecodeError> {
+    STANDARD.decode(b64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bytes_roundtrip() {
+        let original = b"Hello, World!";
+        let encoded = encode_bytes(original);
+
+        assert_eq!(
+            encoded,
+            serde_json::json!({ "$bytes": "SGVsbG8sIFdvcmxkIQ==" })
+        );
+
+        let decoded = decode_bytes("SGVsbG8sIFdvcmxkIQ==").unwrap();
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn test_empty_bytes() {
+        let encoded = encode_bytes(&[]);
+        assert_eq!(encoded, serde_json::json!({ "$bytes": "" }));
+
+        let decoded = decode_bytes("").unwrap();
+        assert!(decoded.is_empty());
+    }
+}
+```
+
+### Acceptance Criteria
+
+- [ ] `encode_bytes()` produces `{"$bytes": "<base64>"}`
+- [ ] `decode_bytes()` parses base64 string
+- [ ] Standard base64 encoding (RFC 4648)
+- [ ] Round-trip preserves exact bytes
+- [ ] Empty bytes encode to empty string
+
+---
+
+## Story #558: $f64 Wrapper
+
+**File**: `crates/wire/src/json/wrappers.rs`
+
+**Deliverable**: Special float value encoding (NaN, ±Inf, -0.0)
+
+### Implementation
+
+```rust
+/// Encode float, using $f64 wrapper for special values
+pub fn encode_float(f: f64) -> serde_json::Value {
+    if f.is_nan() {
+        serde_json::json!({ "$f64": "NaN" })
+    } else if f.is_infinite() {
+        if f.is_sign_positive() {
+            serde_json::json!({ "$f64": "+Inf" })
+        } else {
+            serde_json::json!({ "$f64": "-Inf" })
+        }
+    } else if f == 0.0 && f.is_sign_negative() {
+        serde_json::json!({ "$f64": "-0.0" })
+    } else {
+        // Regular finite float
+        serde_json::json!(f)
+    }
+}
+
+/// Decode $f64 wrapper
+pub fn decode_f64_wrapper(s: &str) -> Result<f64, F64WrapperError> {
+    match s {
+        "NaN" => Ok(f64::NAN),
+        "+Inf" => Ok(f64::INFINITY),
+        "-Inf" => Ok(f64::NEG_INFINITY),
+        "-0.0" => Ok(-0.0_f64),
+        _ => Err(F64WrapperError::InvalidValue(s.to_string())),
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct F64WrapperError {
+    InvalidValue(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_nan_encoding() {
+        let encoded = encode_float(f64::NAN);
+        assert_eq!(encoded, serde_json::json!({ "$f64": "NaN" }));
+    }
+
+    #[test]
+    fn test_positive_infinity() {
+        let encoded = encode_float(f64::INFINITY);
+        assert_eq!(encoded, serde_json::json!({ "$f64": "+Inf" }));
+    }
+
+    #[test]
+    fn test_negative_infinity() {
+        let encoded = encode_float(f64::NEG_INFINITY);
+        assert_eq!(encoded, serde_json::json!({ "$f64": "-Inf" }));
+    }
+
+    #[test]
+    fn test_negative_zero() {
+        let encoded = encode_float(-0.0_f64);
+        assert_eq!(encoded, serde_json::json!({ "$f64": "-0.0" }));
+    }
+
+    #[test]
+    fn test_positive_zero_no_wrapper() {
+        let encoded = encode_float(0.0_f64);
+        assert_eq!(encoded, serde_json::json!(0.0));
+    }
+
+    #[test]
+    fn test_regular_float_no_wrapper() {
+        let encoded = encode_float(3.14159);
+        assert_eq!(encoded, serde_json::json!(3.14159));
+    }
+}
+```
+
+### Acceptance Criteria
+
+- [ ] `NaN` → `{"$f64": "NaN"}`
+- [ ] `+Infinity` → `{"$f64": "+Inf"}`
+- [ ] `-Infinity` → `{"$f64": "-Inf"}`
+- [ ] `-0.0` → `{"$f64": "-0.0"}`
+- [ ] Regular floats use plain JSON numbers
+- [ ] `0.0` (positive zero) uses plain JSON number
+- [ ] Decode correctly identifies all special values
+
+---
+
+## Story #559: $absent Wrapper
+
+**File**: `crates/wire/src/json/wrappers.rs`
+
+**Deliverable**: Absent value encoding for CAS operations
+
+### Implementation
+
+```rust
+/// Absent marker for CAS operations
+///
+/// Used to distinguish "key is missing" from "value is null"
+pub const ABSENT_MARKER: &str = "$absent";
+
+/// Encode absent marker
+pub fn encode_absent() -> serde_json::Value {
+    serde_json::json!({ "$absent": true })
+}
+
+/// Check if JSON value is absent marker
+pub fn is_absent(json: &serde_json::Value) -> bool {
+    if let serde_json::Value::Object(obj) = json {
+        obj.len() == 1 && obj.get(ABSENT_MARKER) == Some(&serde_json::Value::Bool(true))
+    } else {
+        false
+    }
+}
+
+/// CAS expected value (can be absent, null, or a concrete value)
+#[derive(Debug, Clone)]
+pub enum CasExpected {
+    /// Key should not exist
+    Absent,
+    /// Key should exist with this value (including null)
+    Value(Value),
+}
+
+impl CasExpected {
+    /// Encode to JSON
+    pub fn to_json(&self) -> serde_json::Value {
+        match self {
+            CasExpected::Absent => encode_absent(),
+            CasExpected::Value(v) => encode_value(v),
+        }
+    }
+
+    /// Decode from JSON
+    pub fn from_json(json: &serde_json::Value) -> Result<Self, DecodeError> {
+        if is_absent(json) {
+            Ok(CasExpected::Absent)
+        } else {
+            Ok(CasExpected::Value(decode_value(json)?))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_absent_encoding() {
+        let encoded = encode_absent();
+        assert_eq!(encoded, serde_json::json!({ "$absent": true }));
+        assert!(is_absent(&encoded));
+    }
+
+    #[test]
+    fn test_null_is_not_absent() {
+        let null = serde_json::Value::Null;
+        assert!(!is_absent(&null));
+    }
+
+    #[test]
+    fn test_cas_expected_absent() {
+        let expected = CasExpected::Absent;
+        let json = expected.to_json();
+        assert!(is_absent(&json));
+
+        let decoded = CasExpected::from_json(&json).unwrap();
+        assert!(matches!(decoded, CasExpected::Absent));
+    }
+
+    #[test]
+    fn test_cas_expected_null() {
+        let expected = CasExpected::Value(Value::Null);
+        let json = expected.to_json();
+        assert!(!is_absent(&json));
+        assert_eq!(json, serde_json::Value::Null);
+
+        let decoded = CasExpected::from_json(&json).unwrap();
+        assert!(matches!(decoded, CasExpected::Value(Value::Null)));
+    }
+}
+```
+
+### Acceptance Criteria
+
+- [ ] `{"$absent": true}` represents missing key
+- [ ] `null` represents Value::Null (key exists with null value)
+- [ ] `is_absent()` detects absent marker
+- [ ] `CasExpected` enum distinguishes Absent from Value
+- [ ] Round-trip preserves absent vs null distinction
+- [ ] CAS operations use CasExpected for expected parameter
 
 ---
 
 ## Testing
 
-All tests from the Stories above, plus integration tests:
-
 ```rust
 #[cfg(test)]
-mod integration_tests {
+mod tests {
     use super::*;
 
     #[test]
-    fn test_value_type_completeness() {
-        // Ensure exactly 8 variants
+    fn test_value_type_exhaustiveness() {
+        // Ensure all 8 types exist
         let values = vec![
             Value::Null,
             Value::Bool(true),
-            Value::Int(0),
-            Value::Float(0.0),
-            Value::String(String::new()),
-            Value::Bytes(vec![]),
+            Value::Int(42),
+            Value::Float(3.14),
+            Value::String("hello".into()),
+            Value::Bytes(vec![1, 2, 3]),
             Value::Array(vec![]),
             Value::Object(HashMap::new()),
         ];
 
-        // Each variant has a distinct type_name
-        let type_names: std::collections::HashSet<_> =
-            values.iter().map(|v| v.type_name()).collect();
-        assert_eq!(type_names.len(), 8);
+        assert_eq!(values.len(), 8);
     }
 
     #[test]
-    fn test_deeply_nested_value() {
-        let limits = Limits::default();
+    fn test_no_type_coercion() {
+        assert_ne!(Value::Int(1), Value::Float(1.0));
+        assert_ne!(Value::String("1".into()), Value::Int(1));
+        assert_ne!(Value::Bytes(vec![49]), Value::String("1".into()));
+    }
 
-        // Create value at max depth
-        let mut value = Value::Int(42);
-        for _ in 0..limits.max_nesting_depth {
-            value = Value::Array(vec![value]);
+    #[test]
+    fn test_version_types_not_comparable() {
+        let txn = Version::Txn(5);
+        let seq = Version::Sequence(5);
+        let ctr = Version::Counter(5);
+
+        assert!(!txn.is_comparable_with(&seq));
+        assert!(!txn.is_comparable_with(&ctr));
+        assert!(!seq.is_comparable_with(&ctr));
+
+        assert!(txn.compare(&seq).is_none());
+    }
+
+    #[test]
+    fn test_full_wire_roundtrip() {
+        let values = vec![
+            Value::Null,
+            Value::Bool(true),
+            Value::Bool(false),
+            Value::Int(i64::MIN),
+            Value::Int(i64::MAX),
+            Value::Float(f64::NAN),
+            Value::Float(f64::INFINITY),
+            Value::Float(f64::NEG_INFINITY),
+            Value::Float(-0.0),
+            Value::Float(3.14159),
+            Value::String("hello".into()),
+            Value::Bytes(vec![0, 255, 128]),
+            Value::Array(vec![Value::Int(1), Value::Int(2)]),
+            Value::Object({
+                let mut m = HashMap::new();
+                m.insert("key".into(), Value::String("value".into()));
+                m
+            }),
+        ];
+
+        for value in values {
+            let json = encode_value(&value);
+            let decoded = decode_value(&json).unwrap();
+
+            // NaN != NaN, so special case
+            if value.contains_nan() {
+                assert!(decoded.contains_nan());
+            } else {
+                assert_eq!(value, decoded);
+            }
         }
-
-        assert!(limits.validate_value(&value).is_ok());
-    }
-
-    #[test]
-    fn test_complex_object_equality() {
-        let v1 = Value::Object({
-            let mut m = HashMap::new();
-            m.insert("array".to_string(), Value::Array(vec![
-                Value::Int(1),
-                Value::Float(2.5),
-                Value::String("three".to_string()),
-            ]));
-            m.insert("nested".to_string(), Value::Object({
-                let mut inner = HashMap::new();
-                inner.insert("key".to_string(), Value::Bytes(vec![1, 2, 3]));
-                inner
-            }));
-            m
-        });
-
-        let v2 = v1.clone();
-        assert_eq!(v1, v2);
     }
 }
 ```
@@ -1735,15 +1270,15 @@ mod integration_tests {
 
 | File | Action |
 |------|--------|
-| `crates/core/src/value.rs` | MODIFY - Finalize Value enum |
-| `crates/core/src/limits.rs` | CREATE - Size limits |
-| `crates/core/src/key.rs` | CREATE - Key validation |
-| `crates/core/src/lib.rs` | MODIFY - Export new modules |
-
----
-
-## Document History
-
-| Version | Date | Changes |
-|---------|------|---------|
-| 1.0 | 2026-01-21 | Initial epic specification |
+| `crates/core/src/value/mod.rs` | CREATE - Value module entry |
+| `crates/core/src/value/types.rs` | CREATE - Value enum |
+| `crates/core/src/value/equality.rs` | CREATE - Equality implementation |
+| `crates/core/src/value/limits.rs` | CREATE - Size limits |
+| `crates/core/src/contract/version.rs` | MODIFY - Add tagged union |
+| `crates/core/src/contract/versioned.rs` | MODIFY - Finalize structure |
+| `crates/core/src/contract/run_name.rs` | MODIFY - Add RunId type |
+| `crates/wire/src/lib.rs` | CREATE - Wire crate entry |
+| `crates/wire/src/json/mod.rs` | CREATE - JSON module |
+| `crates/wire/src/json/value.rs` | CREATE - Value encoding |
+| `crates/wire/src/json/wrappers.rs` | CREATE - Special wrappers |
+| `Cargo.toml` | MODIFY - Add wire crate |
