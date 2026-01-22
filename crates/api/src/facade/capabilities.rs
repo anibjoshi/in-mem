@@ -159,6 +159,18 @@ pub trait SystemFacade {
     fn capabilities(&self) -> Capabilities;
 }
 
+// =============================================================================
+// Implementation
+// =============================================================================
+
+use super::impl_::FacadeImpl;
+
+impl SystemFacade for FacadeImpl {
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

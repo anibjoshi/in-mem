@@ -97,6 +97,53 @@ pub trait ScopedFacade: Send + Sync {
     fn run_id(&self) -> &str;
 }
 
+// =============================================================================
+// Implementation
+// =============================================================================
+
+use std::sync::Arc;
+use strata_core::StrataError;
+use super::impl_::FacadeImpl;
+use crate::substrate::{SubstrateImpl, RunIndex as SubstrateRunIndex, ApiRunId, RunState};
+
+impl RunFacade for FacadeImpl {
+    fn runs(&self) -> StrataResult<Vec<RunSummary>> {
+        let results = self.substrate().run_list(None, None, None)?;
+        Ok(results.into_iter().map(|v| RunSummary {
+            run_id: v.value.run_id.as_str().to_string(),
+            created_at: v.value.created_at,
+            is_active: matches!(v.value.state, RunState::Active),
+        }).collect())
+    }
+
+    fn use_run(&self, run_id: &str) -> StrataResult<Box<dyn ScopedFacade>> {
+        let api_run_id = ApiRunId::parse(run_id).ok_or_else(|| {
+            StrataError::invalid_input("Invalid run ID format")
+        })?;
+        Ok(Box::new(ScopedFacadeImpl {
+            substrate: Arc::clone(&self.substrate_arc()),
+            run_id: api_run_id,
+        }))
+    }
+}
+
+/// Scoped facade implementation
+struct ScopedFacadeImpl {
+    #[allow(dead_code)]
+    substrate: Arc<SubstrateImpl>,
+    run_id: ApiRunId,
+}
+
+impl ScopedFacade for ScopedFacadeImpl {
+    fn run_id(&self) -> &str {
+        self.run_id.as_str()
+    }
+}
+
+// Make ScopedFacadeImpl Send + Sync
+unsafe impl Send for ScopedFacadeImpl {}
+unsafe impl Sync for ScopedFacadeImpl {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

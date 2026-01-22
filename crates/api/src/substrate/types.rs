@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
 use std::time::Duration;
+use strata_core::types::RunId;
 use strata_core::Value;
 use uuid::Uuid;
 
@@ -22,6 +23,16 @@ pub const DEFAULT_RUN_NAME: &str = "default";
 
 /// The default run ID (literal string "default")
 pub const DEFAULT_RUN_ID: &str = "default";
+
+/// Well-known UUID bytes for the default run (UUID::nil - all zeros)
+///
+/// This maps the API-level "default" run to an internal UUID representation.
+/// UUID::nil is used because:
+/// - It is deterministic and well-known (all zeros)
+/// - It will never collide with randomly generated UUIDs (UUID v4)
+/// - It is easily recognizable in logs and debugging
+/// - It requires no special-casing in the storage layer
+pub const DEFAULT_RUN_UUID_BYTES: [u8; 16] = [0u8; 16];
 
 // =============================================================================
 // ApiRunId
@@ -132,6 +143,46 @@ impl ApiRunId {
             None
         } else {
             Uuid::parse_str(&self.0).ok()
+        }
+    }
+
+    /// Convert API run ID to internal RunId
+    ///
+    /// This bridges the gap between the API-level string-based run IDs
+    /// and the internal UUID-based RunId type.
+    ///
+    /// ## Conversion Rules
+    ///
+    /// - "default" → `RunId` with `UUID::nil` (all zeros)
+    /// - UUID string → `RunId` with the parsed UUID bytes
+    ///
+    /// ## Panics
+    ///
+    /// Panics if the run ID is not "default" and is not a valid UUID.
+    /// This should never happen if the ApiRunId was created through
+    /// the public API (new(), parse(), default_run_id()).
+    ///
+    /// ## Example
+    ///
+    /// ```
+    /// use strata_api::substrate::ApiRunId;
+    ///
+    /// let default = ApiRunId::default_run_id();
+    /// let run_id = default.to_run_id();
+    /// // run_id internally uses UUID::nil
+    ///
+    /// let custom = ApiRunId::new();
+    /// let run_id = custom.to_run_id();
+    /// // run_id uses the UUID from the ApiRunId
+    /// ```
+    pub fn to_run_id(&self) -> RunId {
+        if self.is_default() {
+            // Default run maps to UUID::nil
+            RunId::from_bytes(DEFAULT_RUN_UUID_BYTES)
+        } else {
+            // Non-default runs parse as UUID
+            let uuid = self.as_uuid().expect("Non-default ApiRunId must be valid UUID");
+            RunId::from_bytes(*uuid.as_bytes())
         }
     }
 }
@@ -572,6 +623,42 @@ mod tests {
 
         assert_eq!(set.len(), 1);
         assert!(set.contains(&ApiRunId::default_run_id()));
+    }
+
+    #[test]
+    fn test_api_run_id_to_run_id_default() {
+        let api_run = ApiRunId::default_run_id();
+        let run_id = api_run.to_run_id();
+
+        // Default run should map to UUID::nil (all zeros)
+        assert_eq!(run_id.as_bytes(), &[0u8; 16]);
+    }
+
+    #[test]
+    fn test_api_run_id_to_run_id_uuid() {
+        let api_run = ApiRunId::new();
+        let run_id = api_run.to_run_id();
+
+        // Should preserve the UUID bytes
+        let expected_uuid = api_run.as_uuid().unwrap();
+        assert_eq!(run_id.as_bytes(), expected_uuid.as_bytes());
+    }
+
+    #[test]
+    fn test_api_run_id_to_run_id_parsed() {
+        let uuid_str = "f47ac10b-58cc-4372-a567-0e02b2c3d479";
+        let api_run = ApiRunId::parse(uuid_str).unwrap();
+        let run_id = api_run.to_run_id();
+
+        let expected_uuid = Uuid::parse_str(uuid_str).unwrap();
+        assert_eq!(run_id.as_bytes(), expected_uuid.as_bytes());
+    }
+
+    #[test]
+    fn test_default_run_uuid_bytes_is_nil() {
+        // Verify the constant is actually UUID::nil
+        let nil_uuid = Uuid::nil();
+        assert_eq!(&DEFAULT_RUN_UUID_BYTES, nil_uuid.as_bytes());
     }
 
     // =========================================================================

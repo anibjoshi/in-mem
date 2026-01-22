@@ -126,6 +126,132 @@ pub trait JsonFacade {
     fn json_objlen(&self, key: &str, path: &str) -> StrataResult<Option<usize>>;
 }
 
+// =============================================================================
+// Implementation
+// =============================================================================
+
+use strata_core::StrataError;
+use super::impl_::{FacadeImpl, version_to_u64, merge_values, value_type_name};
+use crate::substrate::JsonStore as SubstrateJsonStore;
+
+impl JsonFacade for FacadeImpl {
+    fn json_get(&self, key: &str, path: &str) -> StrataResult<Option<Value>> {
+        let result = self.substrate().json_get(self.default_run(), key, path)?;
+        Ok(result.map(|v| v.value))
+    }
+
+    fn json_getv(&self, key: &str, path: &str) -> StrataResult<Option<Versioned<Value>>> {
+        let result = self.substrate().json_get(self.default_run(), key, path)?;
+        Ok(result.map(|v| Versioned {
+            value: v.value,
+            version: version_to_u64(&v.version),
+            timestamp: v.timestamp.as_micros(),
+        }))
+    }
+
+    fn json_set(&self, key: &str, path: &str, value: Value) -> StrataResult<()> {
+        let _version = self.substrate().json_set(self.default_run(), key, path, value)?;
+        Ok(())
+    }
+
+    fn json_del(&self, key: &str, path: &str) -> StrataResult<u64> {
+        self.substrate().json_delete(self.default_run(), key, path)
+    }
+
+    fn json_merge(&self, key: &str, path: &str, patch: Value) -> StrataResult<()> {
+        let current = self.substrate().json_get(self.default_run(), key, path)?;
+        let merged = match current {
+            Some(v) => merge_values(v.value, patch),
+            None => patch,
+        };
+        let _version = self.substrate().json_set(self.default_run(), key, path, merged)?;
+        Ok(())
+    }
+
+    fn json_type(&self, key: &str, path: &str) -> StrataResult<Option<String>> {
+        let result = self.substrate().json_get(self.default_run(), key, path)?;
+        Ok(result.map(|v| value_type_name(&v.value)))
+    }
+
+    fn json_numincrby(&self, key: &str, path: &str, delta: f64) -> StrataResult<f64> {
+        let current = self.substrate().json_get(self.default_run(), key, path)?;
+        let current_num = match current {
+            Some(v) => match v.value {
+                Value::Int(i) => i as f64,
+                Value::Float(f) => f,
+                _ => return Err(StrataError::invalid_operation(
+                    strata_core::EntityRef::kv(self.default_run().to_run_id(), key),
+                    &format!("Expected number, got {:?}", value_type_name(&v.value)),
+                )),
+            },
+            None => 0.0,
+        };
+        let new_value = current_num + delta;
+        self.substrate().json_set(self.default_run(), key, path, Value::Float(new_value))?;
+        Ok(new_value)
+    }
+
+    fn json_strappend(&self, key: &str, path: &str, suffix: &str) -> StrataResult<usize> {
+        let current = self.substrate().json_get(self.default_run(), key, path)?;
+        let current_str = match current {
+            Some(v) => match v.value {
+                Value::String(s) => s,
+                _ => return Err(StrataError::invalid_operation(
+                    strata_core::EntityRef::kv(self.default_run().to_run_id(), key),
+                    &format!("Expected string, got {:?}", value_type_name(&v.value)),
+                )),
+            },
+            None => String::new(),
+        };
+        let new_value = format!("{}{}", current_str, suffix);
+        let len = new_value.len();
+        self.substrate().json_set(self.default_run(), key, path, Value::String(new_value))?;
+        Ok(len)
+    }
+
+    fn json_arrappend(&self, key: &str, path: &str, values: Vec<Value>) -> StrataResult<usize> {
+        let current = self.substrate().json_get(self.default_run(), key, path)?;
+        let mut arr = match current {
+            Some(v) => match v.value {
+                Value::Array(a) => a,
+                _ => return Err(StrataError::invalid_operation(
+                    strata_core::EntityRef::kv(self.default_run().to_run_id(), key),
+                    "Expected array",
+                )),
+            },
+            None => Vec::new(),
+        };
+        arr.extend(values);
+        let len = arr.len();
+        self.substrate().json_set(self.default_run(), key, path, Value::Array(arr))?;
+        Ok(len)
+    }
+
+    fn json_arrlen(&self, key: &str, path: &str) -> StrataResult<Option<usize>> {
+        let result = self.substrate().json_get(self.default_run(), key, path)?;
+        Ok(result.and_then(|v| match v.value {
+            Value::Array(a) => Some(a.len()),
+            _ => None,
+        }))
+    }
+
+    fn json_objkeys(&self, key: &str, path: &str) -> StrataResult<Option<Vec<String>>> {
+        let result = self.substrate().json_get(self.default_run(), key, path)?;
+        Ok(result.and_then(|v| match v.value {
+            Value::Object(map) => Some(map.keys().cloned().collect()),
+            _ => None,
+        }))
+    }
+
+    fn json_objlen(&self, key: &str, path: &str) -> StrataResult<Option<usize>> {
+        let result = self.substrate().json_get(self.default_run(), key, path)?;
+        Ok(result.and_then(|v| match v.value {
+            Value::Object(map) => Some(map.len()),
+            _ => None,
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

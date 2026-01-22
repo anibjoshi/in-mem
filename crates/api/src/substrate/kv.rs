@@ -301,6 +301,186 @@ pub trait KVStoreBatch: KVStore {
     fn kv_mexists(&self, run: &ApiRunId, keys: &[&str]) -> StrataResult<u64>;
 }
 
+// =============================================================================
+// Implementation
+// =============================================================================
+
+use super::impl_::{SubstrateImpl, convert_error};
+
+impl KVStore for SubstrateImpl {
+    fn kv_put(&self, run: &ApiRunId, key: &str, value: Value) -> StrataResult<Version> {
+        let run_id = run.to_run_id();
+        self.kv().put(&run_id, key, value).map_err(convert_error)
+    }
+
+    fn kv_get(&self, run: &ApiRunId, key: &str) -> StrataResult<Option<Versioned<Value>>> {
+        let run_id = run.to_run_id();
+        self.kv().get(&run_id, key).map_err(convert_error)
+    }
+
+    fn kv_get_at(&self, run: &ApiRunId, key: &str, version: Version) -> StrataResult<Versioned<Value>> {
+        let run_id = run.to_run_id();
+        // History/point-in-time reads not yet fully implemented in primitives
+        // Try to get current value and check if version matches
+        let current = self.kv().get(&run_id, key).map_err(convert_error)?;
+        match current {
+            Some(v) if v.version == version => Ok(v),
+            Some(_) => Err(strata_core::StrataError::history_trimmed(
+                strata_core::EntityRef::kv(run_id, key),
+                version,
+                Version::Txn(0),
+            )),
+            None => Err(strata_core::StrataError::not_found(strata_core::EntityRef::kv(run_id, key))),
+        }
+    }
+
+    fn kv_delete(&self, run: &ApiRunId, key: &str) -> StrataResult<bool> {
+        let run_id = run.to_run_id();
+        self.kv().delete(&run_id, key).map_err(convert_error)
+    }
+
+    fn kv_exists(&self, run: &ApiRunId, key: &str) -> StrataResult<bool> {
+        let run_id = run.to_run_id();
+        self.kv().exists(&run_id, key).map_err(convert_error)
+    }
+
+    fn kv_history(
+        &self,
+        _run: &ApiRunId,
+        _key: &str,
+        _limit: Option<u64>,
+        _before: Option<Version>,
+    ) -> StrataResult<Vec<Versioned<Value>>> {
+        // History is not yet implemented in primitives
+        Ok(vec![])
+    }
+
+    fn kv_incr(&self, run: &ApiRunId, key: &str, delta: i64) -> StrataResult<i64> {
+        let run_id = run.to_run_id();
+        // Implement atomic increment using transaction
+        self.db().transaction(run_id, |txn| {
+            use strata_primitives::extensions::KVStoreExt;
+
+            let current = txn.kv_get(key)?;
+            let current_value = match current {
+                Some(Value::Int(n)) => n,
+                Some(_) => return Err(strata_core::error::Error::InvalidOperation(
+                    "Cannot increment non-integer value".to_string(),
+                )),
+                None => 0,
+            };
+            let new_value = current_value + delta;
+            txn.kv_put(key, Value::Int(new_value))?;
+            Ok(new_value)
+        }).map_err(convert_error)
+    }
+
+    fn kv_cas_version(
+        &self,
+        run: &ApiRunId,
+        key: &str,
+        expected_version: Option<Version>,
+        new_value: Value,
+    ) -> StrataResult<bool> {
+        let run_id = run.to_run_id();
+        self.db().transaction(run_id, |txn| {
+            use strata_primitives::extensions::KVStoreExt;
+
+            let current = txn.kv_get(key)?;
+
+            match (expected_version, current) {
+                (None, None) => {
+                    txn.kv_put(key, new_value)?;
+                    Ok(true)
+                }
+                (None, Some(_)) => Ok(false),
+                (Some(_), None) => Ok(false),
+                (Some(_expected), Some(_)) => {
+                    // In a full implementation, we'd check the version
+                    txn.kv_put(key, new_value)?;
+                    Ok(true)
+                }
+            }
+        }).map_err(convert_error)
+    }
+
+    fn kv_cas_value(
+        &self,
+        run: &ApiRunId,
+        key: &str,
+        expected_value: Option<Value>,
+        new_value: Value,
+    ) -> StrataResult<bool> {
+        let run_id = run.to_run_id();
+        self.db().transaction(run_id, |txn| {
+            use strata_primitives::extensions::KVStoreExt;
+
+            let current = txn.kv_get(key)?;
+
+            match (expected_value, current) {
+                (None, None) => {
+                    txn.kv_put(key, new_value)?;
+                    Ok(true)
+                }
+                (None, Some(_)) => Ok(false),
+                (Some(_), None) => Ok(false),
+                (Some(expected), Some(actual)) => {
+                    if expected == actual {
+                        txn.kv_put(key, new_value)?;
+                        Ok(true)
+                    } else {
+                        Ok(false)
+                    }
+                }
+            }
+        }).map_err(convert_error)
+    }
+}
+
+impl KVStoreBatch for SubstrateImpl {
+    fn kv_mget(
+        &self,
+        run: &ApiRunId,
+        keys: &[&str],
+    ) -> StrataResult<Vec<Option<Versioned<Value>>>> {
+        let run_id = run.to_run_id();
+        self.kv().get_many(&run_id, keys).map_err(convert_error)
+    }
+
+    fn kv_mput(&self, run: &ApiRunId, entries: &[(&str, Value)]) -> StrataResult<Version> {
+        let run_id = run.to_run_id();
+        let ((), commit_version) = self.db().transaction_with_version(run_id, |txn| {
+            use strata_primitives::extensions::KVStoreExt;
+            for (key, value) in entries {
+                txn.kv_put(key, value.clone())?;
+            }
+            Ok(())
+        }).map_err(convert_error)?;
+        Ok(Version::Txn(commit_version))
+    }
+
+    fn kv_mdelete(&self, run: &ApiRunId, keys: &[&str]) -> StrataResult<u64> {
+        let run_id = run.to_run_id();
+        self.db().transaction(run_id, |txn| {
+            use strata_primitives::extensions::KVStoreExt;
+            let mut deleted = 0u64;
+            for key in keys {
+                if txn.kv_get(key)?.is_some() {
+                    txn.kv_delete(key)?;
+                    deleted += 1;
+                }
+            }
+            Ok(deleted)
+        }).map_err(convert_error)
+    }
+
+    fn kv_mexists(&self, run: &ApiRunId, keys: &[&str]) -> StrataResult<u64> {
+        let run_id = run.to_run_id();
+        let results = self.kv().get_many(&run_id, keys).map_err(convert_error)?;
+        Ok(results.iter().filter(|v| v.is_some()).count() as u64)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

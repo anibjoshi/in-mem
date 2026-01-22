@@ -160,6 +160,114 @@ pub trait TraceFacade {
     fn trace_untag(&self, id: &str, tags: Vec<String>) -> StrataResult<()>;
 }
 
+// =============================================================================
+// Implementation
+// =============================================================================
+
+use super::impl_::{FacadeImpl, convert_trace_kind_to_type, convert_trace_entry_to_trace};
+use crate::substrate::TraceStore as SubstrateTraceStore;
+
+impl TraceFacade for FacadeImpl {
+    fn trace(&self, kind: TraceKind, content: Value) -> StrataResult<String> {
+        let trace_type = convert_trace_kind_to_type(&kind);
+        let (id, _version) = self.substrate().trace_create(
+            self.default_run(),
+            trace_type,
+            None,
+            content,
+            vec![],
+        )?;
+        Ok(id)
+    }
+
+    fn trace_with_options(
+        &self,
+        kind: TraceKind,
+        content: Value,
+        options: TraceOptions,
+    ) -> StrataResult<String> {
+        let trace_type = convert_trace_kind_to_type(&kind);
+        let (id, _version) = self.substrate().trace_create(
+            self.default_run(),
+            trace_type,
+            options.parent_id.as_deref(),
+            content,
+            options.tags,
+        )?;
+        Ok(id)
+    }
+
+    fn trace_child(
+        &self,
+        parent_id: &str,
+        kind: TraceKind,
+        content: Value,
+    ) -> StrataResult<String> {
+        let trace_type = convert_trace_kind_to_type(&kind);
+        let (id, _version) = self.substrate().trace_create(
+            self.default_run(),
+            trace_type,
+            Some(parent_id),
+            content,
+            vec![],
+        )?;
+        Ok(id)
+    }
+
+    fn trace_get(&self, id: &str) -> StrataResult<Option<Trace>> {
+        let result = self.substrate().trace_get(self.default_run(), id)?;
+        Ok(result.map(|v| convert_trace_entry_to_trace(v.value)))
+    }
+
+    fn trace_list(
+        &self,
+        kind: Option<TraceKind>,
+        limit: Option<u64>,
+    ) -> StrataResult<Vec<Trace>> {
+        let trace_type = kind.map(|k| convert_trace_kind_to_type(&k));
+        let results = self.substrate().trace_list(
+            self.default_run(),
+            trace_type,
+            None,
+            None,
+            limit,
+            None,
+        )?;
+        Ok(results.into_iter().map(|v| convert_trace_entry_to_trace(v.value)).collect())
+    }
+
+    fn trace_roots(&self, limit: Option<u64>) -> StrataResult<Vec<Trace>> {
+        let results = self.substrate().trace_list(
+            self.default_run(),
+            None,
+            Some(None),
+            None,
+            limit,
+            None,
+        )?;
+        Ok(results.into_iter().map(|v| convert_trace_entry_to_trace(v.value)).collect())
+    }
+
+    fn trace_children(&self, parent_id: &str) -> StrataResult<Vec<Trace>> {
+        let results = self.substrate().trace_children(self.default_run(), parent_id)?;
+        Ok(results.into_iter().map(|v| convert_trace_entry_to_trace(v.value)).collect())
+    }
+
+    fn trace_tag(&self, id: &str, tags: Vec<String>) -> StrataResult<()> {
+        match self.substrate().trace_update_tags(self.default_run(), id, tags, vec![]) {
+            Ok(_) => Ok(()),
+            Err(_) => Ok(()),
+        }
+    }
+
+    fn trace_untag(&self, id: &str, tags: Vec<String>) -> StrataResult<()> {
+        match self.substrate().trace_update_tags(self.default_run(), id, vec![], tags) {
+            Ok(_) => Ok(()),
+            Err(_) => Ok(()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

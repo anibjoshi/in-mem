@@ -104,6 +104,74 @@ pub trait EventFacade {
     fn xget(&self, stream: &str, sequence: u64) -> StrataResult<Option<EventEntry>>;
 }
 
+// =============================================================================
+// Implementation
+// =============================================================================
+
+use super::impl_::{FacadeImpl, version_to_u64};
+use crate::substrate::EventLog as SubstrateEventLog;
+
+impl EventFacade for FacadeImpl {
+    fn xadd(&self, stream: &str, payload: Value) -> StrataResult<u64> {
+        let version = self.substrate().event_append(self.default_run(), stream, payload)?;
+        Ok(version_to_u64(&version))
+    }
+
+    fn xrange(&self, stream: &str, start: Option<u64>, end: Option<u64>)
+        -> StrataResult<Vec<EventEntry>>
+    {
+        let results = self.substrate().event_range(self.default_run(), stream, start, end, None)?;
+        Ok(results.into_iter().map(|v| EventEntry {
+            sequence: version_to_u64(&v.version),
+            payload: v.value,
+            timestamp: v.timestamp.as_micros(),
+        }).collect())
+    }
+
+    fn xrange_count(
+        &self,
+        stream: &str,
+        start: Option<u64>,
+        end: Option<u64>,
+        count: u64,
+    ) -> StrataResult<Vec<EventEntry>> {
+        let results = self.substrate().event_range(self.default_run(), stream, start, end, Some(count))?;
+        Ok(results.into_iter().map(|v| EventEntry {
+            sequence: version_to_u64(&v.version),
+            payload: v.value,
+            timestamp: v.timestamp.as_micros(),
+        }).collect())
+    }
+
+    fn xrevrange(
+        &self,
+        stream: &str,
+        start: Option<u64>,
+        end: Option<u64>,
+    ) -> StrataResult<Vec<EventEntry>> {
+        let mut results = self.xrange(stream, start, end)?;
+        results.reverse();
+        Ok(results)
+    }
+
+    fn xlen(&self, stream: &str) -> StrataResult<u64> {
+        self.substrate().event_len(self.default_run(), stream)
+    }
+
+    fn xlast(&self, stream: &str) -> StrataResult<Option<u64>> {
+        self.substrate().event_latest_sequence(self.default_run(), stream)
+    }
+
+    fn xget(&self, stream: &str, sequence: u64) -> StrataResult<Option<EventEntry>> {
+        let result = self.substrate().event_get(self.default_run(), stream, sequence)?;
+        Ok(result.map(|v| EventEntry {
+            sequence: version_to_u64(&v.version),
+            payload: v.value,
+            timestamp: v.timestamp.as_micros(),
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

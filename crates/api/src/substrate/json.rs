@@ -188,6 +188,129 @@ pub trait JsonStore {
     ) -> StrataResult<Vec<Versioned<Value>>>;
 }
 
+// =============================================================================
+// Implementation
+// =============================================================================
+
+use strata_core::json::JsonValue;
+use super::impl_::{
+    SubstrateImpl, convert_error,
+    value_to_json, json_to_value, parse_doc_id, parse_path, json_merge_patch,
+};
+
+impl JsonStore for SubstrateImpl {
+    fn json_set(
+        &self,
+        run: &ApiRunId,
+        key: &str,
+        path: &str,
+        value: Value,
+    ) -> StrataResult<Version> {
+        let run_id = run.to_run_id();
+        let doc_id = parse_doc_id(key)?;
+        let json_path = parse_path(path)?;
+        let json_value = value_to_json(value)?;
+
+        // Check if document exists
+        let exists = self.json().exists(&run_id, &doc_id).map_err(convert_error)?;
+
+        if !exists && json_path.is_root() {
+            // Create new document at root
+            self.json().create(&run_id, &doc_id, json_value).map_err(convert_error)
+        } else if !exists {
+            // Document doesn't exist and trying to set non-root path - create with empty object first
+            self.json().create(&run_id, &doc_id, JsonValue::object()).map_err(convert_error)?;
+            self.json().set(&run_id, &doc_id, &json_path, json_value).map_err(convert_error)
+        } else {
+            // Document exists, update at path
+            self.json().set(&run_id, &doc_id, &json_path, json_value).map_err(convert_error)
+        }
+    }
+
+    fn json_get(
+        &self,
+        run: &ApiRunId,
+        key: &str,
+        path: &str,
+    ) -> StrataResult<Option<Versioned<Value>>> {
+        let run_id = run.to_run_id();
+        let doc_id = parse_doc_id(key)?;
+        let json_path = parse_path(path)?;
+
+        let result = self.json().get(&run_id, &doc_id, &json_path).map_err(convert_error)?;
+
+        match result {
+            Some(versioned) => {
+                let value = json_to_value(versioned.value)?;
+                Ok(Some(Versioned {
+                    value,
+                    version: versioned.version,
+                    timestamp: versioned.timestamp,
+                }))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn json_delete(&self, run: &ApiRunId, key: &str, path: &str) -> StrataResult<u64> {
+        let run_id = run.to_run_id();
+        let doc_id = parse_doc_id(key)?;
+        let json_path = parse_path(path)?;
+
+        if json_path.is_root() {
+            // Delete entire document
+            let existed = self.json().destroy(&run_id, &doc_id).map_err(convert_error)?;
+            Ok(if existed { 1 } else { 0 })
+        } else {
+            // Delete at path
+            self.json().delete_at_path(&run_id, &doc_id, &json_path).map_err(convert_error)?;
+            Ok(1)
+        }
+    }
+
+    fn json_merge(
+        &self,
+        run: &ApiRunId,
+        key: &str,
+        path: &str,
+        patch: Value,
+    ) -> StrataResult<Version> {
+        // RFC 7396 JSON Merge Patch - implement as read-modify-write
+        let run_id = run.to_run_id();
+        let doc_id = parse_doc_id(key)?;
+        let json_path = parse_path(path)?;
+        let patch_json = value_to_json(patch)?;
+
+        // Get current value at path
+        let current = self.json().get(&run_id, &doc_id, &json_path).map_err(convert_error)?;
+
+        // Apply merge patch
+        let merged = match current {
+            Some(versioned) => {
+                let mut base: serde_json::Value = versioned.value.into();
+                let patch_val: serde_json::Value = patch_json.into();
+                json_merge_patch(&mut base, &patch_val);
+                JsonValue::from(base)
+            }
+            None => patch_json,
+        };
+
+        // Set the merged value
+        self.json().set(&run_id, &doc_id, &json_path, merged).map_err(convert_error)
+    }
+
+    fn json_history(
+        &self,
+        _run: &ApiRunId,
+        _key: &str,
+        _limit: Option<u64>,
+        _before: Option<Version>,
+    ) -> StrataResult<Vec<Versioned<Value>>> {
+        // History not yet implemented
+        Ok(vec![])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

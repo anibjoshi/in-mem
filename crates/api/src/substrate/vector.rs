@@ -265,6 +265,140 @@ pub trait VectorStore {
     fn vector_drop_collection(&self, run: &ApiRunId, collection: &str) -> StrataResult<bool>;
 }
 
+// =============================================================================
+// Implementation
+// =============================================================================
+//
+// Note: The VectorStore primitive uses serde_json::Value for metadata,
+// while the Substrate API uses strata_core::Value. This is a semantic
+// boundary that needs proper bridging.
+
+use super::impl_::{SubstrateImpl, convert_vector_error};
+
+impl VectorStore for SubstrateImpl {
+    fn vector_upsert(
+        &self,
+        run: &ApiRunId,
+        collection: &str,
+        key: &str,
+        vector: &[f32],
+        metadata: Option<Value>,
+    ) -> StrataResult<Version> {
+        let run_id = run.to_run_id();
+        // Convert strata_core::Value metadata to serde_json::Value
+        let json_metadata = metadata.map(|v| {
+            serde_json::to_value(&v).unwrap_or(serde_json::Value::Null)
+        });
+        self.vector().insert(run_id, collection, key, vector, json_metadata)
+            .map_err(convert_vector_error)?;
+        Ok(Version::Txn(0))
+    }
+
+    fn vector_get(
+        &self,
+        run: &ApiRunId,
+        collection: &str,
+        key: &str,
+    ) -> StrataResult<Option<Versioned<VectorData>>> {
+        let run_id = run.to_run_id();
+        let entry = self.vector().get(run_id, collection, key)
+            .map_err(convert_vector_error)?;
+        Ok(entry.map(|e| {
+            // Convert serde_json::Value back to strata_core::Value
+            // VectorData is (Vec<f32>, Value) - metadata is NOT optional in API
+            let api_metadata: Value = e.value.metadata.clone()
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or(Value::Null);
+            Versioned {
+                value: (e.value.embedding.clone(), api_metadata),
+                version: Version::Txn(e.value.version),
+                timestamp: e.timestamp,
+            }
+        }))
+    }
+
+    fn vector_delete(&self, run: &ApiRunId, collection: &str, key: &str) -> StrataResult<bool> {
+        let run_id = run.to_run_id();
+        self.vector().delete(run_id, collection, key)
+            .map_err(convert_vector_error)
+    }
+
+    fn vector_search(
+        &self,
+        run: &ApiRunId,
+        collection: &str,
+        query: &[f32],
+        k: u64,
+        _filter: Option<SearchFilter>,
+        _metric: Option<DistanceMetric>,
+    ) -> StrataResult<Vec<VectorMatch>> {
+        let run_id = run.to_run_id();
+        // Note: The primitive's search() takes an optional MetadataFilter as 5th arg
+        let results = self.vector().search(run_id, collection, query, k as usize, None)
+            .map_err(convert_vector_error)?;
+
+        // Note: primitive's VectorMatch doesn't include the vector data,
+        // so we return an empty vector. Callers needing the full vector
+        // should use vector_get after search.
+        Ok(results
+            .into_iter()
+            .map(|r| {
+                // Convert serde_json::Value metadata to strata_core::Value
+                let api_metadata: Value = r.metadata
+                    .and_then(|v| serde_json::from_value(v).ok())
+                    .unwrap_or(Value::Null);
+                VectorMatch {
+                    key: r.key,
+                    score: r.score,
+                    vector: vec![], // Primitive search doesn't return vector data
+                    metadata: api_metadata,
+                    version: Version::Txn(0),
+                }
+            })
+            .collect())
+    }
+
+    fn vector_collection_info(
+        &self,
+        run: &ApiRunId,
+        collection: &str,
+    ) -> StrataResult<Option<(usize, u64, DistanceMetric)>> {
+        let run_id = run.to_run_id();
+        let info = self.vector().get_collection(run_id, collection)
+            .map_err(convert_vector_error)?;
+        Ok(info.map(|i| (i.value.config.dimension, i.value.count as u64, DistanceMetric::Cosine)))
+    }
+
+    fn vector_create_collection(
+        &self,
+        run: &ApiRunId,
+        collection: &str,
+        dimension: usize,
+        _metric: DistanceMetric,
+    ) -> StrataResult<Version> {
+        let run_id = run.to_run_id();
+        let config = strata_core::VectorConfig::new(
+            dimension,
+            strata_core::DistanceMetric::Cosine,
+        )?;
+        self.vector().create_collection(run_id, collection, config)
+            .map_err(convert_vector_error)?;
+        Ok(Version::Txn(0))
+    }
+
+    fn vector_drop_collection(&self, run: &ApiRunId, collection: &str) -> StrataResult<bool> {
+        let run_id = run.to_run_id();
+        // Primitive returns () - we check if collection existed first
+        let existed = self.vector().collection_exists(run_id, collection)
+            .map_err(convert_vector_error)?;
+        if existed {
+            self.vector().delete_collection(run_id, collection)
+                .map_err(convert_vector_error)?;
+        }
+        Ok(existed)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

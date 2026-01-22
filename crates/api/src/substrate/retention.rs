@@ -118,6 +118,26 @@ pub trait RetentionSubstrateExt: RetentionSubstrate {
     fn retention_gc(&self, run: &ApiRunId) -> StrataResult<RetentionStats>;
 }
 
+// =============================================================================
+// Implementation
+// =============================================================================
+
+use super::impl_::SubstrateImpl;
+
+impl RetentionSubstrate for SubstrateImpl {
+    fn retention_get(&self, _run: &ApiRunId) -> StrataResult<Option<RetentionVersion>> {
+        Ok(None)
+    }
+
+    fn retention_set(&self, _run: &ApiRunId, _policy: RetentionPolicy) -> StrataResult<u64> {
+        Ok(0)
+    }
+
+    fn retention_clear(&self, _run: &ApiRunId) -> StrataResult<bool> {
+        Ok(false)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

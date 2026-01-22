@@ -84,6 +84,56 @@ pub trait StateFacade {
     fn state_exists(&self, cell: &str) -> StrataResult<bool>;
 }
 
+// =============================================================================
+// Implementation
+// =============================================================================
+
+use super::impl_::{FacadeImpl, version_to_u64};
+use crate::substrate::StateCell as SubstrateStateCell;
+
+impl StateFacade for FacadeImpl {
+    fn state_get(&self, cell: &str) -> StrataResult<Option<StateValue>> {
+        let result = self.substrate().state_get(self.default_run(), cell)?;
+        Ok(result.map(|v| StateValue {
+            value: v.value,
+            counter: version_to_u64(&v.version),
+        }))
+    }
+
+    fn state_set(&self, cell: &str, value: Value) -> StrataResult<u64> {
+        let version = self.substrate().state_set(self.default_run(), cell, value)?;
+        Ok(version_to_u64(&version))
+    }
+
+    fn state_cas(&self, cell: &str, expected_counter: Option<u64>, value: Value)
+        -> StrataResult<Option<u64>>
+    {
+        let current = self.substrate().state_get(self.default_run(), cell)?;
+        let current_counter = current.map(|v| version_to_u64(&v.version));
+
+        match (expected_counter, current_counter) {
+            (None, None) => {
+                let version = self.substrate().state_set(self.default_run(), cell, value)?;
+                Ok(Some(version_to_u64(&version)))
+            }
+            (Some(expected), Some(actual)) if expected == actual => {
+                let version = self.substrate().state_set(self.default_run(), cell, value)?;
+                Ok(Some(version_to_u64(&version)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn state_del(&self, cell: &str) -> StrataResult<bool> {
+        self.substrate().state_delete(self.default_run(), cell)
+    }
+
+    fn state_exists(&self, cell: &str) -> StrataResult<bool> {
+        let result = self.substrate().state_get(self.default_run(), cell)?;
+        Ok(result.is_some())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

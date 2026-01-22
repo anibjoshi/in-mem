@@ -148,6 +148,107 @@ pub trait EventLog {
     fn event_latest_sequence(&self, run: &ApiRunId, stream: &str) -> StrataResult<Option<u64>>;
 }
 
+// =============================================================================
+// Implementation
+// =============================================================================
+//
+// Note: The primitive EventLog is per-run (not per-stream). We map
+// `stream` parameter to `event_type` in the primitive. Sequence numbers
+// are global per-run, not per-stream.
+
+use super::impl_::{SubstrateImpl, convert_error};
+
+impl EventLog for SubstrateImpl {
+    fn event_append(
+        &self,
+        run: &ApiRunId,
+        stream: &str,
+        payload: Value,
+    ) -> StrataResult<Version> {
+        let run_id = run.to_run_id();
+        // Use stream as event_type
+        self.event().append(&run_id, stream, payload).map_err(convert_error)
+    }
+
+    fn event_range(
+        &self,
+        run: &ApiRunId,
+        stream: &str,
+        start: Option<u64>,
+        end: Option<u64>,
+        limit: Option<u64>,
+    ) -> StrataResult<Vec<Versioned<Value>>> {
+        let run_id = run.to_run_id();
+
+        // Read events filtered by type (stream)
+        let events = self.event().read_by_type(&run_id, stream).map_err(convert_error)?;
+
+        // Apply start/end range and limit
+        let filtered: Vec<_> = events
+            .into_iter()
+            .filter(|e| {
+                let seq = match e.version {
+                    Version::Sequence(s) => s,
+                    _ => return false,
+                };
+                start.map_or(true, |s| seq >= s) && end.map_or(true, |e| seq <= e)
+            })
+            .take(limit.unwrap_or(u64::MAX) as usize)
+            .map(|e| Versioned {
+                value: e.value.payload.clone(),
+                version: e.version,
+                timestamp: strata_core::Timestamp::from_millis(e.value.timestamp as u64),
+            })
+            .collect();
+
+        Ok(filtered)
+    }
+
+    fn event_get(
+        &self,
+        run: &ApiRunId,
+        stream: &str,
+        sequence: u64,
+    ) -> StrataResult<Option<Versioned<Value>>> {
+        let run_id = run.to_run_id();
+
+        // Read the event at this sequence
+        let event = self.event().read(&run_id, sequence).map_err(convert_error)?;
+
+        // Check if it matches the requested stream (event_type)
+        match event {
+            Some(e) if e.value.event_type == stream => {
+                Ok(Some(Versioned {
+                    value: e.value.payload,
+                    version: e.version,
+                    timestamp: strata_core::Timestamp::from_millis(e.value.timestamp as u64),
+                }))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn event_len(&self, run: &ApiRunId, stream: &str) -> StrataResult<u64> {
+        let run_id = run.to_run_id();
+        // Count events with this type
+        let events = self.event().read_by_type(&run_id, stream).map_err(convert_error)?;
+        Ok(events.len() as u64)
+    }
+
+    fn event_latest_sequence(&self, run: &ApiRunId, stream: &str) -> StrataResult<Option<u64>> {
+        let run_id = run.to_run_id();
+        // Find highest sequence with this type
+        let events = self.event().read_by_type(&run_id, stream).map_err(convert_error)?;
+        let max_seq = events.iter().filter_map(|e| {
+            match e.version {
+                Version::Sequence(s) => Some(s),
+                _ => None,
+            }
+        }).max();
+        Ok(max_seq)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

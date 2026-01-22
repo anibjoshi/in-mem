@@ -96,6 +96,36 @@ pub trait HistoryFacade {
     fn latest_version(&self, key: &str) -> StrataResult<Option<u64>>;
 }
 
+// =============================================================================
+// Implementation
+// =============================================================================
+
+use strata_core::Version;
+use super::impl_::{FacadeImpl, version_to_u64};
+use crate::substrate::KVStore as SubstrateKVStore;
+
+impl HistoryFacade for FacadeImpl {
+    fn history(&self, key: &str, limit: Option<u64>, before: Option<u64>) -> StrataResult<Vec<VersionedValue>> {
+        let before_version = before.map(Version::Txn);
+        let results = self.substrate().kv_history(self.default_run(), key, limit, before_version)?;
+        Ok(results.into_iter().map(|v| VersionedValue {
+            value: v.value,
+            version: version_to_u64(&v.version),
+            timestamp: v.timestamp.as_micros(),
+        }).collect())
+    }
+
+    fn get_at(&self, key: &str, version: u64) -> StrataResult<Value> {
+        let result = self.substrate().kv_get_at(self.default_run(), key, Version::Txn(version))?;
+        Ok(result.value)
+    }
+
+    fn latest_version(&self, key: &str) -> StrataResult<Option<u64>> {
+        let result = self.substrate().kv_get(self.default_run(), key)?;
+        Ok(result.map(|v| version_to_u64(&v.version)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

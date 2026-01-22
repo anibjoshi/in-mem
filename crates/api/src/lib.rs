@@ -65,7 +65,9 @@ pub mod desugar;
 pub use substrate::{
     // Core types
     ApiRunId, InvalidRunIdError, RetentionPolicy, RunInfo, RunState,
-    DEFAULT_RUN_ID, DEFAULT_RUN_NAME,
+    DEFAULT_RUN_ID, DEFAULT_RUN_NAME, DEFAULT_RUN_UUID_BYTES,
+    // Implementation
+    SubstrateImpl,
     // Primitive traits
     KVStore, KVStoreBatch, JsonStore, EventLog, StateCell, VectorStore, TraceStore, RunIndex,
     // Transaction control

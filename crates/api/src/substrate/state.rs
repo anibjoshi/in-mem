@@ -149,6 +149,78 @@ pub trait StateCell {
     ) -> StrataResult<Vec<Versioned<Value>>>;
 }
 
+// =============================================================================
+// Implementation
+// =============================================================================
+
+use super::impl_::{SubstrateImpl, convert_error};
+
+impl StateCell for SubstrateImpl {
+    fn state_set(&self, run: &ApiRunId, cell: &str, value: Value) -> StrataResult<Version> {
+        let run_id = run.to_run_id();
+        let versioned = self.state().set(&run_id, cell, value).map_err(convert_error)?;
+        Ok(versioned.version)
+    }
+
+    fn state_get(&self, run: &ApiRunId, cell: &str) -> StrataResult<Option<Versioned<Value>>> {
+        let run_id = run.to_run_id();
+        let state = self.state().read(&run_id, cell).map_err(convert_error)?;
+        Ok(state.map(|s| Versioned {
+            value: s.value.value,
+            version: s.version,
+            timestamp: s.timestamp,
+        }))
+    }
+
+    fn state_cas(
+        &self,
+        run: &ApiRunId,
+        cell: &str,
+        expected_counter: Option<u64>,
+        value: Value,
+    ) -> StrataResult<Option<Version>> {
+        let run_id = run.to_run_id();
+
+        match expected_counter {
+            None => {
+                // Create only if doesn't exist
+                match self.state().init(&run_id, cell, value) {
+                    Ok(versioned) => Ok(Some(versioned.version)),
+                    Err(_) => Ok(None), // Already exists
+                }
+            }
+            Some(expected) => {
+                // CAS with expected version
+                match self.state().cas(&run_id, cell, expected, value) {
+                    Ok(versioned) => Ok(Some(versioned.version)),
+                    Err(_) => Ok(None), // Version mismatch
+                }
+            }
+        }
+    }
+
+    fn state_delete(&self, run: &ApiRunId, cell: &str) -> StrataResult<bool> {
+        let run_id = run.to_run_id();
+        self.state().delete(&run_id, cell).map_err(convert_error)
+    }
+
+    fn state_exists(&self, run: &ApiRunId, cell: &str) -> StrataResult<bool> {
+        let run_id = run.to_run_id();
+        self.state().exists(&run_id, cell).map_err(convert_error)
+    }
+
+    fn state_history(
+        &self,
+        _run: &ApiRunId,
+        _cell: &str,
+        _limit: Option<u64>,
+        _before: Option<Version>,
+    ) -> StrataResult<Vec<Versioned<Value>>> {
+        // History not yet implemented
+        Ok(vec![])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -27,6 +27,7 @@
 //! - `history`: History access methods
 //! - `run`: Run listing and scoping
 //! - `capabilities`: Capability discovery
+//! - `impl_`: Concrete implementation
 //!
 //! ## Desugaring Examples
 //!
@@ -46,6 +47,7 @@ pub mod trace;
 pub mod history;
 pub mod run;
 pub mod capabilities;
+pub mod impl_;
 
 // Re-export facade types
 pub use types::{FacadeConfig, GetOptions, SetOptions};
@@ -60,3 +62,6 @@ pub use trace::TraceFacade;
 pub use history::HistoryFacade;
 pub use run::{RunFacade, ScopedFacade};
 pub use capabilities::{Capabilities, CapabilityLimits, SystemFacade};
+
+// Re-export implementation
+pub use impl_::FacadeImpl;

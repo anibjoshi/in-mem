@@ -143,6 +143,108 @@ pub trait VectorFacade {
     fn vcollection_drop(&self, collection: &str) -> StrataResult<bool>;
 }
 
+// =============================================================================
+// Implementation
+// =============================================================================
+
+use super::impl_::FacadeImpl;
+use crate::substrate::{VectorStore as SubstrateVectorStore, DistanceMetric, SearchFilter};
+
+impl VectorFacade for FacadeImpl {
+    fn vadd(
+        &self,
+        collection: &str,
+        key: &str,
+        vector: &[f32],
+        metadata: Option<Value>,
+    ) -> StrataResult<()> {
+        let info = self.substrate().vector_collection_info(self.default_run(), collection)?;
+        if info.is_none() {
+            let _version = self.substrate().vector_create_collection(
+                self.default_run(),
+                collection,
+                vector.len(),
+                DistanceMetric::Cosine,
+            )?;
+        }
+
+        let _version = self.substrate().vector_upsert(
+            self.default_run(),
+            collection,
+            key,
+            vector,
+            metadata,
+        )?;
+        Ok(())
+    }
+
+    fn vget(&self, collection: &str, key: &str) -> StrataResult<Option<(Vec<f32>, Value)>> {
+        let result = self.substrate().vector_get(self.default_run(), collection, key)?;
+        Ok(result.map(|v| v.value))
+    }
+
+    fn vdel(&self, collection: &str, key: &str) -> StrataResult<bool> {
+        self.substrate().vector_delete(self.default_run(), collection, key)
+    }
+
+    fn vsim(&self, collection: &str, query: &[f32], k: u64) -> StrataResult<Vec<VectorResult>> {
+        let results = self.substrate().vector_search(
+            self.default_run(),
+            collection,
+            query,
+            k,
+            None,
+            None,
+        )?;
+        Ok(results.into_iter().map(|m| VectorResult {
+            key: m.key,
+            score: m.score,
+            vector: None,
+            metadata: m.metadata,
+        }).collect())
+    }
+
+    fn vsim_with_options(
+        &self,
+        collection: &str,
+        query: &[f32],
+        k: u64,
+        options: VectorSearchOptions,
+    ) -> StrataResult<Vec<VectorResult>> {
+        let filter = options.filter_eq.map(|(field, value)| SearchFilter::Equals { field, value });
+        let results = self.substrate().vector_search(
+            self.default_run(),
+            collection,
+            query,
+            k,
+            filter,
+            None,
+        )?;
+        Ok(results.into_iter().map(|m| {
+            let vector = if options.include_vectors {
+                Some(m.vector.clone())
+            } else {
+                None
+            };
+            VectorResult {
+                key: m.key,
+                score: m.score,
+                vector,
+                metadata: m.metadata,
+            }
+        }).collect())
+    }
+
+    fn vcollection_info(&self, collection: &str) -> StrataResult<Option<(usize, u64)>> {
+        let info = self.substrate().vector_collection_info(self.default_run(), collection)?;
+        Ok(info.map(|(dim, count, _metric)| (dim, count)))
+    }
+
+    fn vcollection_drop(&self, collection: &str) -> StrataResult<bool> {
+        self.substrate().vector_drop_collection(self.default_run(), collection)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

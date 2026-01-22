@@ -46,12 +46,16 @@ pub mod trace;
 pub mod run;
 pub mod transaction;
 pub mod retention;
+mod impl_;
 
 // Re-export core types
 pub use types::{
     ApiRunId, InvalidRunIdError, RetentionPolicy, RunInfo, RunState,
-    DEFAULT_RUN_ID, DEFAULT_RUN_NAME,
+    DEFAULT_RUN_ID, DEFAULT_RUN_NAME, DEFAULT_RUN_UUID_BYTES,
 };
+
+// Re-export implementation
+pub use impl_::SubstrateImpl;
 
 // Re-export primitive traits
 pub use kv::{KVStore, KVStoreBatch};
