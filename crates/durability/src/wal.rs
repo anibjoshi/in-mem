@@ -592,10 +592,10 @@ impl WAL {
             let interval = Duration::from_millis(interval_ms);
 
             Some(thread::spawn(move || {
-                while !shutdown.load(Ordering::Relaxed) {
+                while !shutdown.load(Ordering::Acquire) {
                     thread::sleep(interval);
 
-                    if shutdown.load(Ordering::Relaxed) {
+                    if shutdown.load(Ordering::Acquire) {
                         break;
                     }
 
@@ -862,7 +862,8 @@ impl WAL {
 impl Drop for WAL {
     fn drop(&mut self) {
         // Shutdown async fsync thread if running
-        self.shutdown.store(true, Ordering::Relaxed);
+        // Uses Release ordering to ensure writes before drop are visible to the background thread
+        self.shutdown.store(true, Ordering::Release);
 
         if let Some(handle) = self.fsync_thread.take() {
             if let Err(e) = handle.join() {

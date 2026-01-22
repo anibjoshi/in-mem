@@ -20,6 +20,15 @@
 //!
 //! - `StoredValue`: Internal storage type that includes TTL (storage concern)
 //! - `VersionedValue`: Contract type returned to callers (no TTL)
+//!
+//! # Version Handling
+//!
+//! The storage layer uses raw `u64` for version comparisons because:
+//! 1. All versions in storage are `Version::TxnId` variants (transaction versions)
+//! 2. Raw u64 comparison is correct for same-variant versions
+//! 3. The `Version::Ord` implementation compares discriminant first, ensuring
+//!    cross-variant comparisons are safe (though they shouldn't occur here)
+//! 4. Performance: Avoiding enum matching on every comparison
 
 use dashmap::DashMap;
 use strata_core::types::{Key, RunId};
@@ -68,7 +77,15 @@ impl VersionChain {
     }
 
     /// Get the version at or before the given max_version
+    ///
+    /// Note: Uses raw u64 comparison since all storage versions are TxnId variants.
+    /// Debug assertions verify this invariant.
     pub fn get_at_version(&self, max_version: u64) -> Option<&StoredValue> {
+        // Debug assertion: all versions should be TxnId variants
+        debug_assert!(
+            self.versions.iter().all(|sv| sv.version().is_txn_id()),
+            "Storage layer should only contain TxnId versions"
+        );
         // Versions are newest-first, so we scan until we find one <= max_version
         self.versions
             .iter()

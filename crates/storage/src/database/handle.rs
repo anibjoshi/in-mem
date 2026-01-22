@@ -11,6 +11,7 @@
 use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tracing::warn;
 
 use crate::codec::{get_codec, StorageCodec};
 use crate::disk_snapshot::{CheckpointCoordinator, CheckpointData};
@@ -293,9 +294,15 @@ impl DatabaseHandle {
 
 impl Drop for DatabaseHandle {
     fn drop(&mut self) {
-        // Best-effort cleanup on drop
+        // Best-effort cleanup on drop - log errors but don't panic
         let mut wal = self.wal_writer.lock();
-        let _ = wal.flush();
+        if let Err(e) = wal.flush() {
+            warn!(
+                error = %e,
+                path = %self.paths.wal_dir().display(),
+                "DatabaseHandle WAL flush on drop failed - data may not be durable"
+            );
+        }
     }
 }
 
