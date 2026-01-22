@@ -20,6 +20,15 @@
 //!
 //! - `StoredValue`: Internal storage type that includes TTL (storage concern)
 //! - `VersionedValue`: Contract type returned to callers (no TTL)
+//!
+//! # Version Handling
+//!
+//! The storage layer uses raw `u64` for version comparisons because:
+//! 1. All versions in storage are `Version::TxnId` variants (transaction versions)
+//! 2. Raw u64 comparison is correct for same-variant versions
+//! 3. The `Version::Ord` implementation compares discriminant first, ensuring
+//!    cross-variant comparisons are safe (though they shouldn't occur here)
+//! 4. Performance: Avoiding enum matching on every comparison
 
 use dashmap::DashMap;
 use strata_core::types::{Key, RunId};
@@ -68,7 +77,15 @@ impl VersionChain {
     }
 
     /// Get the version at or before the given max_version
+    ///
+    /// Note: Uses raw u64 comparison since all storage versions are TxnId variants.
+    /// Debug assertions verify this invariant.
     pub fn get_at_version(&self, max_version: u64) -> Option<&StoredValue> {
+        // Debug assertion: all versions should be TxnId variants
+        debug_assert!(
+            self.versions.iter().all(|sv| sv.version().is_txn_id()),
+            "Storage layer should only contain TxnId versions"
+        );
         // Versions are newest-first, so we scan until we find one <= max_version
         self.versions
             .iter()
@@ -530,7 +547,7 @@ impl ShardedStore {
         ShardedSnapshot {
             version: self.version.load(Ordering::Acquire),
             store: Arc::clone(self),
-            cache: std::sync::RwLock::new(FxHashMap::default()),
+            cache: parking_lot::RwLock::new(FxHashMap::default()),
         }
     }
 
@@ -615,8 +632,9 @@ pub struct ShardedSnapshot {
     /// Reference to the underlying store
     store: Arc<ShardedStore>,
     /// Cache of read values for snapshot isolation
-    /// Using RwLock for interior mutability since SnapshotView::get takes &self
-    cache: std::sync::RwLock<FxHashMap<Key, Option<VersionedValue>>>,
+    /// Using parking_lot::RwLock for interior mutability since SnapshotView::get takes &self
+    /// parking_lot::RwLock doesn't poison on panic, preventing cascade failures
+    cache: parking_lot::RwLock<FxHashMap<Key, Option<VersionedValue>>>,
 }
 
 impl Clone for ShardedSnapshot {
@@ -625,7 +643,8 @@ impl Clone for ShardedSnapshot {
             version: self.version,
             store: Arc::clone(&self.store),
             // Clone the cache contents for independent snapshot views
-            cache: std::sync::RwLock::new(self.cache.read().unwrap().clone()),
+            // parking_lot::RwLock doesn't need .unwrap() - it doesn't poison
+            cache: parking_lot::RwLock::new(self.cache.read().clone()),
         }
     }
 }
@@ -872,8 +891,9 @@ impl SnapshotView for ShardedSnapshot {
     /// Caches the result on first read for performance.
     fn get(&self, key: &Key) -> Result<Option<VersionedValue>> {
         // Fast path: check cache first (read lock)
+        // parking_lot::RwLock doesn't need .unwrap() - it doesn't poison
         {
-            let cache = self.cache.read().unwrap();
+            let cache = self.cache.read();
             if let Some(cached) = cache.get(key) {
                 return Ok(cached.clone());
             }
@@ -895,7 +915,7 @@ impl SnapshotView for ShardedSnapshot {
 
         // Cache the result (including None for missing keys)
         {
-            let mut cache = self.cache.write().unwrap();
+            let mut cache = self.cache.write();
             cache.insert(key.clone(), result.clone());
         }
 

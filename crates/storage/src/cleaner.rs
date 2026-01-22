@@ -16,6 +16,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use strata_core::Storage;
+use tracing::{debug, warn};
 
 use crate::UnifiedStore;
 
@@ -75,14 +76,14 @@ impl TTLCleaner {
         let check_interval = self.check_interval;
 
         thread::spawn(move || {
-            while !shutdown.load(Ordering::Relaxed) {
+            while !shutdown.load(Ordering::Acquire) {
                 // Sleep first (don't cleanup immediately on start)
                 // Use smaller sleep intervals to check shutdown more frequently
                 let sleep_interval = Duration::from_millis(100).min(check_interval);
                 let mut elapsed = Duration::ZERO;
 
                 while elapsed < check_interval {
-                    if shutdown.load(Ordering::Relaxed) {
+                    if shutdown.load(Ordering::Acquire) {
                         return;
                     }
                     thread::sleep(sleep_interval);
@@ -90,11 +91,22 @@ impl TTLCleaner {
                 }
 
                 // Find expired keys
-                if let Ok(expired) = store.find_expired_keys() {
-                    // Delete each via normal path (transactional)
-                    for key in expired {
-                        // Ignore errors (key might have been deleted by user)
-                        let _ = store.delete(&key);
+                match store.find_expired_keys() {
+                    Ok(expired) => {
+                        let count = expired.len();
+                        if count > 0 {
+                            debug!(count, "TTL cleaner found expired keys");
+                        }
+                        // Delete each via normal path (transactional)
+                        for key in expired {
+                            // Log errors but continue (key might have been deleted by user)
+                            if let Err(e) = store.delete(&key) {
+                                debug!(?key, error = %e, "TTL cleaner delete failed (may be expected)");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "TTL cleaner failed to find expired keys");
                     }
                 }
             }
@@ -104,13 +116,15 @@ impl TTLCleaner {
     /// Signal shutdown (for graceful termination)
     ///
     /// After calling this, the background thread will exit on its next iteration.
+    /// Uses Release ordering to ensure any writes before shutdown() are visible
+    /// to the background thread when it observes the shutdown flag.
     pub fn shutdown(&self) {
-        self.shutdown.store(true, Ordering::Relaxed);
+        self.shutdown.store(true, Ordering::Release);
     }
 
     /// Check if shutdown has been signaled
     pub fn is_shutdown(&self) -> bool {
-        self.shutdown.load(Ordering::Relaxed)
+        self.shutdown.load(Ordering::Acquire)
     }
 }
 

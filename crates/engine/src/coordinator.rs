@@ -19,16 +19,25 @@ use std::sync::Arc;
 ///
 /// Manages transaction lifecycle, ID allocation, version tracking, and metrics.
 /// Per spec Section 6.1: Single monotonic counter for the entire database.
+///
+/// # Memory Ordering
+///
+/// The metric counters (active_count, total_started, total_committed, total_aborted)
+/// use Relaxed ordering intentionally because:
+/// 1. They are purely observational metrics for monitoring/debugging
+/// 2. They do not synchronize any other memory operations
+/// 3. Approximate counts are acceptable for metrics purposes
+/// 4. The atomic operations (fetch_add/fetch_sub) guarantee no torn reads/writes
 pub struct TransactionCoordinator {
     /// Transaction manager for ID/version allocation
     manager: TransactionManager,
-    /// Active transaction count (for metrics)
+    /// Active transaction count (for metrics) - uses Relaxed ordering
     active_count: AtomicU64,
-    /// Total transactions started
+    /// Total transactions started - uses Relaxed ordering
     total_started: AtomicU64,
-    /// Total transactions committed
+    /// Total transactions committed - uses Relaxed ordering
     total_committed: AtomicU64,
-    /// Total transactions aborted
+    /// Total transactions aborted - uses Relaxed ordering
     total_aborted: AtomicU64,
 }
 
@@ -157,6 +166,36 @@ impl TransactionCoordinator {
                 0.0
             },
         }
+    }
+
+    /// Get current active transaction count
+    pub fn active_count(&self) -> u64 {
+        self.active_count.load(Ordering::SeqCst)
+    }
+
+    /// Wait for all active transactions to complete
+    ///
+    /// Spins with short sleeps until active_count reaches 0.
+    /// Used during shutdown to ensure all in-flight transactions
+    /// complete before flushing the WAL.
+    ///
+    /// # Arguments
+    /// * `timeout` - Maximum time to wait
+    ///
+    /// # Returns
+    /// * `true` if all transactions completed within timeout
+    /// * `false` if timeout expired with transactions still active
+    pub fn wait_for_idle(&self, timeout: std::time::Duration) -> bool {
+        let start = std::time::Instant::now();
+        let sleep_duration = std::time::Duration::from_millis(1);
+
+        while self.active_count.load(Ordering::SeqCst) > 0 {
+            if start.elapsed() > timeout {
+                return false;
+            }
+            std::thread::sleep(sleep_duration);
+        }
+        true
     }
 }
 
