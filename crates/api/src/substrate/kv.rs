@@ -232,6 +232,67 @@ pub trait KVStore {
         expected_value: Option<Value>,
         new_value: Value,
     ) -> StrataResult<bool>;
+
+    /// List keys with optional prefix filter
+    ///
+    /// Returns keys matching the prefix, up to the limit.
+    ///
+    /// ## Arguments
+    ///
+    /// - `run`: The run to query
+    /// - `prefix`: Key prefix filter (empty string for all keys)
+    /// - `limit`: Maximum keys to return (None for all)
+    ///
+    /// ## Returns
+    ///
+    /// Vector of key strings in lexicographic order.
+    ///
+    /// ## Errors
+    ///
+    /// - `InvalidKey`: Prefix is invalid (if non-empty)
+    /// - `NotFound`: Run does not exist
+    fn kv_keys(
+        &self,
+        run: &ApiRunId,
+        prefix: &str,
+        limit: Option<usize>,
+    ) -> StrataResult<Vec<String>>;
+
+    /// Scan keys with cursor-based pagination
+    ///
+    /// Provides efficient iteration through large key sets.
+    ///
+    /// ## Arguments
+    ///
+    /// - `run`: The run to scan
+    /// - `prefix`: Key prefix filter (empty string for all keys)
+    /// - `limit`: Maximum entries per page
+    /// - `cursor`: Cursor from previous scan (None for first page)
+    ///
+    /// ## Returns
+    ///
+    /// `KVScanResult` with entries and cursor for next page.
+    ///
+    /// ## Errors
+    ///
+    /// - `InvalidKey`: Prefix is invalid (if non-empty)
+    /// - `NotFound`: Run does not exist
+    fn kv_scan(
+        &self,
+        run: &ApiRunId,
+        prefix: &str,
+        limit: usize,
+        cursor: Option<&str>,
+    ) -> StrataResult<KVScanResult>;
+}
+
+/// Result of a scan operation with cursor-based pagination
+#[derive(Debug, Clone)]
+pub struct KVScanResult {
+    /// Key-value pairs in this page
+    pub entries: Vec<(String, Versioned<Value>)>,
+    /// Cursor for next page (None if no more results)
+    pub cursor: Option<String>,
 }
 
 /// Batch operations for KVStore
@@ -323,17 +384,23 @@ impl KVStore for SubstrateImpl {
     fn kv_get_at(&self, run: &ApiRunId, key: &str, version: Version) -> StrataResult<Versioned<Value>> {
         validate_key(key)?;
         let run_id = run.to_run_id();
-        // History/point-in-time reads not yet fully implemented in primitives
-        // Try to get current value and check if version matches
-        let current = self.kv().get(&run_id, key).map_err(convert_error)?;
-        match current {
-            Some(v) if v.version == version => Ok(v),
-            Some(_) => Err(strata_core::StrataError::history_trimmed(
+
+        // Extract version number (KV uses Txn versions)
+        let version_num = match version {
+            Version::Txn(v) => v,
+            _ => return Err(strata_core::StrataError::invalid_input(
+                "KV operations use Txn versions",
+            )),
+        };
+
+        // Use primitive's get_at method
+        match self.kv().get_at(&run_id, key, version_num).map_err(convert_error)? {
+            Some(v) => Ok(v),
+            None => Err(strata_core::StrataError::history_trimmed(
                 strata_core::EntityRef::kv(run_id, key),
                 version,
-                Version::Txn(0),
+                Version::Txn(0), // Earliest version placeholder
             )),
-            None => Err(strata_core::StrataError::not_found(strata_core::EntityRef::kv(run_id, key))),
         }
     }
 
@@ -351,21 +418,41 @@ impl KVStore for SubstrateImpl {
 
     fn kv_history(
         &self,
-        _run: &ApiRunId,
+        run: &ApiRunId,
         key: &str,
-        _limit: Option<u64>,
-        _before: Option<Version>,
+        limit: Option<u64>,
+        before: Option<Version>,
     ) -> StrataResult<Vec<Versioned<Value>>> {
         validate_key(key)?;
-        // History is not yet implemented in primitives
-        Ok(vec![])
+        let run_id = run.to_run_id();
+
+        // Extract version number from before (KV uses Txn versions)
+        let before_version = match before {
+            Some(Version::Txn(v)) => Some(v),
+            Some(_) => return Err(strata_core::StrataError::invalid_input(
+                "KV operations use Txn versions",
+            )),
+            None => None,
+        };
+
+        // Use primitive's history method
+        self.kv()
+            .history(&run_id, key, limit.map(|l| l as usize), before_version)
+            .map_err(convert_error)
     }
 
     fn kv_incr(&self, run: &ApiRunId, key: &str, delta: i64) -> StrataResult<i64> {
         validate_key(key)?;
         let run_id = run.to_run_id();
-        // Implement atomic increment using transaction
-        self.db().transaction(run_id, |txn| {
+
+        // Use transaction_with_retry for automatic conflict handling
+        // High retry count for high-contention scenarios (e.g., 10 threads x 100 increments)
+        let retry_config = strata_engine::RetryConfig::default()
+            .with_max_retries(50)
+            .with_base_delay_ms(1)
+            .with_max_delay_ms(10);
+
+        self.db().transaction_with_retry(run_id, retry_config, |txn| {
             use strata_primitives::extensions::KVStoreExt;
 
             let current = txn.kv_get(key)?;
@@ -376,12 +463,14 @@ impl KVStore for SubstrateImpl {
                 )),
                 None => 0,
             };
+
             // Use checked_add to prevent overflow
             let new_value = current_value.checked_add(delta).ok_or_else(|| {
                 strata_core::error::Error::InvalidOperation(
                     "Integer overflow in increment operation".to_string(),
                 )
             })?;
+
             txn.kv_put(key, Value::Int(new_value))?;
             Ok(new_value)
         }).map_err(convert_error)
@@ -426,28 +515,77 @@ impl KVStore for SubstrateImpl {
     ) -> StrataResult<bool> {
         validate_key(key)?;
         let run_id = run.to_run_id();
-        self.db().transaction(run_id, |txn| {
+
+        let result = self.db().transaction(run_id, |txn| {
             use strata_primitives::extensions::KVStoreExt;
 
             let current = txn.kv_get(key)?;
 
-            match (expected_value, current) {
+            match (&expected_value, current) {
                 (None, None) => {
-                    txn.kv_put(key, new_value)?;
+                    txn.kv_put(key, new_value.clone())?;
                     Ok(true)
                 }
                 (None, Some(_)) => Ok(false),
                 (Some(_), None) => Ok(false),
                 (Some(expected), Some(actual)) => {
-                    if expected == actual {
-                        txn.kv_put(key, new_value)?;
+                    if *expected == actual {
+                        txn.kv_put(key, new_value.clone())?;
                         Ok(true)
                     } else {
                         Ok(false)
                     }
                 }
             }
-        }).map_err(convert_error)
+        });
+
+        match result {
+            Ok(v) => Ok(v),
+            Err(ref e) if e.is_conflict() => {
+                // Concurrent modification - CAS semantically failed
+                Ok(false)
+            }
+            Err(e) => Err(convert_error(e)),
+        }
+    }
+
+    fn kv_keys(
+        &self,
+        run: &ApiRunId,
+        prefix: &str,
+        limit: Option<usize>,
+    ) -> StrataResult<Vec<String>> {
+        // Empty prefix is valid (list all keys)
+        if !prefix.is_empty() {
+            validate_key(prefix)?;
+        }
+        let run_id = run.to_run_id();
+        self.kv()
+            .keys(&run_id, Some(prefix), limit)
+            .map_err(convert_error)
+    }
+
+    fn kv_scan(
+        &self,
+        run: &ApiRunId,
+        prefix: &str,
+        limit: usize,
+        cursor: Option<&str>,
+    ) -> StrataResult<KVScanResult> {
+        // Empty prefix is valid (scan all keys)
+        if !prefix.is_empty() {
+            validate_key(prefix)?;
+        }
+        let run_id = run.to_run_id();
+
+        let result = self.kv()
+            .scan(&run_id, prefix, limit, cursor)
+            .map_err(convert_error)?;
+
+        Ok(KVScanResult {
+            entries: result.entries,
+            cursor: result.cursor,
+        })
     }
 }
 
