@@ -74,6 +74,35 @@ pub struct EdgeCaseData {
     pub by_category: HashMap<String, Vec<EdgeCaseEntry>>,
 }
 
+/// A single EventLog test entry
+#[derive(Debug, Clone)]
+pub struct EventLogTestEntry {
+    pub run_index: usize,
+    pub stream: String,
+    pub event_index: usize,
+    pub payload: Value,
+}
+
+/// Header for EventLog test data
+#[derive(Debug, Deserialize)]
+pub struct EventLogHeader {
+    pub description: String,
+    #[serde(default)]
+    pub total_runs: usize,
+    #[serde(default)]
+    pub streams_per_run: usize,
+    #[serde(default)]
+    pub events_per_stream: usize,
+}
+
+/// Loaded EventLog test data
+pub struct EventLogTestData {
+    pub header: EventLogHeader,
+    pub entries: Vec<EventLogTestEntry>,
+    pub entries_by_run: HashMap<usize, Vec<EventLogTestEntry>>,
+    pub entries_by_stream: HashMap<String, Vec<EventLogTestEntry>>,
+}
+
 // =============================================================================
 // LOADING FUNCTIONS
 // =============================================================================
@@ -134,6 +163,54 @@ pub fn load_kv_test_data() -> TestData {
     }
 }
 
+/// Load EventLog test data from JSONL
+pub fn load_eventlog_test_data() -> EventLogTestData {
+    let path = testdata_dir().join("eventlog_test_data.jsonl");
+    let file = File::open(&path).expect(&format!("Failed to open {:?}", path));
+    let reader = BufReader::new(file);
+
+    let mut header: Option<EventLogHeader> = None;
+    let mut entries = Vec::new();
+    let mut entries_by_run: HashMap<usize, Vec<EventLogTestEntry>> = HashMap::new();
+    let mut entries_by_stream: HashMap<String, Vec<EventLogTestEntry>> = HashMap::new();
+
+    for (line_num, line) in reader.lines().enumerate() {
+        let line = line.expect(&format!("Failed to read line {}", line_num));
+        let json: JsonValue = serde_json::from_str(&line)
+            .expect(&format!("Failed to parse line {}: {}", line_num, line));
+
+        // First line is header
+        if line_num == 0 {
+            if json.get("type").and_then(|v| v.as_str()) == Some("header") {
+                header = Some(serde_json::from_value(json).expect("Failed to parse header"));
+                continue;
+            }
+        }
+
+        // Parse entry
+        let entry = parse_eventlog_entry(&json);
+
+        entries_by_run
+            .entry(entry.run_index)
+            .or_default()
+            .push(entry.clone());
+
+        entries_by_stream
+            .entry(entry.stream.clone())
+            .or_default()
+            .push(entry.clone());
+
+        entries.push(entry);
+    }
+
+    EventLogTestData {
+        header: header.expect("No header found in EventLog test data"),
+        entries,
+        entries_by_run,
+        entries_by_stream,
+    }
+}
+
 /// Load edge case test data from JSONL
 pub fn load_edge_case_data() -> EdgeCaseData {
     let path = testdata_dir().join("kv_edge_cases.jsonl");
@@ -170,6 +247,20 @@ pub fn load_edge_case_data() -> EdgeCaseData {
 // =============================================================================
 // PARSING HELPERS
 // =============================================================================
+
+fn parse_eventlog_entry(json: &JsonValue) -> EventLogTestEntry {
+    let run_index = json["run_index"].as_u64().unwrap_or(0) as usize;
+    let stream = json["stream"].as_str().unwrap_or("default").to_string();
+    let event_index = json["event_index"].as_u64().unwrap_or(0) as usize;
+    let payload = json_to_value(&json["payload"]);
+
+    EventLogTestEntry {
+        run_index,
+        stream,
+        event_index,
+        payload,
+    }
+}
 
 fn parse_kv_entry(json: &JsonValue) -> KvTestEntry {
     let run_index = json["run_index"].as_u64().unwrap_or(0) as usize;
@@ -323,6 +414,31 @@ impl TestData {
     }
 }
 
+impl EventLogTestData {
+    /// Get entries for a specific run
+    pub fn get_run(&self, run_index: usize) -> &[EventLogTestEntry] {
+        self.entries_by_run.get(&run_index).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
+    /// Get entries for a specific stream
+    pub fn get_stream(&self, stream: &str) -> &[EventLogTestEntry] {
+        self.entries_by_stream.get(stream).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
+    /// Get entries for a specific run and stream
+    pub fn get_run_stream(&self, run_index: usize, stream: &str) -> Vec<&EventLogTestEntry> {
+        self.entries
+            .iter()
+            .filter(|e| e.run_index == run_index && e.stream == stream)
+            .collect()
+    }
+
+    /// Get first N entries
+    pub fn take(&self, n: usize) -> &[EventLogTestEntry] {
+        &self.entries[..n.min(self.entries.len())]
+    }
+}
+
 impl EdgeCaseData {
     /// Get entries for a specific category
     pub fn get_category(&self, category: &str) -> &[EdgeCaseEntry] {
@@ -352,5 +468,15 @@ mod tests {
         let data = load_edge_case_data();
         assert!(data.entries.len() > 0, "Should load edge cases");
         assert!(data.by_category.contains_key("key_validation"));
+    }
+
+    #[test]
+    fn test_load_eventlog_test_data() {
+        let data = load_eventlog_test_data();
+        assert!(data.entries.len() > 1900, "Should load ~2000 EventLog entries");
+        assert_eq!(data.header.total_runs, 20);
+        assert!(data.entries_by_stream.contains_key("events"));
+        assert!(data.entries_by_stream.contains_key("logs"));
+        assert!(data.entries_by_stream.contains_key("metrics"));
     }
 }

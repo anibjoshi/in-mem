@@ -3,18 +3,10 @@
 //! This test suite provides comprehensive coverage of the Substrate API layer,
 //! testing correctness, durability, concurrency, and transaction semantics.
 //!
-//! ## Test Modules
+//! ## Primitives Covered
 //!
-//! - `kv_basic_ops`: Basic KV operations (put, get, delete, exists)
-//! - `kv_value_types`: All 8 value types with edge cases
-//! - `kv_batch_ops`: Batch operations (mget, mput, mdelete)
-//! - `kv_atomic_ops`: Atomic operations (incr, cas_value, cas_version)
-//! - `kv_durability`: Durability modes and crash recovery
-//! - `kv_concurrency`: Multi-threaded isolation and safety
-//! - `kv_transactions`: Transaction semantics and conflict detection
-//! - `kv_scan_ops`: Key enumeration and scanning (NOT YET IMPLEMENTED)
-//! - `kv_edge_cases`: Key validation, value limits, edge cases
-//! - `kv_recovery_invariants`: Recovery guarantees (R1-R6)
+//! - `kv`: KVStore - key-value storage with versioning
+//! - `eventlog`: EventLog - append-only event streams
 //!
 //! ## Running Tests
 //!
@@ -22,8 +14,14 @@
 //! # Run all substrate API comprehensive tests
 //! cargo test --test substrate_api_comprehensive
 //!
+//! # Run KV tests only
+//! cargo test --test substrate_api_comprehensive kv::
+//!
+//! # Run EventLog tests only
+//! cargo test --test substrate_api_comprehensive eventlog::
+//!
 //! # Run specific module
-//! cargo test --test substrate_api_comprehensive kv_durability
+//! cargo test --test substrate_api_comprehensive kv::durability
 //!
 //! # Run with output
 //! cargo test --test substrate_api_comprehensive -- --nocapture
@@ -33,7 +31,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use strata_api::substrate::{ApiRunId, KVStore, KVStoreBatch, SubstrateImpl};
+use strata_api::substrate::{ApiRunId, EventLog, KVStore, KVStoreBatch, SubstrateImpl};
 use strata_core::{Value, Version};
 use strata_engine::Database;
 use tempfile::TempDir;
@@ -42,6 +40,7 @@ use tempfile::TempDir;
 pub mod test_data;
 
 // Test modules by primitive
+pub mod eventlog;
 pub mod kv;
 
 // =============================================================================
