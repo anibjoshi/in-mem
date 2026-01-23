@@ -7,12 +7,13 @@
 
 | Category | Count | Priority |
 |----------|-------|----------|
-| Critical Missing Features | 2 | P0 |
+| Hidden Primitive Features | 4 | P0 |
 | Stubbed/Unimplemented | 1 | P0 |
-| Missing Table Stakes APIs | 3 | P0 |
+| Missing Table Stakes APIs | 2 | P0 |
 | Missing Important APIs | 2 | P1 |
 | API Design Issues | 2 | P1 |
-| **Total Issues** | **10** | |
+| World-Class Coordination Features | 9 | P0-P2 |
+| **Total Issues** | **19** | |
 
 ---
 
@@ -440,9 +441,359 @@ Transition closures MUST be pure functions (no I/O, no side effects) because the
 
 ---
 
-## Critical Finding
+## Part 7: World-Class Coordination Features (Not Yet Designed)
 
-**The most important feature of StateCell (transition closures) is completely hidden at the Substrate level.**
+These features don't exist anywhere in the codebase but are essential for production-grade distributed coordination.
+
+---
+
+### Gap 9: Fencing Tokens - Distributed Lock Correctness
+
+**Priority:** P0 for any lock use case
+
+**The Problem:**
+Distributed locks without fencing tokens are fundamentally broken. Consider:
+1. Client A acquires lock, gets stuck in GC pause
+2. Lock expires (TTL), Client B acquires lock
+3. Client A wakes up, thinks it still has lock
+4. Both clients write to shared resource → DATA CORRUPTION
+
+**Solution:** Fencing tokens - monotonically increasing numbers returned on lock acquisition:
+```rust
+struct LockGrant {
+    holder_id: String,
+    fence_token: u64,      // Monotonically increasing
+    acquired_at: i64,
+    expires_at: i64,
+}
+
+fn state_acquire_lock(&self, run: &ApiRunId, cell: &str, holder_id: &str, ttl_ms: u64)
+    -> StrataResult<Option<LockGrant>>;  // None if already held
+
+fn state_release_lock(&self, run: &ApiRunId, cell: &str, holder_id: &str)
+    -> StrataResult<bool>;
+
+fn state_refresh_lock(&self, run: &ApiRunId, cell: &str, holder_id: &str, ttl_ms: u64)
+    -> StrataResult<Option<LockGrant>>;
+```
+
+**Usage Pattern:**
+```rust
+let grant = substrate.state_acquire_lock(&run, "resource-lock", "client-1", 30000)?;
+// Pass grant.fence_token to downstream storage systems
+// Storage rejects writes with old fence tokens
+```
+
+**Industry Standard:**
+- Google Chubby: Sequence numbers
+- ZooKeeper: zxid on ephemeral nodes
+- Martin Kleppmann's "Designing Data-Intensive Applications" Ch. 8
+
+**Without This:** Locks are advisory only - unsafe for any real coordination
+
+---
+
+### Gap 10: Multi-Cell Transactions - Atomic Cross-Cell Operations
+
+**Priority:** P0 for complex coordination
+
+**The Problem:**
+Cannot atomically check/update multiple cells. Example: two-phase commit coordinator:
+```rust
+// UNSAFE: Not atomic - can fail between operations
+let vote1 = substrate.state_get(&run, "participant1/vote")?;
+let vote2 = substrate.state_get(&run, "participant2/vote")?;
+if all_yes(&[vote1, vote2]) {
+    substrate.state_set(&run, "decision", Value::String("COMMIT"))?;
+    // What if we crash here before updating participants?
+}
+```
+
+**Proposed API:**
+```rust
+struct CellOp {
+    cell: String,
+    op: CellOperation,
+}
+
+enum CellOperation {
+    Get,
+    Set(Value),
+    Cas { expected: u64, value: Value },
+    Delete,
+    DeleteIf(u64),  // Delete if version matches
+}
+
+struct TxnResult {
+    success: bool,
+    results: Vec<CellOpResult>,
+}
+
+fn state_transaction(&self, run: &ApiRunId, ops: Vec<CellOp>)
+    -> StrataResult<TxnResult>;
+```
+
+**etcd-style conditional transactions:**
+```rust
+fn state_txn(&self, run: &ApiRunId,
+    conditions: Vec<CellCondition>,  // If all true...
+    success_ops: Vec<CellOp>,        // ...do these
+    failure_ops: Vec<CellOp>,        // ...else do these
+) -> StrataResult<TxnResult>;
+```
+
+**Industry Standard:**
+- etcd: Txn API with if/then/else
+- ZooKeeper: multi() operation
+- DynamoDB: TransactWriteItems
+
+---
+
+### Gap 11: Atomic Increment - Built-in Counter Operations
+
+**Priority:** P1
+
+**The Problem:**
+Counters are extremely common but require full read-modify-write cycle:
+```rust
+// Current: 3 operations, retry loop needed
+let current = substrate.state_get(&run, "counter")?;
+let new_val = current.map(|v| v.value.as_i64().unwrap_or(0) + 1).unwrap_or(1);
+substrate.state_cas(&run, "counter", current_version, Value::Int(new_val))?;
+```
+
+**Proposed API:**
+```rust
+fn state_incr(&self, run: &ApiRunId, cell: &str, delta: i64)
+    -> StrataResult<i64>;  // Returns new value
+
+fn state_incr_bounded(&self, run: &ApiRunId, cell: &str, delta: i64, min: i64, max: i64)
+    -> StrataResult<Option<i64>>;  // None if would exceed bounds
+```
+
+**Industry Standard:**
+- Redis: INCR, INCRBY
+- DynamoDB: ADD operation
+- Every counter system ever
+
+---
+
+### Gap 12: Compare-and-Delete - Conditional Deletion
+
+**Priority:** P1
+
+**The Problem:**
+Cannot safely delete a cell only if it has expected version:
+```rust
+// Current: Race condition between get and delete
+let current = substrate.state_get(&run, "temp-cell")?;
+if current.version == expected_version {
+    substrate.state_delete(&run, "temp-cell")?;  // Might delete wrong version!
+}
+```
+
+**Proposed API:**
+```rust
+fn state_delete_if(&self, run: &ApiRunId, cell: &str, expected_version: u64)
+    -> StrataResult<bool>;  // true if deleted, false if version mismatch
+```
+
+---
+
+### Gap 13: Batch Operations - Multi-Cell Read/Write
+
+**Priority:** P1
+
+**The Problem:**
+Reading 10 cells requires 10 round trips.
+
+**Proposed API:**
+```rust
+fn state_mget(&self, run: &ApiRunId, cells: &[&str])
+    -> StrataResult<Vec<Option<Versioned<Value>>>>;
+
+fn state_mset(&self, run: &ApiRunId, entries: &[(&str, Value)])
+    -> StrataResult<Vec<Version>>;  // Not atomic, but efficient
+
+fn state_mexists(&self, run: &ApiRunId, cells: &[&str])
+    -> StrataResult<Vec<bool>>;
+```
+
+**Note:** `state_mset` is NOT atomic (use `state_transaction` for atomicity). This is for efficiency only.
+
+---
+
+### Gap 14: Prefix/Namespace Queries - List by Pattern
+
+**Priority:** P1
+
+**The Problem:**
+`state_list` returns ALL cells. Cannot list subset by prefix.
+
+**Proposed API:**
+```rust
+fn state_list_prefix(&self, run: &ApiRunId, prefix: &str)
+    -> StrataResult<Vec<String>>;
+
+fn state_list_prefix_with_values(&self, run: &ApiRunId, prefix: &str)
+    -> StrataResult<Vec<(String, Versioned<Value>)>>;
+```
+
+**Use Case:**
+```rust
+// List all locks for a user
+let user_locks = substrate.state_list_prefix(&run, "locks/user/123/")?;
+```
+
+---
+
+### Gap 15: Snapshot Read - Consistent Multi-Cell Read
+
+**Priority:** P1
+
+**The Problem:**
+Reading multiple related cells may see inconsistent state:
+```rust
+// These reads may see different points in time
+let config_a = substrate.state_get(&run, "config/a")?;
+// Another thread updates both config/a and config/b here
+let config_b = substrate.state_get(&run, "config/b")?;
+// config_a and config_b are from different moments!
+```
+
+**Proposed API:**
+```rust
+fn state_snapshot_read(&self, run: &ApiRunId, cells: &[&str])
+    -> StrataResult<Snapshot>;
+
+struct Snapshot {
+    version: u64,  // Point-in-time version
+    values: HashMap<String, Option<Versioned<Value>>>,
+}
+```
+
+---
+
+### Gap 16: Change Data Capture - Stream All Changes
+
+**Priority:** P2
+
+**The Problem:**
+`state_watch` watches ONE cell. Cannot stream ALL changes for:
+- Replication
+- Audit logging
+- Event sourcing
+- Cache invalidation
+
+**Proposed API:**
+```rust
+fn state_changes(&self, run: &ApiRunId,
+    from_version: Option<u64>,
+    prefix: Option<&str>,
+    limit: Option<u64>)
+    -> StrataResult<ChangeStream>;
+
+struct StateChange {
+    cell: String,
+    version: u64,
+    timestamp: i64,
+    old_value: Option<Value>,
+    new_value: Option<Value>,  // None = deleted
+}
+```
+
+---
+
+### Gap 17: Session/Ownership Semantics - Cell Lifecycle Management
+
+**Priority:** P2
+
+**The Problem:**
+No way to associate cells with client sessions for automatic cleanup.
+
+**Use Case:** Client creates ephemeral state, then crashes. State is orphaned forever.
+
+**Proposed API:**
+```rust
+fn state_create_session(&self, run: &ApiRunId, ttl_ms: u64)
+    -> StrataResult<SessionId>;
+
+fn state_refresh_session(&self, run: &ApiRunId, session: &SessionId)
+    -> StrataResult<()>;
+
+fn state_set_with_session(&self, run: &ApiRunId, cell: &str, value: Value,
+    session: &SessionId)
+    -> StrataResult<Version>;
+// Cell auto-deleted when session expires
+```
+
+**Industry Standard:**
+- ZooKeeper: Session-bound ephemeral nodes
+- Consul: Session-bound KV entries
+
+---
+
+## Updated Summary
+
+| Category | Count | Priority |
+|----------|-------|----------|
+| Critical Missing Features | 2 | P0 |
+| Stubbed/Unimplemented | 1 | P0 |
+| Missing Table Stakes APIs | 3 | P0 |
+| Missing Important APIs | 2 | P1 |
+| API Design Issues | 2 | P1 |
+| **World-Class Features (New)** | **9** | **P0-P2** |
+| **Total Issues** | **19** | |
+
+---
+
+## Updated Priority Matrix
+
+| ID | Issue | Priority | Effort | Category |
+|----|-------|----------|--------|----------|
+| Gap 1 | Transition closures | P0 | Low | Hidden Feature |
+| Gap 2 | List cells | P0 | Low | Hidden Feature |
+| Gap 3 | History stubbed | P0 | Medium | Unimplemented |
+| Gap 4 | Init (create if absent) | P0 | Low | Hidden Feature |
+| Gap 5 | Get or init | P0 | Low | Missing API |
+| Gap 6 | Cell info/metadata | P0 | Low | Missing API |
+| **Gap 9** | **Fencing tokens** | **P0** | **Medium** | **World-Class** |
+| **Gap 10** | **Multi-cell transactions** | **P0** | **High** | **World-Class** |
+| Gap 7 | Watch/subscribe | P1 | High | Missing API |
+| Gap 8 | TTL/lease | P1 | High | Missing API |
+| **Gap 11** | **Atomic increment** | **P1** | **Low** | **World-Class** |
+| **Gap 12** | **Compare-and-delete** | **P1** | **Low** | **World-Class** |
+| **Gap 13** | **Batch operations** | **P1** | **Medium** | **World-Class** |
+| **Gap 14** | **Prefix queries** | **P1** | **Medium** | **World-Class** |
+| **Gap 15** | **Snapshot read** | **P1** | **Medium** | **World-Class** |
+| Design 1 | CAS return type | P1 | Low | Design |
+| Design 2 | Timestamp exposure | P1 | Low | Design |
+| **Gap 16** | **Change data capture** | **P2** | **High** | **World-Class** |
+| **Gap 17** | **Session/ownership** | **P2** | **High** | **World-Class** |
+
+---
+
+## Updated Industry Comparison
+
+| Feature | Strata StateCell | ZooKeeper | etcd | Consul KV | Redis |
+|---------|------------------|-----------|------|-----------|-------|
+| Get/Set | ✅ | ✅ | ✅ | ✅ | ✅ |
+| CAS | ✅ | ✅ | ✅ | ✅ | ✅ (WATCH) |
+| Delete | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Transitions | ❌ (hidden) | ❌ | ❌ | ❌ | ✅ (Lua) |
+| List/Prefix | ❌ (hidden) | ✅ | ✅ | ✅ | ✅ (SCAN) |
+| Watch | ❌ | ✅ | ✅ | ✅ | ✅ (Pub/Sub) |
+| TTL/Lease | ❌ | ✅ | ✅ | ✅ | ✅ |
+| **Fencing** | ❌ | ✅ | ✅ | ❌ | ❌ |
+| **Multi-key Txn** | ❌ | ✅ | ✅ | ❌ | ✅ (MULTI) |
+| **Increment** | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Sessions** | ❌ | ✅ | ✅ | ✅ | ❌ |
+| **CDC/Stream** | ❌ | ❌ | ✅ | ❌ | ✅ (Streams) |
+| History | ❌ (stubbed) | ❌ | ✅ | ❌ | ❌ |
+
+---
+
+## Critical Finding
 
 The primitive layer has:
 - `transition()` - atomic read-modify-write with 200-retry OCC
