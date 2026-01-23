@@ -123,6 +123,46 @@ impl VersionChain {
     pub fn version_count(&self) -> usize {
         self.versions.len()
     }
+
+    /// Get version history (newest first)
+    ///
+    /// Returns versions in descending order (newest first).
+    /// Optionally limited and filtered by `before_version`.
+    ///
+    /// # Arguments
+    /// * `limit` - Maximum versions to return (None = all)
+    /// * `before_version` - Only return versions older than this (exclusive, for pagination)
+    ///
+    /// # Returns
+    /// Vector of StoredValue references, newest first
+    pub fn history(&self, limit: Option<usize>, before_version: Option<u64>) -> Vec<&StoredValue> {
+        // Debug assertion: all versions should be Txn variants
+        debug_assert!(
+            self.versions.iter().all(|sv| sv.version().is_txn()),
+            "Storage layer should only contain Txn versions"
+        );
+
+        let iter = self.versions.iter();
+
+        // Filter by before_version if specified (only versions < before)
+        let filtered: Vec<&StoredValue> = match before_version {
+            Some(before) => iter
+                .filter(|sv| sv.version().as_u64() < before)
+                .collect(),
+            None => iter.collect(),
+        };
+
+        // Apply limit if specified
+        match limit {
+            Some(n) => filtered.into_iter().take(n).collect(),
+            None => filtered,
+        }
+    }
+
+    /// Check if the version chain is empty
+    pub fn is_empty(&self) -> bool {
+        self.versions.is_empty()
+    }
 }
 
 /// Each RunId gets its own shard with an FxHashMap for O(1) lookups.
@@ -759,6 +799,34 @@ impl Storage for ShardedStore {
                 })
             })
         }))
+    }
+
+    /// Get version history for a key
+    ///
+    /// Returns historical versions newest first, filtered by limit and before_version.
+    fn get_history(
+        &self,
+        key: &Key,
+        limit: Option<usize>,
+        before_version: Option<u64>,
+    ) -> Result<Vec<VersionedValue>> {
+        let run_id = key.namespace.run_id;
+
+        // Get the shard and extract history within the same scope to avoid lifetime issues
+        let result = match self.shards.get(&run_id) {
+            Some(shard) => match shard.data.get(key) {
+                Some(chain) => chain
+                    .history(limit, before_version)
+                    .into_iter()
+                    .filter(|sv| !sv.is_expired())
+                    .map(|sv| sv.versioned().clone())
+                    .collect(),
+                None => Vec::new(),
+            },
+            None => Vec::new(),
+        };
+
+        Ok(result)
     }
 
     /// Put key-value pair with optional TTL
@@ -1987,5 +2055,177 @@ mod tests {
             2,
             "Snapshot should only see keys at version <= 2"
         );
+    }
+
+    // ========================================================================
+    // VersionChain::history() Tests
+    // ========================================================================
+
+    #[test]
+    fn test_version_chain_history_all_versions() {
+        use strata_core::value::Value;
+
+        let mut chain = VersionChain::new(create_stored_value(Value::Int(1), 1));
+        chain.push(create_stored_value(Value::Int(2), 2));
+        chain.push(create_stored_value(Value::Int(3), 3));
+
+        // Get all versions (newest first)
+        let history = chain.history(None, None);
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].version().as_u64(), 3);
+        assert_eq!(history[1].version().as_u64(), 2);
+        assert_eq!(history[2].version().as_u64(), 1);
+    }
+
+    #[test]
+    fn test_version_chain_history_with_limit() {
+        use strata_core::value::Value;
+
+        let mut chain = VersionChain::new(create_stored_value(Value::Int(1), 1));
+        chain.push(create_stored_value(Value::Int(2), 2));
+        chain.push(create_stored_value(Value::Int(3), 3));
+        chain.push(create_stored_value(Value::Int(4), 4));
+        chain.push(create_stored_value(Value::Int(5), 5));
+
+        // Get only 2 versions
+        let history = chain.history(Some(2), None);
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].version().as_u64(), 5); // Newest
+        assert_eq!(history[1].version().as_u64(), 4);
+    }
+
+    #[test]
+    fn test_version_chain_history_with_before() {
+        use strata_core::value::Value;
+
+        let mut chain = VersionChain::new(create_stored_value(Value::Int(1), 1));
+        chain.push(create_stored_value(Value::Int(2), 2));
+        chain.push(create_stored_value(Value::Int(3), 3));
+        chain.push(create_stored_value(Value::Int(4), 4));
+        chain.push(create_stored_value(Value::Int(5), 5));
+
+        // Get versions before version 4 (should get 1, 2, 3)
+        let history = chain.history(None, Some(4));
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].version().as_u64(), 3);
+        assert_eq!(history[1].version().as_u64(), 2);
+        assert_eq!(history[2].version().as_u64(), 1);
+    }
+
+    #[test]
+    fn test_version_chain_history_with_limit_and_before() {
+        use strata_core::value::Value;
+
+        let mut chain = VersionChain::new(create_stored_value(Value::Int(1), 1));
+        chain.push(create_stored_value(Value::Int(2), 2));
+        chain.push(create_stored_value(Value::Int(3), 3));
+        chain.push(create_stored_value(Value::Int(4), 4));
+        chain.push(create_stored_value(Value::Int(5), 5));
+
+        // Get 2 versions before version 5
+        let history = chain.history(Some(2), Some(5));
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].version().as_u64(), 4);
+        assert_eq!(history[1].version().as_u64(), 3);
+    }
+
+    #[test]
+    fn test_version_chain_history_before_first() {
+        use strata_core::value::Value;
+
+        let chain = VersionChain::new(create_stored_value(Value::Int(1), 5));
+
+        // Before version 5 returns empty (only version is 5)
+        let history = chain.history(None, Some(5));
+        assert!(history.is_empty());
+
+        // Before version 6 returns the one version
+        let history = chain.history(None, Some(6));
+        assert_eq!(history.len(), 1);
+    }
+
+    #[test]
+    fn test_version_chain_is_empty() {
+        use strata_core::value::Value;
+
+        let chain = VersionChain::new(create_stored_value(Value::Int(1), 1));
+        assert!(!chain.is_empty());
+        assert_eq!(chain.version_count(), 1);
+    }
+
+    // ========================================================================
+    // Storage::get_history() Tests
+    // ========================================================================
+
+    #[test]
+    fn test_storage_get_history() {
+        use strata_core::traits::Storage;
+        use strata_core::types::Namespace;
+        use strata_core::value::Value;
+
+        let store = ShardedStore::new();
+        let run_id = RunId::new();
+        let ns = Namespace::for_run(run_id);
+        let key = Key::new_kv(ns.clone(), "test-key");
+
+        // Put multiple versions of the same key
+        Storage::put_with_version(&store, key.clone(), Value::Int(1), 1, None).unwrap();
+        Storage::put_with_version(&store, key.clone(), Value::Int(2), 2, None).unwrap();
+        Storage::put_with_version(&store, key.clone(), Value::Int(3), 3, None).unwrap();
+
+        // Get full history
+        let history = Storage::get_history(&store, &key, None, None).unwrap();
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].version.as_u64(), 3);
+        assert_eq!(history[1].version.as_u64(), 2);
+        assert_eq!(history[2].version.as_u64(), 1);
+    }
+
+    #[test]
+    fn test_storage_get_history_pagination() {
+        use strata_core::traits::Storage;
+        use strata_core::types::Namespace;
+        use strata_core::value::Value;
+
+        let store = ShardedStore::new();
+        let run_id = RunId::new();
+        let ns = Namespace::for_run(run_id);
+        let key = Key::new_kv(ns.clone(), "paginated-key");
+
+        // Put 5 versions
+        for i in 1..=5 {
+            Storage::put_with_version(&store, key.clone(), Value::Int(i), i as u64, None).unwrap();
+        }
+
+        // Page 1: Get first 2
+        let page1 = Storage::get_history(&store, &key, Some(2), None).unwrap();
+        assert_eq!(page1.len(), 2);
+        assert_eq!(page1[0].version.as_u64(), 5);
+        assert_eq!(page1[1].version.as_u64(), 4);
+
+        // Page 2: Get next 2 (before version 4)
+        let page2 = Storage::get_history(&store, &key, Some(2), Some(4)).unwrap();
+        assert_eq!(page2.len(), 2);
+        assert_eq!(page2[0].version.as_u64(), 3);
+        assert_eq!(page2[1].version.as_u64(), 2);
+
+        // Page 3: Get remaining
+        let page3 = Storage::get_history(&store, &key, Some(2), Some(2)).unwrap();
+        assert_eq!(page3.len(), 1);
+        assert_eq!(page3[0].version.as_u64(), 1);
+    }
+
+    #[test]
+    fn test_storage_get_history_nonexistent_key() {
+        use strata_core::traits::Storage;
+        use strata_core::types::Namespace;
+
+        let store = ShardedStore::new();
+        let run_id = RunId::new();
+        let ns = Namespace::for_run(run_id);
+        let key = Key::new_kv(ns.clone(), "nonexistent");
+
+        let history = Storage::get_history(&store, &key, None, None).unwrap();
+        assert!(history.is_empty());
     }
 }

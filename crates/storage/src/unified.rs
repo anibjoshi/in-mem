@@ -270,6 +270,33 @@ impl Storage for UnifiedStore {
         }
     }
 
+    fn get_history(
+        &self,
+        key: &Key,
+        limit: Option<usize>,
+        before_version: Option<u64>,
+    ) -> Result<Vec<VersionedValue>> {
+        // UnifiedStore only keeps one version per key (no MVCC)
+        // Return current version if it exists and matches constraints
+        let data = self.data.read();
+        match data.get(key) {
+            Some(sv) if !sv.is_expired() => {
+                // Check before_version constraint
+                if let Some(before) = before_version {
+                    if sv.version().as_u64() >= before {
+                        return Ok(Vec::new());
+                    }
+                }
+                // Check limit (if limit is 0, return empty)
+                if limit == Some(0) {
+                    return Ok(Vec::new());
+                }
+                Ok(vec![sv.versioned().clone()])
+            }
+            _ => Ok(Vec::new()),
+        }
+    }
+
     fn put(&self, key: Key, value: Value, ttl: Option<Duration>) -> Result<u64> {
         // Allocate version BEFORE acquiring write lock
         let version = self.next_version();
