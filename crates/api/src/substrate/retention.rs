@@ -123,24 +123,150 @@ pub trait RetentionSubstrateExt: RetentionSubstrate {
 // =============================================================================
 
 use super::impl_::SubstrateImpl;
+use strata_core::{Key, Namespace, RunId, Value};
+
+/// System namespace prefix for retention policies
+const RETENTION_KEY_PREFIX: &str = "_system/retention/";
+
+/// Create a system key for storing retention policy
+fn retention_key(run: &ApiRunId) -> String {
+    format!("{}{}", RETENTION_KEY_PREFIX, run.as_str())
+}
+
+/// System namespace for internal storage
+/// Uses a well-known "system" run ID (all zeros)
+fn system_namespace() -> Namespace {
+    Namespace::new(
+        "_system".to_string(),
+        "_system".to_string(),
+        "_system".to_string(),
+        RunId::from_bytes([0u8; 16]),
+    )
+}
+
+/// Create a storage Key for the retention policy
+fn storage_key(run: &ApiRunId) -> Key {
+    Key::new_kv(system_namespace(), retention_key(run))
+}
 
 impl RetentionSubstrate for SubstrateImpl {
-    fn retention_get(&self, _run: &ApiRunId) -> StrataResult<Option<RetentionVersion>> {
-        Ok(None)
+    fn retention_get(&self, run: &ApiRunId) -> StrataResult<Option<RetentionVersion>> {
+        let key = storage_key(run);
+        let system_run = RunId::from_bytes([0u8; 16]);
+
+        // Read from storage using a transaction
+        let result = self.db().transaction(system_run, |txn| {
+            txn.get(&key)
+        }).map_err(|e| strata_core::StrataError::internal(e.to_string()))?;
+
+        match result {
+            Some(value) => {
+                // Deserialize RetentionVersion from stored Value
+                let rv = deserialize_retention(&value)?;
+                Ok(Some(rv))
+            }
+            None => Ok(None),
+        }
     }
 
-    fn retention_set(&self, _run: &ApiRunId, _policy: RetentionPolicy) -> StrataResult<u64> {
-        Ok(0)
+    fn retention_set(&self, run: &ApiRunId, policy: RetentionPolicy) -> StrataResult<u64> {
+        let key = storage_key(run);
+        let system_run = RunId::from_bytes([0u8; 16]);
+
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_micros() as u64)
+            .unwrap_or(0);
+
+        let (_, version) = self.db().transaction_with_version(system_run, |txn| {
+            let rv = RetentionVersion {
+                policy: policy.clone(),
+                version: 0, // Will be updated with actual commit version
+                timestamp,
+            };
+            let value = serialize_retention(&rv)?;
+            txn.put(key.clone(), value)?;
+            Ok(())
+        }).map_err(|e| strata_core::StrataError::internal(e.to_string()))?;
+
+        Ok(version)
     }
 
-    fn retention_clear(&self, _run: &ApiRunId) -> StrataResult<bool> {
-        Ok(false)
+    fn retention_clear(&self, run: &ApiRunId) -> StrataResult<bool> {
+        let key = storage_key(run);
+        let system_run = RunId::from_bytes([0u8; 16]);
+
+        let existed = self.db().transaction(system_run, |txn| {
+            let existed = txn.get(&key)?.is_some();
+            if existed {
+                txn.delete(key.clone())?;
+            }
+            Ok(existed)
+        }).map_err(|e| strata_core::StrataError::internal(e.to_string()))?;
+
+        Ok(existed)
     }
+}
+
+/// Serialize RetentionVersion to Value
+fn serialize_retention(rv: &RetentionVersion) -> strata_core::Result<Value> {
+    // Serialize the policy to JSON string
+    let json = serde_json::to_string(&rv.policy)
+        .map_err(|e| strata_core::Error::InvalidState(format!("Serialization failed: {}", e)))?;
+
+    // Store as an object with policy JSON, version, and timestamp
+    let mut obj = std::collections::HashMap::new();
+    obj.insert("policy".to_string(), Value::String(json));
+    obj.insert("version".to_string(), Value::Int(rv.version as i64));
+    obj.insert("timestamp".to_string(), Value::Int(rv.timestamp as i64));
+
+    Ok(Value::Object(obj))
+}
+
+/// Deserialize RetentionVersion from Value
+fn deserialize_retention(value: &Value) -> StrataResult<RetentionVersion> {
+    let obj = match value {
+        Value::Object(o) => o,
+        _ => return Err(strata_core::StrataError::internal("Expected object for retention")),
+    };
+
+    let policy_json = match obj.get("policy") {
+        Some(Value::String(s)) => s,
+        _ => return Err(strata_core::StrataError::internal("Missing policy field")),
+    };
+
+    let policy: RetentionPolicy = serde_json::from_str(policy_json)
+        .map_err(|e| strata_core::StrataError::internal(format!("Invalid policy JSON: {}", e)))?;
+
+    let version = match obj.get("version") {
+        Some(Value::Int(n)) => *n as u64,
+        _ => 0,
+    };
+
+    let timestamp = match obj.get("timestamp") {
+        Some(Value::Int(n)) => *n as u64,
+        _ => 0,
+    };
+
+    Ok(RetentionVersion { policy, version, timestamp })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use strata_engine::Database;
+
+    fn create_test_substrate() -> SubstrateImpl {
+        let db = Arc::new(
+            Database::builder()
+                .in_memory()
+                .open_temp()
+                .expect("Failed to create test database")
+        );
+        SubstrateImpl::new(db)
+    }
 
     #[test]
     fn test_trait_is_object_safe() {
@@ -162,5 +288,159 @@ mod tests {
         let stats = RetentionStats::default();
         assert_eq!(stats.total_versions, 0);
         assert_eq!(stats.gc_eligible_versions, 0);
+    }
+
+    #[test]
+    fn test_retention_get_returns_none_by_default() {
+        let substrate = create_test_substrate();
+        let run = ApiRunId::default();
+
+        let result = substrate.retention_get(&run).unwrap();
+        assert!(result.is_none(), "Should return None when no policy is set");
+    }
+
+    #[test]
+    fn test_retention_set_and_get_keep_last() {
+        let substrate = create_test_substrate();
+        let run = ApiRunId::default();
+
+        // Set policy
+        let version = substrate.retention_set(&run, RetentionPolicy::KeepLast(100)).unwrap();
+        assert!(version > 0, "Should return a version number");
+
+        // Get policy
+        let result = substrate.retention_get(&run).unwrap();
+        assert!(result.is_some(), "Should return the policy");
+
+        let rv = result.unwrap();
+        assert!(matches!(rv.policy, RetentionPolicy::KeepLast(100)));
+        assert!(rv.timestamp > 0, "Should have a timestamp");
+    }
+
+    #[test]
+    fn test_retention_set_and_get_keep_for() {
+        let substrate = create_test_substrate();
+        let run = ApiRunId::default();
+
+        // Set policy
+        let duration = Duration::from_secs(7 * 24 * 3600); // 7 days
+        substrate.retention_set(&run, RetentionPolicy::KeepFor(duration)).unwrap();
+
+        // Get policy
+        let result = substrate.retention_get(&run).unwrap().unwrap();
+        match result.policy {
+            RetentionPolicy::KeepFor(d) => {
+                assert_eq!(d.as_secs(), 7 * 24 * 3600);
+            }
+            _ => panic!("Expected KeepFor policy"),
+        }
+    }
+
+    #[test]
+    fn test_retention_set_and_get_keep_all() {
+        let substrate = create_test_substrate();
+        let run = ApiRunId::default();
+
+        // Set explicit KeepAll
+        substrate.retention_set(&run, RetentionPolicy::KeepAll).unwrap();
+
+        // Get policy
+        let result = substrate.retention_get(&run).unwrap().unwrap();
+        assert!(matches!(result.policy, RetentionPolicy::KeepAll));
+    }
+
+    #[test]
+    fn test_retention_clear() {
+        let substrate = create_test_substrate();
+        let run = ApiRunId::default();
+
+        // Clear when nothing is set
+        let cleared = substrate.retention_clear(&run).unwrap();
+        assert!(!cleared, "Should return false when nothing to clear");
+
+        // Set then clear
+        substrate.retention_set(&run, RetentionPolicy::KeepLast(50)).unwrap();
+        let cleared = substrate.retention_clear(&run).unwrap();
+        assert!(cleared, "Should return true when clearing existing policy");
+
+        // Verify it's cleared
+        let result = substrate.retention_get(&run).unwrap();
+        assert!(result.is_none(), "Policy should be cleared");
+
+        // Clear again
+        let cleared = substrate.retention_clear(&run).unwrap();
+        assert!(!cleared, "Should return false when clearing non-existent policy");
+    }
+
+    #[test]
+    fn test_retention_per_run_isolation() {
+        let substrate = create_test_substrate();
+        let run1 = ApiRunId::default();
+        let run2 = ApiRunId::new();
+
+        // Set different policies for different runs
+        substrate.retention_set(&run1, RetentionPolicy::KeepLast(10)).unwrap();
+        substrate.retention_set(&run2, RetentionPolicy::KeepLast(20)).unwrap();
+
+        // Verify isolation
+        let result1 = substrate.retention_get(&run1).unwrap().unwrap();
+        let result2 = substrate.retention_get(&run2).unwrap().unwrap();
+
+        match result1.policy {
+            RetentionPolicy::KeepLast(n) => assert_eq!(n, 10),
+            _ => panic!("Expected KeepLast(10)"),
+        }
+
+        match result2.policy {
+            RetentionPolicy::KeepLast(n) => assert_eq!(n, 20),
+            _ => panic!("Expected KeepLast(20)"),
+        }
+    }
+
+    #[test]
+    fn test_retention_update_policy() {
+        let substrate = create_test_substrate();
+        let run = ApiRunId::default();
+
+        // Set initial policy
+        substrate.retention_set(&run, RetentionPolicy::KeepLast(10)).unwrap();
+
+        // Update policy
+        substrate.retention_set(&run, RetentionPolicy::KeepLast(100)).unwrap();
+
+        // Verify updated
+        let result = substrate.retention_get(&run).unwrap().unwrap();
+        match result.policy {
+            RetentionPolicy::KeepLast(n) => assert_eq!(n, 100),
+            _ => panic!("Expected KeepLast(100)"),
+        }
+    }
+
+    #[test]
+    fn test_serialization_roundtrip() {
+        let policies = vec![
+            RetentionPolicy::KeepAll,
+            RetentionPolicy::KeepLast(42),
+            RetentionPolicy::KeepFor(Duration::from_secs(3600)),
+            RetentionPolicy::Composite(vec![
+                RetentionPolicy::KeepLast(10),
+                RetentionPolicy::KeepFor(Duration::from_secs(86400)),
+            ]),
+        ];
+
+        for policy in policies {
+            let rv = RetentionVersion {
+                policy: policy.clone(),
+                version: 123,
+                timestamp: 456789,
+            };
+
+            let serialized = serialize_retention(&rv).unwrap();
+            let deserialized = deserialize_retention(&serialized).unwrap();
+
+            assert_eq!(deserialized.policy, policy);
+            assert_eq!(deserialized.version, 123);
+            assert_eq!(deserialized.timestamp, 456789);
+        }
     }
 }

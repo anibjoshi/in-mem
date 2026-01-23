@@ -359,8 +359,7 @@ impl StateCell for SubstrateImpl {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_trait_is_object_safe() {
-        fn _assert_object_safe(_: &dyn StateCell) {}
-    }
+    // Note: StateCell is NOT dyn-compatible due to generic methods
+    // state_transition<F> and state_transition_or_init<F>
+    // This is by design for type-safe closures.
 }
