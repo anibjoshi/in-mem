@@ -41,10 +41,10 @@ VectorStore serves **two distinct purposes**:
 | Phase 0 | Foundation (source refs, internal collections) | ✅ Complete |
 | Phase 1 | User API (count, list, budget search) | ✅ Complete |
 | Phase 2 | Batch Operations | ✅ Complete |
-| Phase 2.5 | WAL Recovery Fix | 🔲 Pending |
+| Phase 2.5 | WAL Recovery Fix | ✅ Complete |
 | Phase 3 | History & Advanced | 🔲 Pending |
 
-**Current Limitation:** Vector embeddings do not survive database restart (WAL recovery bug).
+**Durability:** Vector embeddings survive database restart via WAL recovery.
 
 ---
 
@@ -722,33 +722,31 @@ fn compute_similarity_edges(
 
 **Total: ~14 hours**
 
-### Phase 2.5: WAL Recovery Fix
+### Phase 2.5: WAL Recovery Fix ✅ COMPLETE
 
 **Goal**: Ensure vectors survive database restart
 
-**Problem**: WAL entries are written correctly but `replay_vector_entry()` doesn't
-load embeddings into the in-memory index. After restart, `vector_get()` fails with
-"Embedding missing from backend". This makes all durability promises hollow.
+**Root Cause**: The `substrate_api_comprehensive` tests were not calling
+`register_vector_recovery()` before opening the database. The recovery
+participant was never registered, so embeddings weren't restored.
 
-**Why Before Phase 3**: History and list/scan operations are pointless if base data
-doesn't survive restart. This is a prerequisite for Phase 3.
+**Fix**: Added `register_vector_recovery()` call to `create_persistent_db()`
+in test setup. The existing recovery code in `recovery.rs` was already correct.
 
-| Item | Effort | Files |
-|------|--------|-------|
-| Fix `replay_vector_entry` to load embeddings into backend | 2h | `crates/primitives/src/vector/store.rs` |
-| Ensure collection backend exists before vector replay | 1h | `crates/primitives/src/vector/store.rs` |
-| Handle replay ordering (collection create before vector upsert) | 1h | `crates/primitives/src/vector/store.rs` |
-| Un-ignore and verify 6 durability tests | 1h | `tests/substrate_api_comprehensive/vectorstore/durability.rs` |
+| Item | Effort | Status |
+|------|--------|--------|
+| Register vector recovery in test setup | 30m | ✅ |
+| Un-ignore and verify 6 durability tests | 30m | ✅ |
 
-**Total: ~5 hours**
+**Total: ~1 hour** (simpler than estimated - recovery code was already working)
 
-**Tests to Enable:**
-- `test_vector_persist_after_restart`
-- `test_vector_metadata_persist`
-- `test_vector_delete_persist`
-- `test_vector_run_isolation_persists`
-- `test_vector_update_persist`
-- `test_vector_search_after_restart`
+**Tests Enabled (all pass):**
+- `test_vector_persist_after_restart` ✅
+- `test_vector_metadata_persist` ✅
+- `test_vector_delete_persist` ✅
+- `test_vector_run_isolation_persists` ✅
+- `test_vector_update_persist` ✅
+- `test_vector_search_after_restart` ✅
 
 ### Phase 3: History & Advanced
 

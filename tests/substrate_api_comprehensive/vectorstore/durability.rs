@@ -5,20 +5,16 @@
 //! - Collection persistence
 //! - Metadata persistence
 //!
-//! Note: Some tests are ignored because VectorStore WAL recovery currently
-//! only restores collection metadata, not the actual vector embeddings.
-//! This is tracked as a known limitation in VECTORSTORE_DEFECTS.md.
+//! These tests verify that VectorStore data survives database restarts via
+//! WAL recovery. The recovery participant (register_vector_recovery) must be
+//! registered before opening the database.
 
 use crate::*;
 use strata_api::substrate::DistanceMetric;
 use tempfile::TempDir;
 
 /// Test vectors persist after restart
-///
-/// IGNORED: VectorStore WAL recovery does not yet reload embeddings into backend.
-/// Collection metadata is recovered, but vector data returns "Embedding missing from backend".
 #[test]
-#[ignore = "VectorStore WAL recovery does not reload embeddings into backend"]
 fn test_vector_persist_after_restart() {
     let temp_dir = TempDir::new().unwrap();
     let run = ApiRunId::default_run_id();
@@ -73,10 +69,7 @@ fn test_vector_collection_persist() {
 }
 
 /// Test metadata persists
-///
-/// IGNORED: VectorStore WAL recovery does not yet reload embeddings into backend.
 #[test]
-#[ignore = "VectorStore WAL recovery does not reload embeddings into backend"]
 fn test_vector_metadata_persist() {
     let temp_dir = TempDir::new().unwrap();
     let run = ApiRunId::default_run_id();
@@ -105,10 +98,7 @@ fn test_vector_metadata_persist() {
 }
 
 /// Test delete persists
-///
-/// IGNORED: VectorStore WAL recovery does not yet reload embeddings into backend.
 #[test]
-#[ignore = "VectorStore WAL recovery does not reload embeddings into backend"]
 fn test_vector_delete_persist() {
     let temp_dir = TempDir::new().unwrap();
     let run = ApiRunId::default_run_id();
@@ -184,10 +174,7 @@ fn test_vector_multiple_collections_persist() {
 }
 
 /// Test run isolation persists
-///
-/// IGNORED: VectorStore WAL recovery does not yet reload embeddings into backend.
 #[test]
-#[ignore = "VectorStore WAL recovery does not reload embeddings into backend"]
 fn test_vector_run_isolation_persists() {
     let temp_dir = TempDir::new().unwrap();
     let run1 = ApiRunId::default_run_id();
@@ -214,10 +201,7 @@ fn test_vector_run_isolation_persists() {
 }
 
 /// Test updates persist
-///
-/// IGNORED: VectorStore WAL recovery does not yet reload embeddings into backend.
 #[test]
-#[ignore = "VectorStore WAL recovery does not reload embeddings into backend"]
 fn test_vector_update_persist() {
     let temp_dir = TempDir::new().unwrap();
     let run = ApiRunId::default_run_id();
@@ -242,10 +226,7 @@ fn test_vector_update_persist() {
 }
 
 /// Test search works after restart
-///
-/// IGNORED: VectorStore WAL recovery does not yet reload embeddings into backend.
 #[test]
-#[ignore = "VectorStore WAL recovery does not reload embeddings into backend"]
 fn test_vector_search_after_restart() {
     let temp_dir = TempDir::new().unwrap();
     let run = ApiRunId::default_run_id();
