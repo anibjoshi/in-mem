@@ -11,6 +11,9 @@ pub use strata_core::primitives::{
     VectorConfig, VectorEntry, VectorId, VectorMatch,
 };
 
+// Re-export EntityRef for source reference linking
+pub use strata_core::EntityRef;
+
 // Re-export RunId for CollectionId usage
 pub use strata_core::types::RunId;
 
@@ -55,6 +58,14 @@ pub struct VectorRecord {
 
     /// Last update timestamp (microseconds since epoch)
     pub updated_at: u64,
+
+    /// Optional reference to source document (e.g., JSON doc, KV entry)
+    ///
+    /// Used by internal search infrastructure to link embeddings back to
+    /// their source documents for hydration during search result assembly.
+    /// Backwards compatible: old WAL entries without this field will deserialize as None.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_ref: Option<EntityRef>,
 }
 
 impl VectorRecord {
@@ -67,6 +78,27 @@ impl VectorRecord {
             version: 1,
             created_at: now,
             updated_at: now,
+            source_ref: None,
+        }
+    }
+
+    /// Create a new VectorRecord with a source reference
+    ///
+    /// Use this when the embedding is derived from another entity (e.g., a JSON document)
+    /// and you want to maintain a link back to the source for search result hydration.
+    pub fn new_with_source(
+        vector_id: VectorId,
+        metadata: Option<JsonValue>,
+        source_ref: EntityRef,
+    ) -> Self {
+        let now = now_micros();
+        VectorRecord {
+            vector_id: vector_id.as_u64(),
+            metadata,
+            version: 1,
+            created_at: now,
+            updated_at: now,
+            source_ref: Some(source_ref),
         }
     }
 
@@ -77,9 +109,22 @@ impl VectorRecord {
         self.updated_at = now_micros();
     }
 
+    /// Update metadata, source reference, and version
+    pub fn update_with_source(&mut self, metadata: Option<JsonValue>, source_ref: Option<EntityRef>) {
+        self.metadata = metadata;
+        self.source_ref = source_ref;
+        self.version += 1;
+        self.updated_at = now_micros();
+    }
+
     /// Get VectorId
     pub fn vector_id(&self) -> VectorId {
         VectorId::new(self.vector_id)
+    }
+
+    /// Get the source reference, if any
+    pub fn source_ref(&self) -> Option<&EntityRef> {
+        self.source_ref.as_ref()
     }
 
     /// Serialize to bytes (MessagePack)
@@ -92,6 +137,44 @@ impl VectorRecord {
     pub fn from_bytes(data: &[u8]) -> Result<Self, crate::vector::VectorError> {
         rmp_serde::from_slice(data)
             .map_err(|e| crate::vector::VectorError::Serialization(e.to_string()))
+    }
+}
+
+/// Search result with source reference
+///
+/// Extended version of VectorMatch that includes the source reference.
+/// Used by `search_with_sources()` to return results that can be hydrated
+/// by looking up the source document.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VectorMatchWithSource {
+    /// User-provided key
+    pub key: String,
+    /// Similarity score (higher = more similar)
+    pub score: f32,
+    /// Optional metadata
+    pub metadata: Option<JsonValue>,
+    /// Optional reference to source document
+    pub source_ref: Option<EntityRef>,
+    /// Version of the vector
+    pub version: u64,
+}
+
+impl VectorMatchWithSource {
+    /// Create a new VectorMatchWithSource
+    pub fn new(
+        key: String,
+        score: f32,
+        metadata: Option<JsonValue>,
+        source_ref: Option<EntityRef>,
+        version: u64,
+    ) -> Self {
+        VectorMatchWithSource {
+            key,
+            score,
+            metadata,
+            source_ref,
+            version,
+        }
     }
 }
 

@@ -24,6 +24,17 @@ pub struct VectorResult {
     pub metadata: Value,
 }
 
+/// Vector collection summary
+#[derive(Debug, Clone)]
+pub struct VectorCollectionSummary {
+    /// Collection name
+    pub name: String,
+    /// Vector dimension
+    pub dimension: usize,
+    /// Number of vectors in the collection
+    pub count: u64,
+}
+
 /// Search options
 #[derive(Debug, Clone, Default)]
 pub struct VectorSearchOptions {
@@ -96,6 +107,12 @@ pub trait VectorFacade {
     /// Returns `None` if key doesn't exist.
     fn vget(&self, collection: &str, key: &str) -> StrataResult<Option<(Vec<f32>, Value)>>;
 
+    /// Get a vector by key with version information
+    ///
+    /// Returns `None` if key doesn't exist.
+    /// Returns (vector, metadata, version) if key exists.
+    fn vgetv(&self, collection: &str, key: &str) -> StrataResult<Option<(Vec<f32>, Value, u64)>>;
+
     /// Delete a vector
     ///
     /// Returns `true` if the vector existed.
@@ -141,6 +158,16 @@ pub trait VectorFacade {
     ///
     /// Removes the collection and all its vectors.
     fn vcollection_drop(&self, collection: &str) -> StrataResult<bool>;
+
+    /// List all collections
+    ///
+    /// Returns a list of collection names with their dimension and count.
+    fn vcollection_list(&self) -> StrataResult<Vec<VectorCollectionSummary>>;
+
+    /// Get the count of vectors in a collection
+    ///
+    /// Returns 0 if the collection doesn't exist.
+    fn vcount(&self, collection: &str) -> StrataResult<u64>;
 }
 
 // =============================================================================
@@ -181,6 +208,18 @@ impl VectorFacade for FacadeImpl {
     fn vget(&self, collection: &str, key: &str) -> StrataResult<Option<(Vec<f32>, Value)>> {
         let result = self.substrate().vector_get(self.default_run(), collection, key)?;
         Ok(result.map(|v| v.value))
+    }
+
+    fn vgetv(&self, collection: &str, key: &str) -> StrataResult<Option<(Vec<f32>, Value, u64)>> {
+        let result = self.substrate().vector_get(self.default_run(), collection, key)?;
+        Ok(result.map(|v| {
+            let version = match v.version {
+                strata_core::Version::Txn(txn) => txn,
+                strata_core::Version::Counter(c) => c,
+                strata_core::Version::Sequence(s) => s,
+            };
+            (v.value.0, v.value.1, version)
+        }))
     }
 
     fn vdel(&self, collection: &str, key: &str) -> StrataResult<bool> {
@@ -237,11 +276,24 @@ impl VectorFacade for FacadeImpl {
 
     fn vcollection_info(&self, collection: &str) -> StrataResult<Option<(usize, u64)>> {
         let info = self.substrate().vector_collection_info(self.default_run(), collection)?;
-        Ok(info.map(|(dim, count, _metric)| (dim, count)))
+        Ok(info.map(|i| (i.dimension, i.count)))
     }
 
     fn vcollection_drop(&self, collection: &str) -> StrataResult<bool> {
         self.substrate().vector_drop_collection(self.default_run(), collection)
+    }
+
+    fn vcollection_list(&self) -> StrataResult<Vec<VectorCollectionSummary>> {
+        let collections = self.substrate().vector_list_collections(self.default_run())?;
+        Ok(collections.into_iter().map(|c| VectorCollectionSummary {
+            name: c.name,
+            dimension: c.dimension,
+            count: c.count,
+        }).collect())
+    }
+
+    fn vcount(&self, collection: &str) -> StrataResult<u64> {
+        self.substrate().vector_count(self.default_run(), collection)
     }
 }
 

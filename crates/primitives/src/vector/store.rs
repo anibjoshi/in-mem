@@ -348,6 +348,7 @@ impl VectorStore {
                 // WAL entry wasn't written (possible in some edge cases)
                 // NOTE: replay_upsert calls insert_with_id which updates the per-collection
                 // next_id counter to maintain VectorId monotonicity (Invariant T4)
+                // NOTE: Legacy WAL entries don't have source_ref, so we pass None
                 let _ = self.replay_upsert(
                     *run_id,
                     collection,
@@ -355,6 +356,7 @@ impl VectorStore {
                     VectorId::new(*vector_id),
                     embedding,
                     meta,
+                    None, // Legacy WAL entries don't have source_ref
                 );
                 stats.vectors_upserted += 1;
             }
@@ -716,6 +718,125 @@ impl VectorStore {
             embedding: embedding.to_vec(),
             metadata: metadata_bytes,
             version: 1, // TODO: Get proper version from coordinator
+            source_ref: None,
+        })?;
+
+        Ok(Version::counter(record_version))
+    }
+
+    /// Insert a vector with a source reference
+    ///
+    /// Same as `insert` but allows linking the embedding back to its source document.
+    /// Used by internal search infrastructure and users who want to track provenance.
+    ///
+    /// # Arguments
+    /// * `run_id` - Run this vector belongs to
+    /// * `collection` - Collection name
+    /// * `key` - User-provided key (unique within collection)
+    /// * `embedding` - Vector data
+    /// * `metadata` - Optional JSON metadata
+    /// * `source_ref` - Optional reference to source document (JSON, KV, Event, etc.)
+    ///
+    /// # Errors
+    /// - `CollectionNotFound` if collection doesn't exist
+    /// - `InvalidKey` if key is invalid
+    /// - `DimensionMismatch` if embedding dimension doesn't match config
+    pub fn insert_with_source(
+        &self,
+        run_id: RunId,
+        collection: &str,
+        key: &str,
+        embedding: &[f32],
+        metadata: Option<JsonValue>,
+        source_ref: Option<strata_core::EntityRef>,
+    ) -> VectorResult<Version> {
+        // Validate key
+        validate_vector_key(key)?;
+
+        // Ensure collection is loaded
+        self.ensure_collection_loaded(run_id, collection)?;
+
+        let collection_id = CollectionId::new(run_id, collection);
+
+        // Validate dimension
+        let config = self.get_collection_config_required(run_id, collection)?;
+        if embedding.len() != config.dimension {
+            return Err(VectorError::DimensionMismatch {
+                expected: config.dimension,
+                got: embedding.len(),
+            });
+        }
+
+        // Serialize metadata to bytes for WAL storage (before it's consumed)
+        let metadata_bytes = metadata
+            .as_ref()
+            .map(serde_json::to_vec)
+            .transpose()
+            .map_err(|e| VectorError::Serialization(e.to_string()))?;
+
+        // Check if vector already exists
+        let kv_key = Key::new_vector(Namespace::for_run(run_id), collection, key);
+        let existing = self.get_vector_record_by_key(&kv_key)?;
+        let is_update = existing.is_some();
+
+        let (vector_id, record) = if let Some(existing_record) = existing {
+            // Update existing: keep the same VectorId
+            let mut updated = existing_record;
+            updated.update_with_source(metadata, source_ref.clone());
+            (VectorId(updated.vector_id), updated)
+        } else {
+            // New vector: allocate VectorId from backend's per-collection counter
+            let state = self.state();
+            let mut backends = state.backends.write();
+            let backend = backends.get_mut(&collection_id).ok_or_else(|| {
+                VectorError::CollectionNotFound {
+                    name: collection.to_string(),
+                }
+            })?;
+
+            // Allocate new ID from backend's per-collection counter (deterministic)
+            let vector_id = backend.allocate_id();
+            let record = if let Some(ref src) = source_ref {
+                VectorRecord::new_with_source(vector_id, metadata, src.clone())
+            } else {
+                VectorRecord::new(vector_id, metadata)
+            };
+
+            // Insert into backend
+            backend.insert(vector_id, embedding)?;
+
+            drop(backends);
+            (vector_id, record)
+        };
+
+        // For updates, update the backend
+        if is_update {
+            let state = self.state();
+            let mut backends = state.backends.write();
+            if let Some(backend) = backends.get_mut(&collection_id) {
+                backend.insert(vector_id, embedding)?;
+            }
+        }
+
+        // Store record in KV
+        let record_version = record.version;
+        let record_bytes = record.to_bytes()?;
+        self.db
+            .transaction(run_id, |txn| {
+                txn.put(kv_key.clone(), Value::Bytes(record_bytes.clone()))
+            })
+            .map_err(|e| VectorError::Storage(e.to_string()))?;
+
+        // Write WAL entry for durability (M8 Epic 55)
+        self.write_wal_entry(WALEntry::VectorUpsert {
+            run_id,
+            collection: collection.to_string(),
+            key: key.to_string(),
+            vector_id: vector_id.as_u64(),
+            embedding: embedding.to_vec(),
+            metadata: metadata_bytes,
+            version: 1, // TODO: Get proper version from coordinator
+            source_ref,
         })?;
 
         Ok(Version::counter(record_version))
@@ -779,6 +900,7 @@ impl VectorStore {
             metadata: record.metadata,
             vector_id,
             version: record.version,
+            source_ref: record.source_ref,
         };
 
         Ok(Some(Versioned::with_timestamp(
@@ -991,6 +1113,130 @@ impl VectorStore {
         k: usize,
     ) -> VectorResult<Vec<VectorMatch>> {
         self.search(run_id, collection, query, k, None)
+    }
+
+    /// Search with source references
+    ///
+    /// Same as `search` but returns results with source references.
+    /// Used by internal search infrastructure to link results back to source documents.
+    ///
+    /// # Arguments
+    /// * `run_id` - Run to search in
+    /// * `collection` - Collection name
+    /// * `query` - Query vector
+    /// * `k` - Maximum results to return
+    /// * `filter` - Optional metadata filter
+    ///
+    /// # Returns
+    /// Vector of matches with source references, sorted by similarity (highest first)
+    pub fn search_with_sources(
+        &self,
+        run_id: RunId,
+        collection: &str,
+        query: &[f32],
+        k: usize,
+        filter: Option<MetadataFilter>,
+    ) -> VectorResult<Vec<crate::vector::VectorMatchWithSource>> {
+        // k=0 returns empty
+        if k == 0 {
+            return Ok(Vec::new());
+        }
+
+        // Ensure collection is loaded
+        self.ensure_collection_loaded(run_id, collection)?;
+
+        let collection_id = CollectionId::new(run_id, collection);
+
+        // Validate query dimension
+        let config = self.get_collection_config_required(run_id, collection)?;
+        if query.len() != config.dimension {
+            return Err(VectorError::DimensionMismatch {
+                expected: config.dimension,
+                got: query.len(),
+            });
+        }
+
+        // Search backend with adaptive over-fetch for filtering
+        let mut matches = Vec::with_capacity(k);
+
+        if filter.is_none() {
+            // No filter - simple case, fetch exactly k
+            let candidates = {
+                let state = self.state();
+                let backends = state.backends.read();
+                let backend =
+                    backends
+                        .get(&collection_id)
+                        .ok_or_else(|| VectorError::CollectionNotFound {
+                            name: collection.to_string(),
+                        })?;
+                backend.search(query, k)
+            };
+
+            for (vector_id, score) in candidates {
+                let (key, metadata, source_ref, version) = self.get_key_metadata_source(run_id, collection, vector_id)?;
+                matches.push(crate::vector::VectorMatchWithSource::new(key, score, metadata, source_ref, version));
+            }
+        } else {
+            // Filter active - use adaptive over-fetch
+            let multipliers = [3, 6, 12];
+            let collection_size = {
+                let state = self.state();
+                let backends = state.backends.read();
+                backends
+                    .get(&collection_id)
+                    .map(|b| b.len())
+                    .unwrap_or(0)
+            };
+
+            let filter_ref = filter.as_ref().unwrap();
+            for multiplier in multipliers {
+                let fetch_k = std::cmp::min(k * multiplier, collection_size);
+                if fetch_k == 0 {
+                    break;
+                }
+
+                let candidates = {
+                    let state = self.state();
+                    let backends = state.backends.read();
+                    let backend =
+                        backends
+                            .get(&collection_id)
+                            .ok_or_else(|| VectorError::CollectionNotFound {
+                                name: collection.to_string(),
+                            })?;
+                    backend.search(query, fetch_k)
+                };
+
+                matches.clear();
+                for (vector_id, score) in candidates {
+                    let (key, metadata, source_ref, version) = self.get_key_metadata_source(run_id, collection, vector_id)?;
+                    if filter_ref.matches(&metadata) {
+                        matches.push(crate::vector::VectorMatchWithSource::new(key, score, metadata, source_ref, version));
+                        if matches.len() >= k {
+                            break;
+                        }
+                    }
+                }
+
+                if matches.len() >= k || fetch_k >= collection_size {
+                    break;
+                }
+            }
+        }
+
+        // Apply facade-level tie-breaking (score desc, key asc)
+        matches.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.key.cmp(&b.key))
+        });
+
+        // Ensure we don't exceed k after sorting
+        matches.truncate(k);
+
+        Ok(matches)
     }
 
     /// Search returning M6-compatible SearchResponse
@@ -1237,6 +1483,61 @@ impl VectorStore {
         )))
     }
 
+    /// Get key, metadata, source_ref, and version for a VectorId (reverse lookup)
+    ///
+    /// Similar to `get_key_and_metadata` but also returns source_ref and version.
+    /// Used by `search_with_sources`.
+    ///
+    /// This is O(n) in M8. M9 can add a reverse index for O(1) lookup.
+    pub fn get_key_metadata_source(
+        &self,
+        run_id: RunId,
+        collection: &str,
+        target_id: VectorId,
+    ) -> VectorResult<(String, Option<JsonValue>, Option<strata_core::EntityRef>, u64)> {
+        use strata_core::traits::SnapshotView;
+
+        let namespace = Namespace::for_run(run_id);
+        let prefix = Key::vector_collection_prefix(namespace, collection);
+
+        let snapshot = self.db.storage().create_snapshot();
+        let entries = snapshot
+            .scan_prefix(&prefix)
+            .map_err(|e| VectorError::Storage(e.to_string()))?;
+
+        for (key, versioned) in entries {
+            let bytes = match &versioned.value {
+                Value::Bytes(b) => b,
+                _ => continue,
+            };
+
+            let record = match VectorRecord::from_bytes(bytes) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+
+            if record.vector_id == target_id.0 {
+                // Extract vector key from the full key
+                // Key format: collection/key
+                let user_key = String::from_utf8(key.user_key.clone())
+                    .map_err(|e| VectorError::Serialization(e.to_string()))?;
+
+                // Remove collection prefix
+                let vector_key = user_key
+                    .strip_prefix(&format!("{}/", collection))
+                    .unwrap_or(&user_key)
+                    .to_string();
+
+                return Ok((vector_key, record.metadata, record.source_ref, record.version));
+            }
+        }
+
+        Err(VectorError::Internal(format!(
+            "VectorId {:?} not found in KV",
+            target_id
+        )))
+    }
+
     /// Get the current vector count for a collection
     fn get_collection_count(
         &self,
@@ -1447,6 +1748,10 @@ impl VectorStore {
     /// It does NOT write to WAL.
     ///
     /// Uses insert_with_id to maintain VectorId monotonicity (Invariant T4).
+    ///
+    /// Note: `_key`, `_metadata`, and `_source_ref` parameters are not used here because
+    /// they are stored in the KV layer (via VectorRecord), which has its own WAL entries.
+    /// This method only replays the embedding into the VectorHeap backend.
     pub fn replay_upsert(
         &self,
         run_id: RunId,
@@ -1455,6 +1760,7 @@ impl VectorStore {
         vector_id: VectorId,
         embedding: &[f32],
         _metadata: Option<serde_json::Value>,
+        _source_ref: Option<strata_core::EntityRef>,
     ) -> VectorResult<()> {
         let collection_id = CollectionId::new(run_id, collection);
 
@@ -2348,7 +2654,7 @@ mod tests {
         // Replay upsert with specific VectorId
         let vector_id = VectorId::new(42);
         store
-            .replay_upsert(run_id, "test", "doc1", vector_id, &[1.0, 0.0, 0.0], None)
+            .replay_upsert(run_id, "test", "doc1", vector_id, &[1.0, 0.0, 0.0], None, None)
             .unwrap();
 
         // Verify vector exists in backend
@@ -2373,7 +2679,7 @@ mod tests {
         // Replay upsert with high VectorId
         let high_id = VectorId::new(1000);
         store
-            .replay_upsert(run_id, "test", "doc", high_id, &[1.0, 0.0, 0.0], None)
+            .replay_upsert(run_id, "test", "doc", high_id, &[1.0, 0.0, 0.0], None, None)
             .unwrap();
 
         // Verify the vector exists
@@ -2397,7 +2703,7 @@ mod tests {
         // Replay upsert
         let vector_id = VectorId::new(1);
         store
-            .replay_upsert(run_id, "test", "doc", vector_id, &[1.0, 0.0, 0.0], None)
+            .replay_upsert(run_id, "test", "doc", vector_id, &[1.0, 0.0, 0.0], None, None)
             .unwrap();
 
         let collection_id = CollectionId::new(run_id, "test");
@@ -2449,6 +2755,7 @@ mod tests {
                 VectorId::new(1),
                 &[1.0, 0.0, 0.0],
                 None,
+                None,
             )
             .unwrap();
 
@@ -2459,6 +2766,7 @@ mod tests {
                 "v2",
                 VectorId::new(2),
                 &[0.0, 1.0, 0.0],
+                None,
                 None,
             )
             .unwrap();
@@ -2490,5 +2798,193 @@ mod tests {
         let state = store.backends();
         let guard = state.backends.read();
         assert_eq!(guard.len(), 1);
+    }
+
+    // ========================================
+    // Source Reference Tests (Phase 0)
+    // ========================================
+
+    #[test]
+    fn test_insert_with_source() {
+        let (_temp, _db, store) = setup();
+        let run_id = RunId::new();
+
+        let config = VectorConfig::new(3, DistanceMetric::Cosine).unwrap();
+        store.create_collection(run_id, "test", config).unwrap();
+
+        // Insert with source reference
+        let source_ref = strata_core::EntityRef::kv(run_id, "source_doc");
+        store
+            .insert_with_source(
+                run_id,
+                "test",
+                "vec1",
+                &[1.0, 0.0, 0.0],
+                None,
+                Some(source_ref.clone()),
+            )
+            .unwrap();
+
+        // Verify vector was stored
+        let entry = store.get(run_id, "test", "vec1").unwrap().unwrap().value;
+        assert_eq!(entry.embedding, vec![1.0, 0.0, 0.0]);
+
+        // Verify source_ref is present
+        assert!(entry.source_ref.is_some());
+        assert_eq!(entry.source_ref.unwrap(), source_ref);
+    }
+
+    #[test]
+    fn test_insert_with_source_and_metadata() {
+        let (_temp, _db, store) = setup();
+        let run_id = RunId::new();
+
+        let config = VectorConfig::new(3, DistanceMetric::Cosine).unwrap();
+        store.create_collection(run_id, "test", config).unwrap();
+
+        // Insert with both source reference and metadata
+        let source_ref = strata_core::EntityRef::kv(run_id, "source_doc");
+        let metadata = serde_json::json!({"category": "test"});
+        store
+            .insert_with_source(
+                run_id,
+                "test",
+                "vec1",
+                &[1.0, 0.0, 0.0],
+                Some(metadata.clone()),
+                Some(source_ref.clone()),
+            )
+            .unwrap();
+
+        // Verify both are stored
+        let entry = store.get(run_id, "test", "vec1").unwrap().unwrap().value;
+        assert_eq!(entry.metadata, Some(metadata));
+        assert_eq!(entry.source_ref, Some(source_ref));
+    }
+
+    #[test]
+    fn test_insert_with_source_none() {
+        let (_temp, _db, store) = setup();
+        let run_id = RunId::new();
+
+        let config = VectorConfig::new(3, DistanceMetric::Cosine).unwrap();
+        store.create_collection(run_id, "test", config).unwrap();
+
+        // Insert with None source reference (same as regular insert)
+        store
+            .insert_with_source(run_id, "test", "vec1", &[1.0, 0.0, 0.0], None, None)
+            .unwrap();
+
+        // Verify source_ref is None
+        let entry = store.get(run_id, "test", "vec1").unwrap().unwrap().value;
+        assert!(entry.source_ref.is_none());
+    }
+
+    #[test]
+    fn test_search_with_sources() {
+        let (_temp, _db, store) = setup();
+        let run_id = RunId::new();
+
+        let config = VectorConfig::new(3, DistanceMetric::Cosine).unwrap();
+        store.create_collection(run_id, "test", config).unwrap();
+
+        // Insert vectors with different source refs
+        let source1 = strata_core::EntityRef::kv(run_id, "doc1");
+        let source2 = strata_core::EntityRef::kv(run_id, "doc2");
+
+        store
+            .insert_with_source(run_id, "test", "vec1", &[1.0, 0.0, 0.0], None, Some(source1.clone()))
+            .unwrap();
+        store
+            .insert_with_source(run_id, "test", "vec2", &[0.9, 0.1, 0.0], None, Some(source2.clone()))
+            .unwrap();
+        store
+            .insert(run_id, "test", "vec3", &[0.0, 1.0, 0.0], None)
+            .unwrap();
+
+        // Search with sources
+        let results = store
+            .search_with_sources(run_id, "test", &[1.0, 0.0, 0.0], 3, None)
+            .unwrap();
+
+        assert_eq!(results.len(), 3);
+
+        // First result should be vec1 with source1
+        assert_eq!(results[0].key, "vec1");
+        assert_eq!(results[0].source_ref, Some(source1));
+
+        // Second result should be vec2 with source2
+        assert_eq!(results[1].key, "vec2");
+        assert_eq!(results[1].source_ref, Some(source2));
+
+        // Third result should be vec3 with no source
+        assert_eq!(results[2].key, "vec3");
+        assert!(results[2].source_ref.is_none());
+    }
+
+    #[test]
+    fn test_search_with_sources_metadata_included() {
+        let (_temp, _db, store) = setup();
+        let run_id = RunId::new();
+
+        let config = VectorConfig::new(3, DistanceMetric::Cosine).unwrap();
+        store.create_collection(run_id, "test", config).unwrap();
+
+        // Insert with source and metadata
+        let source = strata_core::EntityRef::kv(run_id, "source");
+        let metadata = serde_json::json!({"category": "test", "priority": 1});
+        store
+            .insert_with_source(
+                run_id,
+                "test",
+                "vec1",
+                &[1.0, 0.0, 0.0],
+                Some(metadata.clone()),
+                Some(source.clone()),
+            )
+            .unwrap();
+
+        // Search with sources includes metadata
+        let results = store
+            .search_with_sources(run_id, "test", &[1.0, 0.0, 0.0], 1, None)
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].key, "vec1");
+        assert_eq!(results[0].metadata, Some(metadata));
+        assert_eq!(results[0].source_ref, Some(source));
+        assert!(results[0].version > 0);
+    }
+
+    #[test]
+    fn test_update_with_source() {
+        let (_temp, _db, store) = setup();
+        let run_id = RunId::new();
+
+        let config = VectorConfig::new(3, DistanceMetric::Cosine).unwrap();
+        store.create_collection(run_id, "test", config).unwrap();
+
+        // Initial insert without source
+        store
+            .insert(run_id, "test", "vec1", &[1.0, 0.0, 0.0], None)
+            .unwrap();
+
+        // Update with source reference
+        let source = strata_core::EntityRef::kv(run_id, "new_source");
+        store
+            .insert_with_source(
+                run_id,
+                "test",
+                "vec1",
+                &[0.0, 1.0, 0.0],
+                None,
+                Some(source.clone()),
+            )
+            .unwrap();
+
+        // Verify source is updated
+        let entry = store.get(run_id, "test", "vec1").unwrap().unwrap().value;
+        assert_eq!(entry.embedding, vec![0.0, 1.0, 0.0]);
+        assert_eq!(entry.source_ref, Some(source));
     }
 }

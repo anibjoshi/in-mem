@@ -67,10 +67,8 @@ fn test_vector_collection_persist() {
         let db = create_persistent_db(temp_dir.path());
 
         let info = db.vector_collection_info(&run, "persist_coll").unwrap().unwrap();
-        let (dimension, count, _metric) = info;
-
-        assert_eq!(dimension, 256);
-        assert_eq!(count, 2);
+        assert_eq!(info.dimension, 256);
+        assert_eq!(info.count, 2);
     }
 }
 
@@ -179,9 +177,9 @@ fn test_vector_multiple_collections_persist() {
         let info_b = db.vector_collection_info(&run, "coll_b").unwrap().unwrap();
         let info_c = db.vector_collection_info(&run, "coll_c").unwrap().unwrap();
 
-        assert_eq!(info_a.0, 2);  // From [1.0, 0.0]
-        assert_eq!(info_b.0, 3);  // From [0.0, 1.0, 0.0]
-        assert_eq!(info_c.0, 100); // Explicit dimension
+        assert_eq!(info_a.dimension, 2);  // From [1.0, 0.0]
+        assert_eq!(info_b.dimension, 3);  // From [0.0, 1.0, 0.0]
+        assert_eq!(info_c.dimension, 100); // Explicit dimension
     }
 }
 
