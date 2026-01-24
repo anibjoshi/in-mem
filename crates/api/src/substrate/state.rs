@@ -219,6 +219,48 @@ pub trait StateCell {
     ) -> StrataResult<(Value, Version)>
     where
         F: Fn(&Value) -> StrataResult<Value> + Send + Sync;
+
+    /// Get existing value or initialize with a lazy default
+    ///
+    /// Returns the current cell value if it exists, otherwise initializes
+    /// the cell with the value produced by `default` and returns it.
+    ///
+    /// ## Lazy Default Pattern
+    ///
+    /// The `default` closure is only called if the cell doesn't exist.
+    /// This avoids allocating default values on the hot path when reading
+    /// existing cells.
+    ///
+    /// ```rust,ignore
+    /// // Expensive default only computed if cell doesn't exist
+    /// let state = substrate.state_get_or_init(&run, "config", || {
+    ///     Value::String(compute_expensive_default())
+    /// })?;
+    /// ```
+    ///
+    /// ## Semantics
+    ///
+    /// - If cell exists: returns current value (default closure NOT called)
+    /// - If cell doesn't exist: calls `default()`, initializes cell, returns new value
+    /// - The returned version is always 1 for newly created cells
+    ///
+    /// ## Return Value
+    ///
+    /// Returns `Versioned<Value>` containing the value and its version.
+    ///
+    /// ## Errors
+    ///
+    /// - `InvalidKey`: Cell name is invalid
+    /// - `NotFound`: Run does not exist
+    /// - `ConstraintViolation`: Run is closed
+    fn state_get_or_init<F>(
+        &self,
+        run: &ApiRunId,
+        cell: &str,
+        default: F,
+    ) -> StrataResult<Versioned<Value>>
+    where
+        F: FnOnce() -> Value;
 }
 
 // =============================================================================
@@ -283,13 +325,26 @@ impl StateCell for SubstrateImpl {
 
     fn state_history(
         &self,
-        _run: &ApiRunId,
-        _cell: &str,
-        _limit: Option<u64>,
-        _before: Option<Version>,
+        run: &ApiRunId,
+        cell: &str,
+        limit: Option<u64>,
+        before: Option<Version>,
     ) -> StrataResult<Vec<Versioned<Value>>> {
-        // History not yet implemented
-        Ok(vec![])
+        let run_id = run.to_run_id();
+
+        // Extract counter from before (StateCell uses Counter versions)
+        let before_counter = match before {
+            Some(Version::Counter(c)) => Some(c),
+            Some(_) => return Err(strata_core::StrataError::invalid_input(
+                "StateCell operations use Counter versions",
+            )),
+            None => None,
+        };
+
+        // Use primitive's history method
+        self.state()
+            .history(&run_id, cell, limit.map(|l| l as usize), before_counter)
+            .map_err(convert_error)
     }
 
     fn state_init(&self, run: &ApiRunId, cell: &str, value: Value) -> StrataResult<Version> {
@@ -352,6 +407,42 @@ impl StateCell for SubstrateImpl {
             .map_err(convert_error)?;
 
         Ok((new_value, versioned.version))
+    }
+
+    fn state_get_or_init<F>(
+        &self,
+        run: &ApiRunId,
+        cell: &str,
+        default: F,
+    ) -> StrataResult<Versioned<Value>>
+    where
+        F: FnOnce() -> Value,
+    {
+        let run_id = run.to_run_id();
+
+        // Fast path: check if cell exists
+        let existing = self.state().read(&run_id, cell).map_err(convert_error)?;
+
+        if let Some(state) = existing {
+            // Cell exists - return it without calling default
+            return Ok(Versioned {
+                value: state.value.value,
+                version: state.version,
+                timestamp: state.timestamp,
+            });
+        }
+
+        // Cell doesn't exist - call default and initialize
+        let default_value = default();
+        let versioned = self.state().init(&run_id, cell, default_value.clone())
+            .map_err(convert_error)?;
+
+        // Return the newly created value
+        Ok(Versioned {
+            value: default_value,
+            version: versioned.version,
+            timestamp: strata_core::Timestamp::now(),
+        })
     }
 }
 
