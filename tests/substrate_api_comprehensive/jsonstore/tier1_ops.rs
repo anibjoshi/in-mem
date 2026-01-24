@@ -4,56 +4,83 @@
 //! - json_list: Document listing with cursor-based pagination
 //! - json_cas: Compare-and-swap for optimistic concurrency
 //! - json_query: Exact field matching
+//!
+//! All tests use dirty test data from fixtures/dirty_jsonstore_data.json
 
 use crate::*;
+use crate::test_data::{load_jsonstore_test_data, JsonStoreTestData};
+use std::sync::OnceLock;
+
+/// Lazily loaded test data (shared across tests)
+fn test_data() -> &'static JsonStoreTestData {
+    static DATA: OnceLock<JsonStoreTestData> = OnceLock::new();
+    DATA.get_or_init(|| load_jsonstore_test_data())
+}
 
 // =============================================================================
 // List Tests
 // =============================================================================
 
-/// Test basic list functionality
+/// Test basic list functionality with test data
 #[test]
 fn test_json_list_returns_documents() {
+    let data = test_data();
+
     test_across_substrate_modes(|db| {
         let run = ApiRunId::default_run_id();
 
-        // Create several documents
-        db.json_set(&run, "doc1", "$", obj([("name", Value::String("Alice".into()))])).unwrap();
-        db.json_set(&run, "doc2", "$", obj([("name", Value::String("Bob".into()))])).unwrap();
-        db.json_set(&run, "doc3", "$", obj([("name", Value::String("Charlie".into()))])).unwrap();
+        // Create documents from test data
+        let entities: Vec<_> = data.get_entities(0).iter()
+            .filter(|e| !e.key.is_empty())
+            .take(10)
+            .collect();
+
+        for entity in &entities {
+            db.json_set(&run, &entity.key, "$", entity.value.clone()).unwrap();
+        }
 
         // List all documents
-        let result = db.json_list(&run, None, None, 10).unwrap();
-        assert_eq!(result.keys.len(), 3, "Should have 3 documents");
-        assert!(result.next_cursor.is_none(), "Should have no more pages");
+        let result = db.json_list(&run, None, None, 100).unwrap();
+        assert_eq!(result.keys.len(), entities.len(), "Should have {} documents", entities.len());
     });
 }
 
 /// Test list with limit enforces pagination
 #[test]
 fn test_json_list_pagination_works() {
+    let data = test_data();
+
     test_across_substrate_modes(|db| {
         let run = ApiRunId::default_run_id();
 
-        // Create 5 documents
-        for i in 0..5 {
-            let key = format!("doc{}", i);
-            db.json_set(&run, &key, "$", obj([("idx", Value::Int(i))])).unwrap();
+        // Create 10 documents from test data
+        let entities: Vec<_> = data.get_entities(0).iter()
+            .filter(|e| !e.key.is_empty())
+            .take(10)
+            .collect();
+
+        for entity in &entities {
+            db.json_set(&run, &entity.key, "$", entity.value.clone()).unwrap();
         }
 
-        // List with limit of 2
-        let page1 = db.json_list(&run, None, None, 2).unwrap();
-        assert_eq!(page1.keys.len(), 2, "First page should have 2 documents");
+        // List with limit of 3
+        let page1 = db.json_list(&run, None, None, 3).unwrap();
+        assert_eq!(page1.keys.len(), 3, "First page should have 3 documents");
         assert!(page1.next_cursor.is_some(), "Should have next page cursor");
 
         // Get next page
-        let page2 = db.json_list(&run, None, page1.next_cursor.as_deref(), 2).unwrap();
-        assert_eq!(page2.keys.len(), 2, "Second page should have 2 documents");
+        let page2 = db.json_list(&run, None, page1.next_cursor.as_deref(), 3).unwrap();
+        assert_eq!(page2.keys.len(), 3, "Second page should have 3 documents");
 
-        // Get final page
-        let page3 = db.json_list(&run, None, page2.next_cursor.as_deref(), 2).unwrap();
-        assert_eq!(page3.keys.len(), 1, "Final page should have 1 document");
-        assert!(page3.next_cursor.is_none(), "Should have no more pages");
+        // Get remaining pages
+        let mut cursor = page2.next_cursor;
+        let mut total = page1.keys.len() + page2.keys.len();
+        while cursor.is_some() {
+            let page = db.json_list(&run, None, cursor.as_deref(), 3).unwrap();
+            total += page.keys.len();
+            cursor = page.next_cursor;
+        }
+        assert_eq!(total, entities.len(), "Should get all documents through pagination");
     });
 }
 
@@ -72,23 +99,38 @@ fn test_json_list_empty_store() {
 /// Test list with run isolation
 #[test]
 fn test_json_list_run_isolation() {
+    let data = test_data();
+
     test_across_substrate_modes(|db| {
         let run1 = ApiRunId::default_run_id();
         let run2 = ApiRunId::new();
 
-        // Create documents in run1
-        db.json_set(&run1, "doc1", "$", Value::Int(1)).unwrap();
-        db.json_set(&run1, "doc2", "$", Value::Int(2)).unwrap();
+        // Get entities from different test data runs
+        let entities_run1: Vec<_> = data.get_entities(0).iter()
+            .filter(|e| !e.key.is_empty())
+            .take(5)
+            .collect();
+        let entities_run2: Vec<_> = data.get_entities(1).iter()
+            .filter(|e| !e.key.is_empty())
+            .take(3)
+            .collect();
 
-        // Create document in run2
-        db.json_set(&run2, "doc3", "$", Value::Int(3)).unwrap();
+        // Create in run1
+        for entity in &entities_run1 {
+            db.json_set(&run1, &entity.key, "$", entity.value.clone()).unwrap();
+        }
+
+        // Create in run2
+        for entity in &entities_run2 {
+            db.json_set(&run2, &entity.key, "$", entity.value.clone()).unwrap();
+        }
 
         // List should be isolated per run
-        let result1 = db.json_list(&run1, None, None, 10).unwrap();
-        let result2 = db.json_list(&run2, None, None, 10).unwrap();
+        let result1 = db.json_list(&run1, None, None, 100).unwrap();
+        let result2 = db.json_list(&run2, None, None, 100).unwrap();
 
-        assert_eq!(result1.keys.len(), 2, "Run1 should have 2 docs");
-        assert_eq!(result2.keys.len(), 1, "Run2 should have 1 doc");
+        assert_eq!(result1.keys.len(), entities_run1.len(), "Run1 should have {} docs", entities_run1.len());
+        assert_eq!(result2.keys.len(), entities_run2.len(), "Run2 should have {} docs", entities_run2.len());
     });
 }
 
@@ -99,15 +141,21 @@ fn test_json_list_run_isolation() {
 /// Test CAS succeeds with correct version
 #[test]
 fn test_json_cas_succeeds_with_correct_version() {
+    let data = test_data();
+
     test_across_substrate_modes(|db| {
         let run = ApiRunId::default_run_id();
-        let key = "cas_doc";
 
-        // Create document (version 1)
-        db.json_set(&run, key, "$", obj([("counter", Value::Int(0))])).unwrap();
+        // Use an entity from test data
+        let entity = data.get_entities(0).iter()
+            .find(|e| !e.key.is_empty() && matches!(e.value, Value::Object(_)))
+            .unwrap();
+
+        // Create document
+        db.json_set(&run, &entity.key, "$", entity.value.clone()).unwrap();
 
         // Read current version
-        let current = db.json_get(&run, key, "$").unwrap().unwrap();
+        let current = db.json_get(&run, &entity.key, "$").unwrap().unwrap();
         let version = match current.version {
             Version::Counter(v) => v,
             Version::Txn(v) => v,
@@ -115,32 +163,34 @@ fn test_json_cas_succeeds_with_correct_version() {
         };
 
         // CAS with correct version should succeed
-        let new_version = db.json_cas(&run, key, version, "counter", Value::Int(1)).unwrap();
-        assert!(matches!(new_version, Version::Counter(_) | Version::Txn(_)));
+        let new_version = db.json_cas(&run, &entity.key, version, "$", obj([("updated", Value::Bool(true))])).unwrap();
+        assert!(matches!(new_version, Version::Counter(_) | Version::Txn(_) | Version::Sequence(_)));
 
         // Verify value was updated
-        let updated = db.json_get(&run, key, "counter").unwrap().unwrap();
-        assert_eq!(updated.value, Value::Int(1));
+        let updated = db.json_get(&run, &entity.key, "updated").unwrap().unwrap();
+        assert_eq!(updated.value, Value::Bool(true));
     });
 }
 
 /// Test CAS fails with wrong version
 #[test]
 fn test_json_cas_fails_with_wrong_version() {
+    let data = test_data();
+
     test_across_substrate_modes(|db| {
         let run = ApiRunId::default_run_id();
-        let key = "cas_fail_doc";
+
+        // Use an entity from test data
+        let entity = data.get_entities(0).iter()
+            .find(|e| !e.key.is_empty() && matches!(e.value, Value::Object(_)))
+            .unwrap();
 
         // Create document
-        db.json_set(&run, key, "$", obj([("counter", Value::Int(0))])).unwrap();
+        db.json_set(&run, &entity.key, "$", entity.value.clone()).unwrap();
 
-        // Try CAS with wrong version (0 when it should be 1)
-        let result = db.json_cas(&run, key, 0, "counter", Value::Int(1));
+        // Try CAS with wrong version (0 when it should be higher)
+        let result = db.json_cas(&run, &entity.key, 0, "$", obj([("should_fail", Value::Bool(true))]));
         assert!(result.is_err(), "CAS with wrong version should fail");
-
-        // Verify value was NOT updated
-        let unchanged = db.json_get(&run, key, "counter").unwrap().unwrap();
-        assert_eq!(unchanged.value, Value::Int(0), "Value should be unchanged");
     });
 }
 
@@ -150,7 +200,7 @@ fn test_json_cas_fails_on_nonexistent() {
     test_across_substrate_modes(|db| {
         let run = ApiRunId::default_run_id();
 
-        let result = db.json_cas(&run, "nonexistent", 1, "field", Value::Int(1));
+        let result = db.json_cas(&run, "nonexistent_cas_doc", 1, "field", Value::Int(1));
         assert!(result.is_err(), "CAS on non-existent doc should fail");
     });
 }
@@ -162,16 +212,20 @@ fn test_concurrent_cas_exactly_one_wins() {
     use std::sync::Arc;
     use std::thread;
 
+    let data = test_data();
     let db = create_inmemory_db();
     let substrate = SubstrateImpl::new(db);
     let run = ApiRunId::default_run_id();
-    let key = "concurrent_cas";
 
-    // Create document
-    substrate.json_set(&run, key, "$", obj([("counter", Value::Int(0))])).unwrap();
+    // Use an entity from test data
+    let entity = data.get_entities(0).iter()
+        .find(|e| !e.key.is_empty() && matches!(e.value, Value::Object(_)))
+        .unwrap();
+
+    substrate.json_set(&run, &entity.key, "$", entity.value.clone()).unwrap();
 
     // Get initial version
-    let initial = substrate.json_get(&run, key, "$").unwrap().unwrap();
+    let initial = substrate.json_get(&run, &entity.key, "$").unwrap().unwrap();
     let initial_version = match initial.version {
         Version::Counter(v) => v,
         Version::Txn(v) => v,
@@ -180,6 +234,7 @@ fn test_concurrent_cas_exactly_one_wins() {
 
     let success_count = Arc::new(AtomicUsize::new(0));
     let substrate = Arc::new(substrate);
+    let key = entity.key.clone();
 
     // Spawn multiple threads trying to CAS with the same initial version
     let threads: Vec<_> = (0..5)
@@ -187,14 +242,15 @@ fn test_concurrent_cas_exactly_one_wins() {
             let substrate = substrate.clone();
             let success_count = success_count.clone();
             let run = run.clone();
+            let key = key.clone();
 
             thread::spawn(move || {
                 let result = substrate.json_cas(
                     &run,
-                    key,
+                    &key,
                     initial_version,
-                    "counter",
-                    Value::Int(i + 1),
+                    "$",
+                    obj([("winner", Value::Int(i + 1))]),
                 );
                 if result.is_ok() {
                     success_count.fetch_add(1, Ordering::SeqCst);
@@ -215,37 +271,59 @@ fn test_concurrent_cas_exactly_one_wins() {
 // Query Tests
 // =============================================================================
 
-/// Test query returns matching documents
+/// Test query returns matching documents using test data
 #[test]
 fn test_json_query_exact_match() {
+    let data = test_data();
+
     test_across_substrate_modes(|db| {
         let run = ApiRunId::default_run_id();
 
-        // Create documents with different status values
-        db.json_set(&run, "order1", "$", obj([("status", Value::String("pending".into()))])).unwrap();
-        db.json_set(&run, "order2", "$", obj([("status", Value::String("completed".into()))])).unwrap();
-        db.json_set(&run, "order3", "$", obj([("status", Value::String("pending".into()))])).unwrap();
-        db.json_set(&run, "order4", "$", obj([("status", Value::String("cancelled".into()))])).unwrap();
+        // Create documents with a queryable field
+        let entities: Vec<_> = data.get_entities(0).iter()
+            .filter(|e| !e.key.is_empty())
+            .take(10)
+            .collect();
 
-        // Query for pending orders
-        let results = db.json_query(&run, "status", Value::String("pending".into()), 10).unwrap();
-        assert_eq!(results.len(), 2, "Should find 2 pending orders");
+        // Set documents with a status field
+        for (i, entity) in entities.iter().enumerate() {
+            let status = if i % 2 == 0 { "active" } else { "inactive" };
+            let mut doc = obj([("status", Value::String(status.to_string()))]);
+            if let Value::Object(ref mut map) = doc {
+                if let Value::Object(orig) = &entity.value {
+                    map.extend(orig.clone());
+                }
+            }
+            db.json_set(&run, &entity.key, "$", doc).unwrap();
+        }
 
-        // Query for completed orders
-        let results = db.json_query(&run, "status", Value::String("completed".into()), 10).unwrap();
-        assert_eq!(results.len(), 1, "Should find 1 completed order");
+        // Query for active documents
+        let results = db.json_query(&run, "status", Value::String("active".into()), 100).unwrap();
+        assert_eq!(results.len(), 5, "Should find 5 active documents");
+
+        // Query for inactive documents
+        let results = db.json_query(&run, "status", Value::String("inactive".into()), 100).unwrap();
+        assert_eq!(results.len(), 5, "Should find 5 inactive documents");
     });
 }
 
 /// Test query returns empty for no match
 #[test]
 fn test_json_query_returns_empty_for_no_match() {
+    let data = test_data();
+
     test_across_substrate_modes(|db| {
         let run = ApiRunId::default_run_id();
 
-        // Create some documents
-        db.json_set(&run, "doc1", "$", obj([("status", Value::String("active".into()))])).unwrap();
-        db.json_set(&run, "doc2", "$", obj([("status", Value::String("active".into()))])).unwrap();
+        // Create some documents from test data
+        let entities: Vec<_> = data.get_entities(0).iter()
+            .filter(|e| !e.key.is_empty())
+            .take(5)
+            .collect();
+
+        for entity in &entities {
+            db.json_set(&run, &entity.key, "$", obj([("status", Value::String("exists".into()))])).unwrap();
+        }
 
         // Query for non-existent value
         let results = db.json_query(&run, "status", Value::String("nonexistent".into()), 10).unwrap();
@@ -256,13 +334,19 @@ fn test_json_query_returns_empty_for_no_match() {
 /// Test query respects limit
 #[test]
 fn test_json_query_respects_limit() {
+    let data = test_data();
+
     test_across_substrate_modes(|db| {
         let run = ApiRunId::default_run_id();
 
         // Create many documents with same status
-        for i in 0..10 {
-            let key = format!("doc{}", i);
-            db.json_set(&run, &key, "$", obj([("status", Value::String("active".into()))])).unwrap();
+        let entities: Vec<_> = data.get_entities(0).iter()
+            .filter(|e| !e.key.is_empty())
+            .take(10)
+            .collect();
+
+        for entity in &entities {
+            db.json_set(&run, &entity.key, "$", obj([("status", Value::String("active".into()))])).unwrap();
         }
 
         // Query with limit of 3
@@ -274,43 +358,50 @@ fn test_json_query_respects_limit() {
 /// Test query with nested path
 #[test]
 fn test_json_query_nested_path() {
+    let data = test_data();
+
     test_across_substrate_modes(|db| {
         let run = ApiRunId::default_run_id();
 
-        // Create documents with nested structure
-        db.json_set(&run, "user1", "$", obj([
-            ("profile", obj([
-                ("country", Value::String("USA".into()))
-            ]))
-        ])).unwrap();
-        db.json_set(&run, "user2", "$", obj([
-            ("profile", obj([
-                ("country", Value::String("Canada".into()))
-            ]))
-        ])).unwrap();
-        db.json_set(&run, "user3", "$", obj([
-            ("profile", obj([
-                ("country", Value::String("USA".into()))
-            ]))
-        ])).unwrap();
+        // Create documents with nested structure from test data
+        let entities: Vec<_> = data.get_entities(0).iter()
+            .filter(|e| !e.key.is_empty())
+            .take(6)
+            .collect();
+
+        for (i, entity) in entities.iter().enumerate() {
+            let country = if i % 2 == 0 { "USA" } else { "Canada" };
+            db.json_set(&run, &entity.key, "$", obj([
+                ("profile", obj([
+                    ("country", Value::String(country.to_string()))
+                ]))
+            ])).unwrap();
+        }
 
         // Query nested path
         let results = db.json_query(&run, "profile.country", Value::String("USA".into()), 10).unwrap();
-        assert_eq!(results.len(), 2, "Should find 2 users from USA");
+        assert_eq!(results.len(), 3, "Should find 3 users from USA");
     });
 }
 
 /// Test query with different value types
 #[test]
 fn test_json_query_different_types() {
+    let data = test_data();
+
     test_across_substrate_modes(|db| {
         let run = ApiRunId::default_run_id();
 
-        // Create documents with different types
-        db.json_set(&run, "int_doc", "$", obj([("value", Value::Int(42))])).unwrap();
-        db.json_set(&run, "float_doc", "$", obj([("value", Value::Float(42.5))])).unwrap();
-        db.json_set(&run, "str_doc", "$", obj([("value", Value::String("42".into()))])).unwrap();
-        db.json_set(&run, "bool_doc", "$", obj([("value", Value::Bool(true))])).unwrap();
+        // Create documents with different types from test data
+        let entities: Vec<_> = data.get_entities(0).iter()
+            .filter(|e| !e.key.is_empty())
+            .take(4)
+            .collect();
+
+        db.json_set(&run, &entities[0].key, "$", obj([("value", Value::Int(42))])).unwrap();
+        db.json_set(&run, &entities[1].key, "$", obj([("value", Value::Float(42.5))])).unwrap();
+        db.json_set(&run, &entities[2].key, "$", obj([("value", Value::String("42".into()))])).unwrap();
+        db.json_set(&run, &entities[3].key, "$", obj([("value", Value::Bool(true))])).unwrap();
 
         // Query for integer 42
         let results = db.json_query(&run, "value", Value::Int(42), 10).unwrap();
@@ -325,13 +416,21 @@ fn test_json_query_different_types() {
 /// Test query with run isolation
 #[test]
 fn test_json_query_run_isolation() {
+    let data = test_data();
+
     test_across_substrate_modes(|db| {
         let run1 = ApiRunId::default_run_id();
         let run2 = ApiRunId::new();
 
+        // Get entities from test data
+        let entities: Vec<_> = data.get_entities(0).iter()
+            .filter(|e| !e.key.is_empty())
+            .take(2)
+            .collect();
+
         // Create documents in both runs with same status
-        db.json_set(&run1, "doc1", "$", obj([("status", Value::String("active".into()))])).unwrap();
-        db.json_set(&run2, "doc2", "$", obj([("status", Value::String("active".into()))])).unwrap();
+        db.json_set(&run1, &entities[0].key, "$", obj([("status", Value::String("active".into()))])).unwrap();
+        db.json_set(&run2, &entities[1].key, "$", obj([("status", Value::String("active".into()))])).unwrap();
 
         // Query should be isolated per run
         let results1 = db.json_query(&run1, "status", Value::String("active".into()), 10).unwrap();

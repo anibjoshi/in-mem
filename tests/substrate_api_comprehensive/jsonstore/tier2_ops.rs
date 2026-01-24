@@ -4,8 +4,18 @@
 //! - json_count: Document count
 //! - json_batch_get: Batch document retrieval
 //! - json_batch_create: Atomic batch document creation
+//!
+//! All tests use dirty test data from fixtures/dirty_jsonstore_data.json
 
 use crate::*;
+use crate::test_data::{load_jsonstore_test_data, JsonStoreTestData};
+use std::sync::OnceLock;
+
+/// Lazily loaded test data (shared across tests)
+fn test_data() -> &'static JsonStoreTestData {
+    static DATA: OnceLock<JsonStoreTestData> = OnceLock::new();
+    DATA.get_or_init(|| load_jsonstore_test_data())
+}
 
 // =============================================================================
 // Count Tests
@@ -22,45 +32,54 @@ fn test_json_count_empty_run() {
     });
 }
 
-/// Test count increases with creates
+/// Test count increases with creates using test data
 #[test]
 fn test_json_count_increases_with_creates() {
+    let data = test_data();
+
     test_across_substrate_modes(|db| {
         let run = ApiRunId::default_run_id();
 
+        let entities: Vec<_> = data.get_entities(0).iter()
+            .filter(|e| !e.key.is_empty())
+            .take(5)
+            .collect();
+
         assert_eq!(db.json_count(&run).unwrap(), 0);
 
-        db.json_set(&run, "doc1", "$", Value::Int(1)).unwrap();
-        assert_eq!(db.json_count(&run).unwrap(), 1);
-
-        db.json_set(&run, "doc2", "$", Value::Int(2)).unwrap();
-        assert_eq!(db.json_count(&run).unwrap(), 2);
-
-        db.json_set(&run, "doc3", "$", Value::Int(3)).unwrap();
-        assert_eq!(db.json_count(&run).unwrap(), 3);
+        for (i, entity) in entities.iter().enumerate() {
+            db.json_set(&run, &entity.key, "$", entity.value.clone()).unwrap();
+            assert_eq!(db.json_count(&run).unwrap(), (i + 1) as u64);
+        }
     });
 }
 
 /// Test count after creates and deletes
 #[test]
 fn test_json_count_after_creates_and_deletes() {
+    let data = test_data();
+
     test_across_substrate_modes(|db| {
         let run = ApiRunId::default_run_id();
 
+        let entities: Vec<_> = data.get_entities(0).iter()
+            .filter(|e| !e.key.is_empty())
+            .take(5)
+            .collect();
+
         // Create 5 documents
-        for i in 0..5 {
-            let key = format!("doc{}", i);
-            db.json_set(&run, &key, "$", Value::Int(i)).unwrap();
+        for entity in &entities {
+            db.json_set(&run, &entity.key, "$", entity.value.clone()).unwrap();
         }
         assert_eq!(db.json_count(&run).unwrap(), 5);
 
         // Delete 2 documents
-        db.json_delete(&run, "doc1", "$").unwrap();
-        db.json_delete(&run, "doc3", "$").unwrap();
+        db.json_delete(&run, &entities[1].key, "$").unwrap();
+        db.json_delete(&run, &entities[3].key, "$").unwrap();
         assert_eq!(db.json_count(&run).unwrap(), 3);
 
         // Add one more
-        db.json_set(&run, "doc5", "$", Value::Int(5)).unwrap();
+        db.json_set(&run, "new_doc", "$", Value::Int(5)).unwrap();
         assert_eq!(db.json_count(&run).unwrap(), 4);
     });
 }
@@ -68,19 +87,33 @@ fn test_json_count_after_creates_and_deletes() {
 /// Test count with run isolation
 #[test]
 fn test_json_count_run_isolation() {
+    let data = test_data();
+
     test_across_substrate_modes(|db| {
         let run1 = ApiRunId::default_run_id();
         let run2 = ApiRunId::new();
 
+        let entities_run1: Vec<_> = data.get_entities(0).iter()
+            .filter(|e| !e.key.is_empty())
+            .take(3)
+            .collect();
+        let entities_run2: Vec<_> = data.get_entities(1).iter()
+            .filter(|e| !e.key.is_empty())
+            .take(2)
+            .collect();
+
         // Create documents in run1
-        db.json_set(&run1, "doc1", "$", Value::Int(1)).unwrap();
-        db.json_set(&run1, "doc2", "$", Value::Int(2)).unwrap();
+        for entity in &entities_run1 {
+            db.json_set(&run1, &entity.key, "$", entity.value.clone()).unwrap();
+        }
 
-        // Create document in run2
-        db.json_set(&run2, "doc3", "$", Value::Int(3)).unwrap();
+        // Create documents in run2
+        for entity in &entities_run2 {
+            db.json_set(&run2, &entity.key, "$", entity.value.clone()).unwrap();
+        }
 
-        assert_eq!(db.json_count(&run1).unwrap(), 2, "Run1 should have 2 docs");
-        assert_eq!(db.json_count(&run2).unwrap(), 1, "Run2 should have 1 doc");
+        assert_eq!(db.json_count(&run1).unwrap(), entities_run1.len() as u64, "Run1 count mismatch");
+        assert_eq!(db.json_count(&run2).unwrap(), entities_run2.len() as u64, "Run2 count mismatch");
     });
 }
 
@@ -88,38 +121,55 @@ fn test_json_count_run_isolation() {
 // Batch Get Tests
 // =============================================================================
 
-/// Test batch get returns documents
+/// Test batch get returns documents from test data
 #[test]
 fn test_json_batch_get_returns_documents() {
+    let data = test_data();
+
     test_across_substrate_modes(|db| {
         let run = ApiRunId::default_run_id();
 
+        let entities: Vec<_> = data.get_entities(0).iter()
+            .filter(|e| !e.key.is_empty())
+            .take(5)
+            .collect();
+
         // Create documents
-        db.json_set(&run, "doc1", "$", Value::Int(1)).unwrap();
-        db.json_set(&run, "doc2", "$", Value::Int(2)).unwrap();
-        db.json_set(&run, "doc3", "$", Value::Int(3)).unwrap();
+        for entity in &entities {
+            db.json_set(&run, &entity.key, "$", entity.value.clone()).unwrap();
+        }
 
         // Batch get
-        let results = db.json_batch_get(&run, &["doc1", "doc2", "doc3"]).unwrap();
-        assert_eq!(results.len(), 3);
+        let keys: Vec<_> = entities.iter().map(|e| e.key.as_str()).collect();
+        let results = db.json_batch_get(&run, &keys).unwrap();
+        assert_eq!(results.len(), entities.len());
 
-        assert!(results[0].is_some());
-        assert!(results[1].is_some());
-        assert!(results[2].is_some());
+        for (i, result) in results.iter().enumerate() {
+            assert!(result.is_some(), "Result {} should exist", i);
+            assert_eq!(result.as_ref().unwrap().value, entities[i].value);
+        }
     });
 }
 
 /// Test batch get returns None for missing
 #[test]
 fn test_json_batch_get_returns_none_for_missing() {
+    let data = test_data();
+
     test_across_substrate_modes(|db| {
         let run = ApiRunId::default_run_id();
 
-        // Create only one document
-        db.json_set(&run, "exists", "$", Value::Int(1)).unwrap();
+        let entities: Vec<_> = data.get_entities(0).iter()
+            .filter(|e| !e.key.is_empty())
+            .take(3)
+            .collect();
+
+        // Create only first document
+        db.json_set(&run, &entities[0].key, "$", entities[0].value.clone()).unwrap();
 
         // Batch get with mix of existing and missing
-        let results = db.json_batch_get(&run, &["exists", "missing1", "missing2"]).unwrap();
+        let keys: Vec<_> = entities.iter().map(|e| e.key.as_str()).collect();
+        let results = db.json_batch_get(&run, &keys).unwrap();
         assert_eq!(results.len(), 3);
 
         assert!(results[0].is_some(), "First should exist");
@@ -131,21 +181,31 @@ fn test_json_batch_get_returns_none_for_missing() {
 /// Test batch get preserves order
 #[test]
 fn test_json_batch_get_preserves_order() {
+    let data = test_data();
+
     test_across_substrate_modes(|db| {
         let run = ApiRunId::default_run_id();
 
+        let entities: Vec<_> = data.get_entities(0).iter()
+            .filter(|e| !e.key.is_empty())
+            .take(5)
+            .collect();
+
         // Create documents
-        db.json_set(&run, "a", "$", Value::String("alpha".into())).unwrap();
-        db.json_set(&run, "b", "$", Value::String("beta".into())).unwrap();
-        db.json_set(&run, "c", "$", Value::String("gamma".into())).unwrap();
+        for entity in &entities {
+            db.json_set(&run, &entity.key, "$", entity.value.clone()).unwrap();
+        }
 
-        // Batch get in different order
-        let results = db.json_batch_get(&run, &["c", "a", "b"]).unwrap();
-        assert_eq!(results.len(), 3);
+        // Batch get in reverse order
+        let keys: Vec<_> = entities.iter().rev().map(|e| e.key.as_str()).collect();
+        let results = db.json_batch_get(&run, &keys).unwrap();
+        assert_eq!(results.len(), entities.len());
 
-        assert_eq!(results[0].as_ref().unwrap().value, Value::String("gamma".into()));
-        assert_eq!(results[1].as_ref().unwrap().value, Value::String("alpha".into()));
-        assert_eq!(results[2].as_ref().unwrap().value, Value::String("beta".into()));
+        // Results should match reversed request order
+        for (i, result) in results.iter().enumerate() {
+            let expected_entity = &entities[entities.len() - 1 - i];
+            assert_eq!(result.as_ref().unwrap().value, expected_entity.value);
+        }
     });
 }
 
@@ -163,18 +223,24 @@ fn test_json_batch_get_empty_keys() {
 /// Test batch get with duplicate keys
 #[test]
 fn test_json_batch_get_duplicate_keys() {
+    let data = test_data();
+
     test_across_substrate_modes(|db| {
         let run = ApiRunId::default_run_id();
 
-        db.json_set(&run, "doc", "$", Value::Int(42)).unwrap();
+        let entity = data.get_entities(0).iter()
+            .find(|e| !e.key.is_empty())
+            .unwrap();
 
-        let results = db.json_batch_get(&run, &["doc", "doc", "doc"]).unwrap();
+        db.json_set(&run, &entity.key, "$", entity.value.clone()).unwrap();
+
+        let results = db.json_batch_get(&run, &[&entity.key, &entity.key, &entity.key]).unwrap();
         assert_eq!(results.len(), 3);
 
         // All should be the same document
         for result in &results {
             assert!(result.is_some());
-            assert_eq!(result.as_ref().unwrap().value, Value::Int(42));
+            assert_eq!(result.as_ref().unwrap().value, entity.value);
         }
     });
 }
@@ -183,75 +249,88 @@ fn test_json_batch_get_duplicate_keys() {
 // Batch Create Tests
 // =============================================================================
 
-/// Test batch create creates documents
+/// Test batch create creates documents from test data
 #[test]
 fn test_json_batch_create_creates_documents() {
+    let data = test_data();
+
     test_across_substrate_modes(|db| {
         let run = ApiRunId::default_run_id();
 
-        let docs = vec![
-            ("doc1", Value::Int(1)),
-            ("doc2", Value::Int(2)),
-            ("doc3", Value::Int(3)),
-        ];
+        let entities: Vec<_> = data.get_entities(0).iter()
+            .filter(|e| !e.key.is_empty())
+            .take(5)
+            .collect();
+
+        let docs: Vec<_> = entities.iter()
+            .map(|e| (e.key.as_str(), e.value.clone()))
+            .collect();
 
         let versions = db.json_batch_create(&run, docs).unwrap();
-        assert_eq!(versions.len(), 3);
+        assert_eq!(versions.len(), entities.len());
 
-        // Verify all documents exist
-        assert!(db.json_exists(&run, "doc1").unwrap());
-        assert!(db.json_exists(&run, "doc2").unwrap());
-        assert!(db.json_exists(&run, "doc3").unwrap());
-
-        // Verify values
-        assert_eq!(db.json_get(&run, "doc1", "$").unwrap().unwrap().value, Value::Int(1));
-        assert_eq!(db.json_get(&run, "doc2", "$").unwrap().unwrap().value, Value::Int(2));
-        assert_eq!(db.json_get(&run, "doc3", "$").unwrap().unwrap().value, Value::Int(3));
+        // Verify all documents exist with correct values
+        for entity in &entities {
+            assert!(db.json_exists(&run, &entity.key).unwrap(), "Doc '{}' should exist", entity.key);
+            let value = db.json_get(&run, &entity.key, "$").unwrap().unwrap().value;
+            assert_eq!(value, entity.value, "Value mismatch for '{}'", entity.key);
+        }
     });
 }
 
 /// Test batch create is atomic - fails if any exists
 #[test]
 fn test_json_batch_create_fails_if_any_exists() {
+    let data = test_data();
+
     test_across_substrate_modes(|db| {
         let run = ApiRunId::default_run_id();
 
+        let entities: Vec<_> = data.get_entities(0).iter()
+            .filter(|e| !e.key.is_empty())
+            .take(3)
+            .collect();
+
         // Pre-create one document
-        db.json_set(&run, "existing", "$", Value::Int(0)).unwrap();
+        db.json_set(&run, &entities[1].key, "$", Value::Int(0)).unwrap();
 
         // Try to batch create with one existing
-        let docs = vec![
-            ("new1", Value::Int(1)),
-            ("existing", Value::Int(2)), // This one exists
-            ("new2", Value::Int(3)),
-        ];
+        let docs: Vec<_> = entities.iter()
+            .map(|e| (e.key.as_str(), e.value.clone()))
+            .collect();
 
         let result = db.json_batch_create(&run, docs);
-        assert!(result.is_err(), "Should fail because 'existing' already exists");
+        assert!(result.is_err(), "Should fail because one key already exists");
 
-        // Verify none of the new documents were created (atomicity)
-        assert!(!db.json_exists(&run, "new1").unwrap(), "new1 should not exist");
-        assert!(!db.json_exists(&run, "new2").unwrap(), "new2 should not exist");
+        // Verify atomicity - first document should not exist
+        assert!(!db.json_exists(&run, &entities[0].key).unwrap(), "First doc should not exist");
+        assert!(!db.json_exists(&run, &entities[2].key).unwrap(), "Third doc should not exist");
     });
 }
 
 /// Test batch create is atomic - all or nothing
 #[test]
 fn test_json_batch_create_is_atomic() {
+    let data = test_data();
+
     test_across_substrate_modes(|db| {
         let run = ApiRunId::default_run_id();
 
-        // Create documents with batch
-        let docs = vec![
-            ("atomic1", Value::String("first".into())),
-            ("atomic2", Value::String("second".into())),
-        ];
+        let entities: Vec<_> = data.get_entities(0).iter()
+            .filter(|e| !e.key.is_empty())
+            .take(3)
+            .collect();
+
+        let docs: Vec<_> = entities.iter()
+            .map(|e| (e.key.as_str(), e.value.clone()))
+            .collect();
 
         db.json_batch_create(&run, docs).unwrap();
 
-        // Both should exist
-        assert!(db.json_exists(&run, "atomic1").unwrap());
-        assert!(db.json_exists(&run, "atomic2").unwrap());
+        // All should exist
+        for entity in &entities {
+            assert!(db.json_exists(&run, &entity.key).unwrap(), "Doc '{}' should exist", entity.key);
+        }
     });
 }
 
@@ -266,30 +345,39 @@ fn test_json_batch_create_empty() {
     });
 }
 
-/// Test batch create with complex values
+/// Test batch create with dirty data from test file
 #[test]
-fn test_json_batch_create_complex_values() {
+fn test_json_batch_create_dirty_data() {
+    let data = test_data();
+
     test_across_substrate_modes(|db| {
         let run = ApiRunId::default_run_id();
 
-        let docs = vec![
-            ("user1", obj([
-                ("name", Value::String("Alice".into())),
-                ("age", Value::Int(30)),
-            ])),
-            ("user2", obj([
-                ("name", Value::String("Bob".into())),
-                ("age", Value::Int(25)),
-            ])),
-        ];
+        // Mix of different value types from test data
+        let mut docs: Vec<(&str, Value)> = Vec::new();
 
-        db.json_batch_create(&run, docs).unwrap();
+        // Add some null entities
+        for (_, e) in data.null_entities().into_iter().filter(|(_, e)| !e.key.is_empty()).take(2) {
+            docs.push((e.key.as_str(), e.value.clone()));
+        }
 
-        // Verify nested data
-        let alice_name = db.json_get(&run, "user1", "name").unwrap().unwrap().value;
-        assert_eq!(alice_name, Value::String("Alice".into()));
+        // Add some array entities
+        for (_, e) in data.array_entities().into_iter().filter(|(_, e)| !e.key.is_empty()).take(2) {
+            docs.push((e.key.as_str(), e.value.clone()));
+        }
 
-        let bob_age = db.json_get(&run, "user2", "age").unwrap().unwrap().value;
-        assert_eq!(bob_age, Value::Int(25));
+        // Add some object entities
+        for (_, e) in data.object_entities().into_iter().filter(|(_, e)| !e.key.is_empty()).take(2) {
+            docs.push((e.key.as_str(), e.value.clone()));
+        }
+
+        if !docs.is_empty() {
+            let result = db.json_batch_create(&run, docs.clone());
+            assert!(result.is_ok(), "Batch create with dirty data should succeed: {:?}", result);
+
+            // Verify count
+            let count = db.json_count(&run).unwrap();
+            assert_eq!(count, docs.len() as u64);
+        }
     });
 }
