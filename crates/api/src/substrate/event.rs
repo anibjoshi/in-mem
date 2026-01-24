@@ -79,6 +79,35 @@ pub trait EventLog {
         payload: Value,
     ) -> StrataResult<Version>;
 
+    /// Append multiple events atomically
+    ///
+    /// All events are appended in a single transaction with consecutive sequence numbers.
+    /// Either all succeed or none are written (atomic batch).
+    ///
+    /// ## Semantics
+    ///
+    /// - Creates streams if they don't exist
+    /// - Assigns consecutive GLOBAL sequence numbers
+    /// - All events share the same timestamp
+    /// - Hash chain is extended for each event
+    ///
+    /// ## Return Value
+    ///
+    /// Returns a vector of `Version::Sequence(n)` for each appended event.
+    ///
+    /// ## Errors
+    ///
+    /// - `InvalidKey`: Any stream name is invalid
+    /// - `ConstraintViolation`: Any payload is not Object, or run is closed
+    /// - `NotFound`: Run does not exist
+    ///
+    /// If any event fails validation, no events are written.
+    fn event_append_batch(
+        &self,
+        run: &ApiRunId,
+        events: &[(&str, Value)],
+    ) -> StrataResult<Vec<Version>>;
+
     /// Read events from a stream
     ///
     /// Returns events within the specified range, in sequence order.
@@ -304,6 +333,20 @@ impl EventLog for SubstrateImpl {
         let run_id = run.to_run_id();
         // Use stream as event_type
         self.event().append(&run_id, stream, payload).map_err(convert_error)
+    }
+
+    fn event_append_batch(
+        &self,
+        run: &ApiRunId,
+        events: &[(&str, Value)],
+    ) -> StrataResult<Vec<Version>> {
+        // Validate all inputs
+        for (stream, payload) in events {
+            validate_stream_name(stream)?;
+            validate_event_payload(payload)?;
+        }
+        let run_id = run.to_run_id();
+        self.event().append_batch(&run_id, events).map_err(convert_error)
     }
 
     fn event_range(

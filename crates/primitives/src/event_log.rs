@@ -424,6 +424,114 @@ impl EventLog {
             })
     }
 
+    /// Append multiple events atomically in a single transaction
+    ///
+    /// All events are appended with consecutive sequence numbers.
+    /// Either all succeed or none are written (atomic batch).
+    ///
+    /// # Arguments
+    /// * `run_id` - The run to append to
+    /// * `events` - List of (event_type, payload) pairs to append
+    ///
+    /// # Returns
+    /// Vector of Version::Sequence for each appended event
+    ///
+    /// # Errors
+    /// Returns error if any event fails validation. In this case, no events are written.
+    pub fn append_batch(
+        &self,
+        run_id: &RunId,
+        events: &[(&str, Value)],
+    ) -> Result<Vec<Version>> {
+        // Validate all inputs before entering transaction
+        for (event_type, payload) in events {
+            validate_event_type(event_type)
+                .map_err(|e| Error::ValidationError(e.to_string()))?;
+            validate_payload(payload)
+                .map_err(|e| Error::ValidationError(e.to_string()))?;
+        }
+
+        if events.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let retry_config = RetryConfig::default()
+            .with_max_retries(200)
+            .with_base_delay_ms(1)
+            .with_max_delay_ms(50);
+
+        let ns = self.namespace_for_run(run_id);
+        let events_owned: Vec<_> = events
+            .iter()
+            .map(|(et, p)| (et.to_string(), p.clone()))
+            .collect();
+
+        self.db
+            .transaction_with_retry(*run_id, retry_config, |txn| {
+                // Read current metadata
+                let meta_key = Key::new_event_meta(ns.clone());
+                let mut meta: EventLogMeta = match txn.get(&meta_key)? {
+                    Some(v) => from_stored_value(&v).unwrap_or_else(|_| EventLogMeta::default()),
+                    None => EventLogMeta::default(),
+                };
+
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as i64;
+
+                let mut versions = Vec::with_capacity(events_owned.len());
+                let mut prev_hash = meta.head_hash;
+
+                for (event_type, payload) in &events_owned {
+                    let sequence = meta.next_sequence;
+
+                    let hash = compute_event_hash(
+                        meta.hash_version,
+                        sequence,
+                        event_type,
+                        payload,
+                        timestamp,
+                        &prev_hash,
+                    );
+
+                    let event = Event {
+                        sequence,
+                        event_type: event_type.clone(),
+                        payload: payload.clone(),
+                        timestamp,
+                        prev_hash,
+                        hash,
+                    };
+
+                    // Write event
+                    let event_key = Key::new_event(ns.clone(), sequence);
+                    txn.put(event_key, to_stored_value(&event))?;
+
+                    // Update stream metadata
+                    match meta.streams.get_mut(event_type) {
+                        Some(stream_meta) => stream_meta.update(sequence, timestamp),
+                        None => {
+                            meta.streams.insert(
+                                event_type.clone(),
+                                StreamMeta::new(sequence, timestamp),
+                            );
+                        }
+                    }
+
+                    meta.next_sequence = sequence + 1;
+                    versions.push(Version::Sequence(sequence));
+                    prev_hash = hash;
+                }
+
+                // Update metadata with final state
+                meta.head_hash = prev_hash;
+                txn.put(meta_key, to_stored_value(&meta))?;
+
+                Ok(versions)
+            })
+    }
+
     // ========== Read Operations (Story #176) ==========
 
     /// Read a single event by sequence number (FAST PATH)
@@ -486,6 +594,51 @@ impl EventLog {
             let ns = self.namespace_for_run(run_id);
 
             for seq in start..end {
+                let event_key = Key::new_event(ns.clone(), seq);
+                if let Some(v) = txn.get(&event_key)? {
+                    let event: Event = from_stored_value(&v).map_err(|e| {
+                        strata_core::error::Error::SerializationError(e.to_string())
+                    })?;
+                    events.push(Versioned::with_timestamp(
+                        event.clone(),
+                        Version::Sequence(seq),
+                        Timestamp::from_millis(event.timestamp as u64),
+                    ));
+                }
+            }
+
+            Ok(events)
+        })
+    }
+
+    /// Read a range of events in reverse order (newest first)
+    ///
+    /// Returns events from `start` (inclusive) down to `end` (inclusive),
+    /// in descending sequence order.
+    ///
+    /// # Arguments
+    /// * `run_id` - The run to read from
+    /// * `start` - Higher sequence (inclusive), the starting point
+    /// * `end` - Lower sequence (inclusive), the ending point
+    ///
+    /// # Returns
+    /// Vec<Versioned<Event>> in descending sequence order (newest first)
+    pub fn read_range_reverse(
+        &self,
+        run_id: &RunId,
+        start: u64,
+        end: u64,
+    ) -> Result<Vec<Versioned<Event>>> {
+        if start < end {
+            return Ok(vec![]); // Invalid range
+        }
+
+        self.db.transaction(*run_id, |txn| {
+            let mut events = Vec::new();
+            let ns = self.namespace_for_run(run_id);
+
+            // Iterate in reverse order (from start down to end)
+            for seq in (end..=start).rev() {
                 let event_key = Key::new_event(ns.clone(), seq);
                 if let Some(v) = txn.get(&event_key)? {
                     let event: Event = from_stored_value(&v).map_err(|e| {
@@ -1615,6 +1768,214 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    // ========== Batch Append Tests ==========
+
+    #[test]
+    fn test_append_batch_empty() {
+        let (_temp, _db, log) = setup();
+        let run_id = RunId::new();
+
+        let versions = log.append_batch(&run_id, &[]).unwrap();
+        assert!(versions.is_empty());
+        assert_eq!(log.len(&run_id).unwrap(), 0);
+    }
+
+    #[test]
+    fn test_append_batch_single() {
+        let (_temp, _db, log) = setup();
+        let run_id = RunId::new();
+
+        let versions = log.append_batch(&run_id, &[("test", int_payload(1))]).unwrap();
+        assert_eq!(versions.len(), 1);
+        assert!(matches!(versions[0], Version::Sequence(0)));
+        assert_eq!(log.len(&run_id).unwrap(), 1);
+    }
+
+    #[test]
+    fn test_append_batch_multiple() {
+        let (_temp, _db, log) = setup();
+        let run_id = RunId::new();
+
+        let events = vec![
+            ("orders", int_payload(1)),
+            ("payments", int_payload(2)),
+            ("orders", int_payload(3)),
+        ];
+
+        let versions = log.append_batch(&run_id, &events).unwrap();
+        assert_eq!(versions.len(), 3);
+        assert!(matches!(versions[0], Version::Sequence(0)));
+        assert!(matches!(versions[1], Version::Sequence(1)));
+        assert!(matches!(versions[2], Version::Sequence(2)));
+
+        assert_eq!(log.len(&run_id).unwrap(), 3);
+        assert_eq!(log.len_by_type(&run_id, "orders").unwrap(), 2);
+        assert_eq!(log.len_by_type(&run_id, "payments").unwrap(), 1);
+    }
+
+    #[test]
+    fn test_append_batch_preserves_chain() {
+        let (_temp, _db, log) = setup();
+        let run_id = RunId::new();
+
+        let events = vec![
+            ("a", int_payload(1)),
+            ("b", int_payload(2)),
+            ("c", int_payload(3)),
+        ];
+
+        log.append_batch(&run_id, &events).unwrap();
+
+        let verification = log.verify_chain(&run_id).unwrap();
+        assert!(verification.is_valid);
+        assert_eq!(verification.length, 3);
+    }
+
+    #[test]
+    fn test_append_batch_validation_failure_rolls_back() {
+        let (_temp, _db, log) = setup();
+        let run_id = RunId::new();
+
+        // First batch succeeds
+        log.append_batch(&run_id, &[("test", int_payload(1))]).unwrap();
+        assert_eq!(log.len(&run_id).unwrap(), 1);
+
+        // Second batch with invalid payload fails
+        let events = vec![
+            ("test", int_payload(2)),
+            ("test", Value::Int(42)), // Invalid: not an object
+            ("test", int_payload(3)),
+        ];
+
+        let result = log.append_batch(&run_id, &events);
+        assert!(result.is_err());
+
+        // Original event still exists, but no new events
+        assert_eq!(log.len(&run_id).unwrap(), 1);
+    }
+
+    #[test]
+    fn test_append_batch_updates_stream_metadata() {
+        let (_temp, _db, log) = setup();
+        let run_id = RunId::new();
+
+        let events = vec![
+            ("orders", int_payload(1)),
+            ("payments", int_payload(2)),
+            ("orders", int_payload(3)),
+        ];
+
+        log.append_batch(&run_id, &events).unwrap();
+
+        let orders_info = log.stream_info(&run_id, "orders").unwrap().unwrap();
+        assert_eq!(orders_info.count, 2);
+        assert_eq!(orders_info.first_sequence, 0);
+        assert_eq!(orders_info.last_sequence, 2);
+
+        let payments_info = log.stream_info(&run_id, "payments").unwrap().unwrap();
+        assert_eq!(payments_info.count, 1);
+        assert_eq!(payments_info.first_sequence, 1);
+        assert_eq!(payments_info.last_sequence, 1);
+    }
+
+    // ========== Reverse Range Tests ==========
+
+    #[test]
+    fn test_read_range_reverse_empty() {
+        let (_temp, _db, log) = setup();
+        let run_id = RunId::new();
+
+        let events = log.read_range_reverse(&run_id, 5, 0).unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn test_read_range_reverse_invalid_range() {
+        let (_temp, _db, log) = setup();
+        let run_id = RunId::new();
+
+        // Append some events
+        for i in 0..5 {
+            log.append(&run_id, "test", int_payload(i)).unwrap();
+        }
+
+        // start < end is invalid
+        let events = log.read_range_reverse(&run_id, 2, 4).unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn test_read_range_reverse_single() {
+        let (_temp, _db, log) = setup();
+        let run_id = RunId::new();
+
+        log.append(&run_id, "test", int_payload(42)).unwrap();
+
+        let events = log.read_range_reverse(&run_id, 0, 0).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].value.payload, int_payload(42));
+    }
+
+    #[test]
+    fn test_read_range_reverse_order() {
+        let (_temp, _db, log) = setup();
+        let run_id = RunId::new();
+
+        for i in 0..5 {
+            log.append(&run_id, "test", int_payload(i)).unwrap();
+        }
+
+        let events = log.read_range_reverse(&run_id, 4, 0).unwrap();
+        assert_eq!(events.len(), 5);
+
+        // Should be in reverse order: 4, 3, 2, 1, 0
+        for (i, event) in events.iter().enumerate() {
+            assert_eq!(event.value.sequence, (4 - i) as u64);
+            assert_eq!(event.value.payload, int_payload(4 - i as i64));
+        }
+    }
+
+    #[test]
+    fn test_read_range_reverse_subset() {
+        let (_temp, _db, log) = setup();
+        let run_id = RunId::new();
+
+        for i in 0..10 {
+            log.append(&run_id, "test", int_payload(i)).unwrap();
+        }
+
+        // Read middle range in reverse
+        let events = log.read_range_reverse(&run_id, 7, 3).unwrap();
+        assert_eq!(events.len(), 5); // 7, 6, 5, 4, 3
+
+        assert_eq!(events[0].value.sequence, 7);
+        assert_eq!(events[1].value.sequence, 6);
+        assert_eq!(events[2].value.sequence, 5);
+        assert_eq!(events[3].value.sequence, 4);
+        assert_eq!(events[4].value.sequence, 3);
+    }
+
+    #[test]
+    fn test_read_range_reverse_vs_forward() {
+        let (_temp, _db, log) = setup();
+        let run_id = RunId::new();
+
+        for i in 0..5 {
+            log.append(&run_id, "test", int_payload(i)).unwrap();
+        }
+
+        let forward = log.read_range(&run_id, 1, 4).unwrap();
+        let reverse = log.read_range_reverse(&run_id, 3, 1).unwrap();
+
+        // Same events, opposite order
+        assert_eq!(forward.len(), 3);
+        assert_eq!(reverse.len(), 3);
+
+        for i in 0..3 {
+            assert_eq!(forward[i].value.sequence, reverse[2 - i].value.sequence);
+        }
     }
 
     // ========== Fast Path Tests (Story #238) ==========
