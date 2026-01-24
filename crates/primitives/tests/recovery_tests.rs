@@ -9,7 +9,7 @@
 use strata_core::types::RunId;
 use strata_core::value::Value;
 use strata_engine::Database;
-use strata_primitives::{EventLog, KVStore, RunIndex, RunStatus, StateCell, TraceStore, TraceType};
+use strata_primitives::{EventLog, KVStore, RunIndex, RunStatus, StateCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -305,237 +305,6 @@ fn test_state_cell_set_survives_recovery() {
     assert_eq!(state.value.version, 2); // init = 1, set = 2
 }
 
-/// Test TraceStore data survives recovery
-#[test]
-fn test_trace_store_survives_recovery() {
-    let (db, temp_dir, run_id) = setup();
-    let path = get_path(&temp_dir);
-
-    let trace_store = TraceStore::new(db.clone());
-
-    // Record traces
-    let id1 = trace_store
-        .record(
-            &run_id,
-            TraceType::Thought {
-                content: "first thought".into(),
-                confidence: None,
-            },
-            vec![],
-            Value::Null,
-        )
-        .unwrap()
-        .value; // Extract trace_id from Versioned
-    let id2 = trace_store
-        .record(
-            &run_id,
-            TraceType::ToolCall {
-                tool_name: "test_tool".into(),
-                arguments: Value::Null,
-                result: None,
-                duration_ms: None,
-            },
-            vec![],
-            Value::Null,
-        )
-        .unwrap()
-        .value; // Extract trace_id from Versioned
-    let id3 = trace_store
-        .record(
-            &run_id,
-            TraceType::Decision {
-                question: "what to do?".into(),
-                options: vec!["a".into(), "b".into()],
-                chosen: "a".into(),
-                reasoning: None,
-            },
-            vec![],
-            Value::Null,
-        )
-        .unwrap()
-        .value; // Extract trace_id from Versioned
-
-    // Verify before crash
-    assert_eq!(trace_store.count(&run_id).unwrap(), 3);
-
-    // Simulate crash
-    drop(trace_store);
-    drop(db);
-
-    // Recovery
-    let db = Arc::new(Database::open(&path).unwrap());
-    let trace_store = TraceStore::new(db.clone());
-
-    // Primary data accessible
-    assert_eq!(trace_store.count(&run_id).unwrap(), 3);
-
-    let trace1 = trace_store.get(&run_id, &id1).unwrap().unwrap();
-    assert!(matches!(trace1.value.trace_type, TraceType::Thought { .. }));
-
-    let trace2 = trace_store.get(&run_id, &id2).unwrap().unwrap();
-    assert!(matches!(trace2.value.trace_type, TraceType::ToolCall { .. }));
-
-    let trace3 = trace_store.get(&run_id, &id3).unwrap().unwrap();
-    assert!(matches!(trace3.value.trace_type, TraceType::Decision { .. }));
-}
-
-/// Test TraceStore type indices survive recovery
-#[test]
-fn test_trace_type_index_survives_recovery() {
-    let (db, temp_dir, run_id) = setup();
-    let path = get_path(&temp_dir);
-
-    let trace_store = TraceStore::new(db.clone());
-
-    // Record multiple traces of different types
-    trace_store
-        .record(
-            &run_id,
-            TraceType::Thought {
-                content: "thought1".into(),
-                confidence: None,
-            },
-            vec![],
-            Value::Null,
-        )
-        .unwrap();
-    trace_store
-        .record(
-            &run_id,
-            TraceType::Thought {
-                content: "thought2".into(),
-                confidence: None,
-            },
-            vec![],
-            Value::Null,
-        )
-        .unwrap();
-    trace_store
-        .record(
-            &run_id,
-            TraceType::ToolCall {
-                tool_name: "tool1".into(),
-                arguments: Value::Null,
-                result: None,
-                duration_ms: None,
-            },
-            vec![],
-            Value::Null,
-        )
-        .unwrap();
-    trace_store
-        .record(
-            &run_id,
-            TraceType::Decision {
-                question: "q".into(),
-                options: vec!["a".into()],
-                chosen: "a".into(),
-                reasoning: None,
-            },
-            vec![],
-            Value::Null,
-        )
-        .unwrap();
-
-    // Verify type query before crash
-    let thoughts = trace_store.query_by_type(&run_id, "Thought").unwrap();
-    assert_eq!(thoughts.len(), 2);
-
-    // Simulate crash
-    drop(trace_store);
-    drop(db);
-
-    // Recovery
-    let db = Arc::new(Database::open(&path).unwrap());
-    let trace_store = TraceStore::new(db.clone());
-
-    // Type index works after recovery
-    let thoughts = trace_store.query_by_type(&run_id, "Thought").unwrap();
-    assert_eq!(thoughts.len(), 2);
-
-    let tool_calls = trace_store.query_by_type(&run_id, "ToolCall").unwrap();
-    assert_eq!(tool_calls.len(), 1);
-
-    let decisions = trace_store.query_by_type(&run_id, "Decision").unwrap();
-    assert_eq!(decisions.len(), 1);
-}
-
-/// Test TraceStore parent-child relationships survive recovery
-#[test]
-fn test_trace_parent_child_survives_recovery() {
-    let (db, temp_dir, run_id) = setup();
-    let path = get_path(&temp_dir);
-
-    let trace_store = TraceStore::new(db.clone());
-
-    // Create parent trace
-    let parent_id = trace_store
-        .record(
-            &run_id,
-            TraceType::ToolCall {
-                tool_name: "parent_tool".into(),
-                arguments: Value::Null,
-                result: None,
-                duration_ms: None,
-            },
-            vec![],
-            Value::Null,
-        )
-        .unwrap()
-        .value; // Extract trace_id from Versioned
-
-    // Create child traces
-    let child1_id = trace_store
-        .record_child(
-            &run_id,
-            &parent_id,
-            TraceType::Thought {
-                content: "child thought 1".into(),
-                confidence: None,
-            },
-            vec![],
-            Value::Null,
-        )
-        .unwrap()
-        .value; // Extract trace_id from Versioned
-    let child2_id = trace_store
-        .record_child(
-            &run_id,
-            &parent_id,
-            TraceType::Thought {
-                content: "child thought 2".into(),
-                confidence: None,
-            },
-            vec![],
-            Value::Null,
-        )
-        .unwrap()
-        .value; // Extract trace_id from Versioned
-
-    // Verify children before crash
-    let children = trace_store.get_children(&run_id, &parent_id).unwrap();
-    assert_eq!(children.len(), 2);
-
-    // Simulate crash
-    drop(trace_store);
-    drop(db);
-
-    // Recovery
-    let db = Arc::new(Database::open(&path).unwrap());
-    let trace_store = TraceStore::new(db.clone());
-
-    // Parent-child index works after recovery
-    let children = trace_store.get_children(&run_id, &parent_id).unwrap();
-    assert_eq!(children.len(), 2);
-
-    // Children have correct parent_id
-    let child1 = trace_store.get(&run_id, &child1_id).unwrap().unwrap();
-    assert_eq!(child1.value.parent_id, Some(parent_id.clone()));
-
-    let child2 = trace_store.get(&run_id, &child2_id).unwrap().unwrap();
-    assert_eq!(child2.value.parent_id, Some(parent_id.clone()));
-}
-
 /// Test RunIndex status survives recovery
 #[test]
 fn test_run_index_status_survives_recovery() {
@@ -670,7 +439,7 @@ fn test_run_delete_survives_recovery() {
 /// Test cross-primitive transaction survives recovery
 #[test]
 fn test_cross_primitive_transaction_survives_recovery() {
-    use strata_primitives::{EventLogExt, KVStoreExt, StateCellExt, TraceStoreExt};
+    use strata_primitives::{EventLogExt, KVStoreExt, StateCellExt};
 
     let (db, temp_dir, run_id) = setup();
     let path = get_path(&temp_dir);
@@ -686,7 +455,6 @@ fn test_cross_primitive_transaction_survives_recovery() {
         txn.kv_put("txn_key", Value::String("txn_value".into()))?;
         txn.event_append("txn_event", int_payload(100))?;
         txn.state_set("txn_state", Value::Int(42))?;
-        txn.trace_record("Thought", Value::String("txn thought".into()))?;
         Ok(())
     });
     assert!(result.is_ok());
@@ -700,7 +468,6 @@ fn test_cross_primitive_transaction_survives_recovery() {
     let kv = KVStore::new(db.clone());
     let event_log = EventLog::new(db.clone());
     let state_cell = StateCell::new(db.clone());
-    let trace_store = TraceStore::new(db.clone());
 
     // All operations survived
     assert_eq!(
@@ -710,7 +477,6 @@ fn test_cross_primitive_transaction_survives_recovery() {
     assert_eq!(event_log.len(&run_id).unwrap(), 1);
     let state = state_cell.read(&run_id, "txn_state").unwrap().unwrap();
     assert_eq!(state.value.value, Value::Int(42));
-    assert_eq!(trace_store.count(&run_id).unwrap(), 1);
 }
 
 /// Test multiple sequential recoveries
@@ -777,7 +543,6 @@ fn test_all_primitives_recover_together() {
         let kv = KVStore::new(db.clone());
         let event_log = EventLog::new(db.clone());
         let state_cell = StateCell::new(db.clone());
-        let trace_store = TraceStore::new(db.clone());
 
         // Create run
         let run_meta = run_index.create_run("full-test").unwrap();
@@ -797,18 +562,6 @@ fn test_all_primitives_recover_together() {
         state_cell
             .cas(&run_id, "full_state", 1, Value::Int(100))
             .unwrap();
-
-        trace_store
-            .record(
-                &run_id,
-                TraceType::Thought {
-                    content: "full thought".into(),
-                    confidence: None,
-                },
-                vec![],
-                Value::Null,
-            )
-            .unwrap();
     }
 
     // Phase 2: Verify all recovered
@@ -818,7 +571,6 @@ fn test_all_primitives_recover_together() {
         let kv = KVStore::new(db.clone());
         let event_log = EventLog::new(db.clone());
         let state_cell = StateCell::new(db.clone());
-        let trace_store = TraceStore::new(db.clone());
 
         // RunIndex
         let run = run_index.get_run("full-test").unwrap().unwrap();
@@ -839,8 +591,5 @@ fn test_all_primitives_recover_together() {
         let state = state_cell.read(&run_id, "full_state").unwrap().unwrap();
         assert_eq!(state.value.value, Value::Int(100));
         assert_eq!(state.value.version, 2);
-
-        // TraceStore
-        assert_eq!(trace_store.count(&run_id).unwrap(), 1);
     }
 }

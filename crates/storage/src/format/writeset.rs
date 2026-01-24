@@ -33,7 +33,7 @@ const MUTATION_APPEND: u8 = 0x03;
 const ENTITY_KV: u8 = 0x01;
 const ENTITY_EVENT: u8 = 0x02;
 const ENTITY_STATE: u8 = 0x03;
-const ENTITY_TRACE: u8 = 0x04;
+// Note: ENTITY_TRACE (0x04) was removed - kept as reserved for backwards compatibility parsing
 const ENTITY_RUN: u8 = 0x05;
 const ENTITY_JSON: u8 = 0x06;
 const ENTITY_VECTOR: u8 = 0x07;
@@ -306,11 +306,6 @@ impl Writeset {
                 bytes.extend_from_slice(run_id.as_bytes());
                 Self::write_string(bytes, name);
             }
-            EntityRef::Trace { run_id, trace_id } => {
-                bytes.push(ENTITY_TRACE);
-                bytes.extend_from_slice(run_id.as_bytes());
-                Self::write_string(bytes, trace_id);
-            }
             EntityRef::Run { run_id } => {
                 bytes.push(ENTITY_RUN);
                 bytes.extend_from_slice(run_id.as_bytes());
@@ -370,10 +365,11 @@ impl Writeset {
                 cursor += consumed;
                 Ok((EntityRef::State { run_id, name }, cursor))
             }
-            ENTITY_TRACE => {
-                let (trace_id, consumed) = Self::read_string(&bytes[cursor..])?;
+            0x04 => {
+                // TraceStore was removed - skip over the trace_id string for backwards compatibility
+                let (_trace_id, consumed) = Self::read_string(&bytes[cursor..])?;
                 cursor += consumed;
-                Ok((EntityRef::Trace { run_id, trace_id }, cursor))
+                Err(WritesetError::InvalidEntityRef) // Trace entities no longer supported
             }
             ENTITY_RUN => Ok((EntityRef::Run { run_id }, cursor)),
             ENTITY_JSON => {
@@ -574,7 +570,6 @@ mod tests {
             EntityRef::kv(run_id, "key"),
             EntityRef::event(run_id, 42),
             EntityRef::state(run_id, "state"),
-            EntityRef::trace(run_id, "trace-id"),
             EntityRef::run(run_id),
             EntityRef::json(run_id, doc_id),
             EntityRef::vector(run_id, "collection", "vec-key"),
