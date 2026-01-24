@@ -42,7 +42,7 @@ VectorStore serves **two distinct purposes**:
 | Phase 1 | User API (count, list, budget search) | ✅ Complete |
 | Phase 2 | Batch Operations | ✅ Complete |
 | Phase 2.5 | WAL Recovery Fix | ✅ Complete |
-| Phase 3 | History & Advanced | 🔲 Pending |
+| Phase 3 | History & Advanced | ✅ Complete |
 
 **Durability:** Vector embeddings survive database restart via WAL recovery.
 
@@ -748,17 +748,29 @@ in test setup. The existing recovery code in `recovery.rs` was already correct.
 - `test_vector_update_persist` ✅
 - `test_vector_search_after_restart` ✅
 
-### Phase 3: History & Advanced
+### Phase 3: History & Advanced ✅ COMPLETE
 
 **Goal**: Full feature parity with other primitives
 
-| Item | Effort |
-|------|--------|
-| History at primitive | 12h |
-| History at substrate/facade | 4h |
-| List/scan operations | 6h |
+| Item | Effort | Status |
+|------|--------|--------|
+| Add embedding to VectorRecord for history support | 2h | ✅ |
+| History at primitive (`history()`, `get_at()`) | 4h | ✅ |
+| History at substrate (`vector_history()`, `vector_get_at()`) | 2h | ✅ |
+| History at facade (`vhistory()`) | 1h | ✅ |
+| List/scan at primitive (`list_keys()`, `scan()`) | 3h | ✅ |
+| List/scan at substrate (`vector_list_keys()`, `vector_scan()`) | 1h | ✅ |
+| List/scan at facade (`vlist()`, `vscan()`) | 1h | ✅ |
+| Comprehensive tests (18 new tests in history.rs) | 3h | ✅ |
 
-**Total: ~22 hours**
+**Total: ~17 hours**
+
+**Implementation Notes:**
+- VectorRecord now stores the embedding alongside metadata for history support
+- Embeddings are stored in versioned KV storage, enabling `storage.get_history()` to work
+- The in-memory backend still stores embeddings for fast search operations
+- History returns complete vector snapshots including embedding data
+- List/scan operations use `scan_prefix()` from storage layer
 
 ---
 

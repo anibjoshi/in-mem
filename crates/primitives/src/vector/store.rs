@@ -668,7 +668,7 @@ impl VectorStore {
         let (vector_id, record) = if let Some(existing_record) = existing {
             // Update existing: keep the same VectorId
             let mut updated = existing_record;
-            updated.update(metadata);
+            updated.update(embedding.to_vec(), metadata);
             (VectorId(updated.vector_id), updated)
         } else {
             // New vector: allocate VectorId from backend's per-collection counter
@@ -682,7 +682,7 @@ impl VectorStore {
 
             // Allocate new ID from backend's per-collection counter (deterministic)
             let vector_id = backend.allocate_id();
-            let record = VectorRecord::new(vector_id, metadata);
+            let record = VectorRecord::new(vector_id, embedding.to_vec(), metadata);
 
             // Insert into backend
             backend.insert(vector_id, embedding)?;
@@ -700,7 +700,7 @@ impl VectorStore {
             }
         }
 
-        // Store record in KV
+        // Store record in KV (includes embedding for history support)
         let record_version = record.version;
         let record_bytes = record.to_bytes()?;
         self.db
@@ -782,7 +782,7 @@ impl VectorStore {
         let (vector_id, record) = if let Some(existing_record) = existing {
             // Update existing: keep the same VectorId
             let mut updated = existing_record;
-            updated.update_with_source(metadata, source_ref.clone());
+            updated.update_with_source(embedding.to_vec(), metadata, source_ref.clone());
             (VectorId(updated.vector_id), updated)
         } else {
             // New vector: allocate VectorId from backend's per-collection counter
@@ -797,9 +797,9 @@ impl VectorStore {
             // Allocate new ID from backend's per-collection counter (deterministic)
             let vector_id = backend.allocate_id();
             let record = if let Some(ref src) = source_ref {
-                VectorRecord::new_with_source(vector_id, metadata, src.clone())
+                VectorRecord::new_with_source(vector_id, embedding.to_vec(), metadata, src.clone())
             } else {
-                VectorRecord::new(vector_id, metadata)
+                VectorRecord::new(vector_id, embedding.to_vec(), metadata)
             };
 
             // Insert into backend
@@ -818,7 +818,7 @@ impl VectorStore {
             }
         }
 
-        // Store record in KV
+        // Store record in KV (includes embedding for history support)
         let record_version = record.version;
         let record_bytes = record.to_bytes()?;
         self.db
@@ -910,6 +910,109 @@ impl VectorStore {
         )))
     }
 
+    /// Get version history for a vector
+    ///
+    /// Returns all historical versions of a vector in descending order (newest first).
+    /// Each version contains the embedding, metadata, and version information at that point in time.
+    ///
+    /// # Arguments
+    /// * `run_id` - Run this vector belongs to
+    /// * `collection` - Collection name
+    /// * `key` - User-provided key
+    /// * `limit` - Maximum number of versions to return (None = all)
+    /// * `before_version` - Only return versions before this version (for pagination)
+    ///
+    /// # Returns
+    /// Vector of versioned entries in descending version order (newest first).
+    /// Returns empty vector if the key doesn't exist.
+    ///
+    /// # Note
+    /// History is only available for vectors stored after embedding storage was added to
+    /// VectorRecord. For older records without embedded storage, the embedding field
+    /// may be empty.
+    pub fn history(
+        &self,
+        run_id: RunId,
+        collection: &str,
+        key: &str,
+        limit: Option<usize>,
+        before_version: Option<u64>,
+    ) -> VectorResult<Vec<Versioned<VectorEntry>>> {
+        use strata_core::traits::Storage;
+
+        // Ensure collection is loaded
+        self.ensure_collection_loaded(run_id, collection)?;
+
+        let kv_key = Key::new_vector(Namespace::for_run(run_id), collection, key);
+
+        // Get history from versioned storage
+        let history = self
+            .db
+            .storage()
+            .get_history(&kv_key, limit, before_version)
+            .map_err(|e| VectorError::Storage(e.to_string()))?;
+
+        // Convert each versioned value to VectorEntry
+        let mut entries = Vec::with_capacity(history.len());
+        for versioned_value in history {
+            let bytes = match &versioned_value.value {
+                Value::Bytes(b) => b,
+                _ => {
+                    // Skip non-bytes values (shouldn't happen, but be defensive)
+                    continue;
+                }
+            };
+
+            let record = VectorRecord::from_bytes(bytes)?;
+
+            let entry = VectorEntry {
+                key: key.to_string(),
+                embedding: record.embedding.clone(),
+                metadata: record.metadata,
+                vector_id: VectorId::new(record.vector_id),
+                version: record.version,
+                source_ref: record.source_ref,
+            };
+
+            entries.push(Versioned::with_timestamp(
+                entry,
+                versioned_value.version,
+                versioned_value.timestamp,
+            ));
+        }
+
+        Ok(entries)
+    }
+
+    /// Get a vector at a specific version
+    ///
+    /// Returns the vector as it existed at a specific version.
+    /// Useful for debugging, auditing, or rollback scenarios.
+    ///
+    /// # Arguments
+    /// * `run_id` - Run this vector belongs to
+    /// * `collection` - Collection name
+    /// * `key` - User-provided key
+    /// * `version` - The internal version (VectorRecord.version) to retrieve
+    ///
+    /// # Returns
+    /// The vector entry if it existed at that version, None otherwise.
+    pub fn get_at(
+        &self,
+        run_id: RunId,
+        collection: &str,
+        key: &str,
+        version: u64,
+    ) -> VectorResult<Option<Versioned<VectorEntry>>> {
+        // Get full history and find the specific version
+        // This is not the most efficient implementation, but it's correct
+        // and history queries are not expected to be frequent.
+        let history = self.history(run_id, collection, key, None, None)?;
+
+        // Find the entry with matching internal version
+        Ok(history.into_iter().find(|e| e.value.version == version))
+    }
+
     /// Delete a vector by key
     ///
     /// Returns true if the vector existed and was deleted.
@@ -968,6 +1071,113 @@ impl VectorStore {
             .ok_or_else(|| VectorError::CollectionNotFound {
                 name: collection.to_string(),
             })
+    }
+
+    /// List all vector keys in a collection
+    ///
+    /// Returns keys in lexicographical order with optional pagination.
+    ///
+    /// # Arguments
+    /// * `run_id` - Run this operation belongs to
+    /// * `collection` - Collection name
+    /// * `limit` - Maximum number of keys to return (None = all)
+    /// * `cursor` - Start from key greater than this (for pagination)
+    ///
+    /// # Returns
+    /// Vector of keys in lexicographical order.
+    pub fn list_keys(
+        &self,
+        run_id: RunId,
+        collection: &str,
+        limit: Option<usize>,
+        cursor: Option<&str>,
+    ) -> VectorResult<Vec<String>> {
+        use strata_core::traits::Storage;
+
+        // Ensure collection is loaded
+        self.ensure_collection_loaded(run_id, collection)?;
+
+        // Use the proper collection prefix for scanning
+        let prefix = Key::vector_collection_prefix(Namespace::for_run(run_id), collection);
+        let all_entries = self
+            .db
+            .storage()
+            .scan_prefix(&prefix, u64::MAX)
+            .map_err(|e| VectorError::Storage(e.to_string()))?;
+
+        // Prefix to strip from user_key (collection/ -> strip the collection part)
+        let key_prefix = format!("{}/", collection);
+
+        // Extract keys, filter by cursor, apply limit
+        let mut keys: Vec<String> = all_entries
+            .into_iter()
+            .filter_map(|(key, versioned_value)| {
+                // Skip tombstones (deleted entries)
+                if matches!(versioned_value.value, Value::Null) {
+                    return None;
+                }
+                // Extract the user key from the Key and strip the collection prefix
+                key.user_key_string().and_then(|full_key| {
+                    full_key.strip_prefix(&key_prefix).map(|s| s.to_string())
+                })
+            })
+            .filter(|k: &String| {
+                // Apply cursor filter
+                match cursor {
+                    Some(c) => k.as_str() > c,
+                    None => true,
+                }
+            })
+            .collect();
+
+        // Sort lexicographically
+        keys.sort();
+
+        // Apply limit
+        if let Some(lim) = limit {
+            keys.truncate(lim);
+        }
+
+        Ok(keys)
+    }
+
+    /// Scan vectors in a collection
+    ///
+    /// Returns vectors in lexicographical key order with optional pagination.
+    /// This is useful for iterating through all vectors in a collection.
+    ///
+    /// # Arguments
+    /// * `run_id` - Run this operation belongs to
+    /// * `collection` - Collection name
+    /// * `limit` - Maximum number of vectors to return (None = all)
+    /// * `cursor` - Start from key greater than this (for pagination)
+    ///
+    /// # Returns
+    /// Vector of (key, embedding, metadata, version) tuples in key order.
+    pub fn scan(
+        &self,
+        run_id: RunId,
+        collection: &str,
+        limit: Option<usize>,
+        cursor: Option<&str>,
+    ) -> VectorResult<Vec<(String, Vec<f32>, Option<JsonValue>, u64)>> {
+        // Get keys first
+        let keys = self.list_keys(run_id, collection, limit, cursor)?;
+
+        // Fetch each vector
+        let mut results = Vec::with_capacity(keys.len());
+        for key in keys {
+            if let Some(entry) = self.get(run_id, collection, &key)? {
+                results.push((
+                    key,
+                    entry.value.embedding,
+                    entry.value.metadata,
+                    entry.value.version,
+                ));
+            }
+        }
+
+        Ok(results)
     }
 
     /// Search for similar vectors
@@ -1526,9 +1736,9 @@ impl VectorStore {
             // Update existing: keep the same VectorId
             let mut updated = existing_record;
             if source_ref.is_some() {
-                updated.update_with_source(metadata, source_ref.clone());
+                updated.update_with_source(embedding.to_vec(), metadata, source_ref.clone());
             } else {
-                updated.update(metadata);
+                updated.update(embedding.to_vec(), metadata);
             }
             (VectorId(updated.vector_id), updated)
         } else {
@@ -1544,9 +1754,9 @@ impl VectorStore {
             // Allocate new ID
             let vector_id = backend.allocate_id();
             let record = if let Some(ref src) = source_ref {
-                VectorRecord::new_with_source(vector_id, metadata, src.clone())
+                VectorRecord::new_with_source(vector_id, embedding.to_vec(), metadata, src.clone())
             } else {
-                VectorRecord::new(vector_id, metadata)
+                VectorRecord::new(vector_id, embedding.to_vec(), metadata)
             };
 
             // Insert into backend
@@ -1565,7 +1775,7 @@ impl VectorStore {
             }
         }
 
-        // Store record in KV
+        // Store record in KV (includes embedding for history support)
         let record_version = record.version;
         let record_bytes = record.to_bytes()?;
         self.db

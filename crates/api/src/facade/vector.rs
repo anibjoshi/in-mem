@@ -226,6 +226,61 @@ pub trait VectorFacade {
     /// ## Returns
     /// Number of vectors that existed and were deleted.
     fn vdel_batch(&self, collection: &str, keys: &[&str]) -> StrataResult<usize>;
+
+    /// Get version history for a vector
+    ///
+    /// Returns all historical versions of a vector, newest first.
+    ///
+    /// ## Parameters
+    /// - `collection`: Collection name
+    /// - `key`: Vector key
+    /// - `limit`: Maximum number of versions to return (None = all)
+    ///
+    /// ## Returns
+    /// Vector of (embedding, metadata, version) tuples in descending version order.
+    /// Empty if the key doesn't exist.
+    fn vhistory(
+        &self,
+        collection: &str,
+        key: &str,
+        limit: Option<usize>,
+    ) -> StrataResult<Vec<(Vec<f32>, Value, u64)>>;
+
+    /// List all vector keys in a collection
+    ///
+    /// Returns keys in lexicographical order with optional pagination.
+    ///
+    /// ## Parameters
+    /// - `collection`: Collection name
+    /// - `limit`: Maximum number of keys to return (None = all)
+    /// - `cursor`: Start from key greater than this (for pagination)
+    ///
+    /// ## Returns
+    /// Vector of keys in lexicographical order.
+    fn vlist(
+        &self,
+        collection: &str,
+        limit: Option<usize>,
+        cursor: Option<&str>,
+    ) -> StrataResult<Vec<String>>;
+
+    /// Scan vectors in a collection
+    ///
+    /// Returns vectors in lexicographical key order with optional pagination.
+    ///
+    /// ## Parameters
+    /// - `collection`: Collection name
+    /// - `limit`: Maximum number of vectors to return (None = all)
+    /// - `cursor`: Start from key greater than this (for pagination)
+    ///
+    /// ## Returns
+    /// Vector of (key, embedding, metadata) tuples in key order.
+    fn vscan(
+        &self,
+        collection: &str,
+        limit: Option<usize>,
+        cursor: Option<&str>,
+    ) -> StrataResult<Vec<(String, Vec<f32>, Value)>>;
 }
 
 // =============================================================================
@@ -412,6 +467,63 @@ impl VectorFacade for FacadeImpl {
 
         // Count successful deletes (true = existed and was deleted)
         Ok(results.into_iter().filter(|&deleted| deleted).count())
+    }
+
+    fn vhistory(
+        &self,
+        collection: &str,
+        key: &str,
+        limit: Option<usize>,
+    ) -> StrataResult<Vec<(Vec<f32>, Value, u64)>> {
+        let history = self.substrate().vector_history(
+            self.default_run(),
+            collection,
+            key,
+            limit,
+            None, // No before_version pagination in facade
+        )?;
+
+        Ok(history.into_iter().map(|v| {
+            let version = match v.version {
+                strata_core::Version::Txn(txn) => txn,
+                strata_core::Version::Counter(c) => c,
+                strata_core::Version::Sequence(s) => s,
+            };
+            (v.value.0, v.value.1, version)
+        }).collect())
+    }
+
+    fn vlist(
+        &self,
+        collection: &str,
+        limit: Option<usize>,
+        cursor: Option<&str>,
+    ) -> StrataResult<Vec<String>> {
+        self.substrate().vector_list_keys(
+            self.default_run(),
+            collection,
+            limit,
+            cursor,
+        )
+    }
+
+    fn vscan(
+        &self,
+        collection: &str,
+        limit: Option<usize>,
+        cursor: Option<&str>,
+    ) -> StrataResult<Vec<(String, Vec<f32>, Value)>> {
+        let results = self.substrate().vector_scan(
+            self.default_run(),
+            collection,
+            limit,
+            cursor,
+        )?;
+
+        Ok(results
+            .into_iter()
+            .map(|(key, (embedding, metadata))| (key, embedding, metadata))
+            .collect())
     }
 }
 

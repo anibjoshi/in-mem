@@ -8,6 +8,7 @@
 //! - durability: Persistence across restarts
 //! - concurrency: Thread safety
 //! - edge_cases: Validation and boundary conditions
+//! - history: Version history and point-in-time retrieval
 
 mod basic_ops;
 mod batch;
@@ -16,3 +17,4 @@ mod search;
 mod durability;
 mod concurrency;
 mod edge_cases;
+mod history;

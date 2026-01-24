@@ -444,6 +444,113 @@ pub trait VectorStore {
         collection: &str,
         keys: &[&str],
     ) -> StrataResult<Vec<bool>>;
+
+    /// Get version history for a vector
+    ///
+    /// Returns all historical versions of a vector in descending order (newest first).
+    ///
+    /// ## Parameters
+    ///
+    /// - `collection`: Collection name
+    /// - `key`: Vector key
+    /// - `limit`: Maximum number of versions to return (None = all)
+    /// - `before_version`: Only return versions before this internal version (for pagination)
+    ///
+    /// ## Returns
+    ///
+    /// Vector of versioned data in descending version order (newest first).
+    /// Empty if the key doesn't exist.
+    ///
+    /// ## Errors
+    ///
+    /// - `InvalidKey`: Collection name is invalid
+    /// - `NotFound`: Run does not exist
+    fn vector_history(
+        &self,
+        run: &ApiRunId,
+        collection: &str,
+        key: &str,
+        limit: Option<usize>,
+        before_version: Option<u64>,
+    ) -> StrataResult<Vec<Versioned<VectorData>>>;
+
+    /// Get a vector at a specific version
+    ///
+    /// Returns the vector as it existed at a specific internal version.
+    ///
+    /// ## Parameters
+    ///
+    /// - `collection`: Collection name
+    /// - `key`: Vector key
+    /// - `version`: The internal version (VectorRecord.version) to retrieve
+    ///
+    /// ## Returns
+    ///
+    /// The vector data if it existed at that version, None otherwise.
+    ///
+    /// ## Errors
+    ///
+    /// - `InvalidKey`: Collection name is invalid
+    /// - `NotFound`: Run does not exist
+    fn vector_get_at(
+        &self,
+        run: &ApiRunId,
+        collection: &str,
+        key: &str,
+        version: u64,
+    ) -> StrataResult<Option<Versioned<VectorData>>>;
+
+    /// List all vector keys in a collection
+    ///
+    /// Returns keys in lexicographical order with optional pagination.
+    ///
+    /// ## Parameters
+    ///
+    /// - `collection`: Collection name
+    /// - `limit`: Maximum number of keys to return (None = all)
+    /// - `cursor`: Start from key greater than this (for pagination)
+    ///
+    /// ## Returns
+    ///
+    /// Vector of keys in lexicographical order.
+    ///
+    /// ## Errors
+    ///
+    /// - `InvalidKey`: Collection name is invalid
+    /// - `NotFound`: Run does not exist
+    fn vector_list_keys(
+        &self,
+        run: &ApiRunId,
+        collection: &str,
+        limit: Option<usize>,
+        cursor: Option<&str>,
+    ) -> StrataResult<Vec<String>>;
+
+    /// Scan vectors in a collection
+    ///
+    /// Returns vectors in lexicographical key order with optional pagination.
+    ///
+    /// ## Parameters
+    ///
+    /// - `collection`: Collection name
+    /// - `limit`: Maximum number of vectors to return (None = all)
+    /// - `cursor`: Start from key greater than this (for pagination)
+    ///
+    /// ## Returns
+    ///
+    /// Vector of (key, vector_data) pairs in key order.
+    ///
+    /// ## Errors
+    ///
+    /// - `InvalidKey`: Collection name is invalid
+    /// - `NotFound`: Run does not exist
+    fn vector_scan(
+        &self,
+        run: &ApiRunId,
+        collection: &str,
+        limit: Option<usize>,
+        cursor: Option<&str>,
+    ) -> StrataResult<Vec<(String, VectorData)>>;
 }
 
 /// Information about a vector collection
@@ -1026,6 +1133,118 @@ impl VectorStore for SubstrateImpl {
         self.vector()
             .delete_batch(run_id, collection, keys)
             .map_err(convert_vector_error)
+    }
+
+    fn vector_history(
+        &self,
+        run: &ApiRunId,
+        collection: &str,
+        key: &str,
+        limit: Option<usize>,
+        before_version: Option<u64>,
+    ) -> StrataResult<Vec<Versioned<VectorData>>> {
+        // Block access to internal collections
+        validate_not_internal_collection(collection)?;
+
+        let run_id = run.to_run_id();
+
+        let history = self
+            .vector()
+            .history(run_id, collection, key, limit, before_version)
+            .map_err(convert_vector_error)?;
+
+        // Convert each entry to VectorData
+        Ok(history
+            .into_iter()
+            .map(|e| {
+                // Convert serde_json::Value metadata back to strata_core::Value
+                let api_metadata: Value = e.value.metadata.clone()
+                    .and_then(|v| serde_json::from_value(v).ok())
+                    .unwrap_or(Value::Null);
+                Versioned {
+                    value: (e.value.embedding.clone(), api_metadata),
+                    version: e.version,
+                    timestamp: e.timestamp,
+                }
+            })
+            .collect())
+    }
+
+    fn vector_get_at(
+        &self,
+        run: &ApiRunId,
+        collection: &str,
+        key: &str,
+        version: u64,
+    ) -> StrataResult<Option<Versioned<VectorData>>> {
+        // Block access to internal collections
+        validate_not_internal_collection(collection)?;
+
+        let run_id = run.to_run_id();
+
+        let entry = self
+            .vector()
+            .get_at(run_id, collection, key, version)
+            .map_err(convert_vector_error)?;
+
+        Ok(entry.map(|e| {
+            // Convert serde_json::Value metadata back to strata_core::Value
+            let api_metadata: Value = e.value.metadata.clone()
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or(Value::Null);
+            Versioned {
+                value: (e.value.embedding.clone(), api_metadata),
+                version: e.version,
+                timestamp: e.timestamp,
+            }
+        }))
+    }
+
+    fn vector_list_keys(
+        &self,
+        run: &ApiRunId,
+        collection: &str,
+        limit: Option<usize>,
+        cursor: Option<&str>,
+    ) -> StrataResult<Vec<String>> {
+        // Block access to internal collections
+        validate_not_internal_collection(collection)?;
+
+        let run_id = run.to_run_id();
+
+        self.vector()
+            .list_keys(run_id, collection, limit, cursor)
+            .map_err(convert_vector_error)
+    }
+
+    fn vector_scan(
+        &self,
+        run: &ApiRunId,
+        collection: &str,
+        limit: Option<usize>,
+        cursor: Option<&str>,
+    ) -> StrataResult<Vec<(String, VectorData)>> {
+        // Block access to internal collections
+        validate_not_internal_collection(collection)?;
+
+        let run_id = run.to_run_id();
+
+        let results = self
+            .vector()
+            .scan(run_id, collection, limit, cursor)
+            .map_err(convert_vector_error)?;
+
+        // Convert to API types
+        Ok(results
+            .into_iter()
+            .map(|(key, embedding, metadata, _version)| {
+                // Convert serde_json::Value metadata back to strata_core::Value
+                let api_metadata: Value = metadata
+                    .and_then(|v| serde_json::from_value(v).ok())
+                    .unwrap_or(Value::Null);
+                (key, (embedding, api_metadata))
+            })
+            .collect())
     }
 }
 
