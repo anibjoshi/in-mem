@@ -341,10 +341,10 @@ impl TryFrom<u8> for WalEntryType {
             0x41 => Ok(WalEntryType::StateSet),
             0x42 => Ok(WalEntryType::StateTransition),
 
-            // Reserved (0x50-0x5F) - formerly Trace
+            // Reserved (0x50-0x5F)
             0x50..=0x5F => Err(WalEntryTypeError::ReservedEntryType {
                 value,
-                range: "Reserved (formerly Trace)",
+                range: "Reserved (0x50-0x5F)",
             }),
 
             // Run (0x60-0x6F)
@@ -446,7 +446,7 @@ mod tests {
             WalEntryType::try_from(0x40).unwrap(),
             WalEntryType::StateInit
         );
-        // 0x50 is now reserved (formerly Trace)
+        // 0x50 is reserved
         assert!(WalEntryType::try_from(0x50).is_err());
         assert_eq!(
             WalEntryType::try_from(0x60).unwrap(),
@@ -705,8 +705,8 @@ mod tests {
     }
 
     #[test]
-    fn test_trace_range_reserved() {
-        // The 0x50-0x5F range (formerly Trace) is now reserved
+    fn test_0x50_range_reserved() {
+        // The 0x50-0x5F range is reserved
         for val in 0x50..=0x5F {
             let result = WalEntryType::try_from(val);
             assert!(matches!(

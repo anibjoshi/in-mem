@@ -626,7 +626,7 @@ impl RunIndex {
     /// This is a cascading delete that removes:
     /// - Run metadata
     /// - All secondary indices
-    /// - All run-scoped data (KV, Events, States, Traces)
+    /// - All run-scoped data (KV, Events, States)
     ///
     /// USE WITH CAUTION - this is irreversible!
     pub fn delete_run(&self, run_id: &str) -> Result<()> {

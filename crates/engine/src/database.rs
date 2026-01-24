@@ -1448,7 +1448,7 @@ impl Database {
                         }
                     }
                 }
-                // Other types (State, Trace, Run, etc.) are stored but not
+                // Other types (State, Run, etc.) are stored but not
                 // currently exposed in ReadOnlyView. They can be added as needed.
                 _ => {}
             }

@@ -7,7 +7,7 @@
 //!
 //! Different primitives use different versioning schemes:
 //!
-//! - **TxnId**: Transaction-based versioning (KV, Json, Vector, Run, Trace)
+//! - **TxnId**: Transaction-based versioning (KV, Json, Vector, Run)
 //!   Multiple entities modified in the same transaction share this version.
 //!
 //! - **Sequence**: Position-based versioning (EventLog)
@@ -37,7 +37,7 @@ use serde::{Deserialize, Serialize};
 pub enum Version {
     /// Transaction-based version
     ///
-    /// Used by: KV, Json, Vector, Run, Trace
+    /// Used by: KV, Json, Vector, Run
     ///
     /// Represents a global transaction ID. Multiple entities modified
     /// in the same transaction share this version.
