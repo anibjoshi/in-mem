@@ -49,6 +49,14 @@ tokio = { version = "1.35", features = ["full"] }
 rmp-serde = "1.1"
 byteorder = "1.5"
 
+# Archive/Compression (RunBundle)
+tar = "0.4"
+zstd = "0.13"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
+# Encoding
+base64 = "0.21"
+
 # Testing
 proptest = "1.4"
 rand = "0.8"
