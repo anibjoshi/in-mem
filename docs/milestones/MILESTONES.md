@@ -625,7 +625,6 @@ If Strata becomes successful, people will build servers on top of it. But the va
 
 ### Gate 6: Deprecation & Migration
 - [ ] Old API marked `#[deprecated(since = "0.12.0")]`
-- [ ] Migration guide (v0.11 → v0.12)
 - [ ] Old tests updated to new API
 - [ ] Examples updated to new API
 

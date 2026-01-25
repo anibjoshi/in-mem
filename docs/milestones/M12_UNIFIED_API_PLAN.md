@@ -676,7 +676,7 @@ impl Strata {
 
 ### Phase 6: Deprecate Old API
 
-**Goal**: Mark old API as deprecated with migration guidance.
+**Goal**: Mark old API as deprecated.
 
 #### 6.1 Add Deprecation Attributes
 
@@ -685,7 +685,7 @@ impl Strata {
 
 #[deprecated(
     since = "0.12.0",
-    note = "Use `strata::prelude::*` and `db.kv.set()` instead. See migration guide."
+    note = "Use `strata::prelude::*` and `db.kv.set()` instead"
 )]
 pub use kv::KVStore;
 
@@ -696,69 +696,9 @@ pub use kv::KVStore;
 pub use impl_::SubstrateImpl;
 ```
 
-#### 6.2 Migration Guide
-
-Create `docs/MIGRATION_0_12.md`:
-
-```markdown
-# Migration Guide: v0.11 → v0.12
-
-## Overview
-
-v0.12 introduces a unified API surface. The old Facade and Substrate APIs
-are deprecated but still functional.
-
-## Quick Migration
-
-### Before (v0.11)
-
-```rust
-use strata_api::substrate::{KVStore, ApiRunId};
-use strata_api::facade::KVFacade;
-use strata_engine::Database;
-
-let db = Database::open("./db")?;
-let substrate = SubstrateImpl::new(db.clone());
-
-// Substrate
-substrate.kv_put(&run, "key", value)?;
-
-// Facade
-facade.set("key", value)?;
-```
-
-### After (v0.12)
-
-```rust
-use strata::prelude::*;
-
-let db = Strata::open("./db")?;
-
-// Simple
-db.kv.set("key", value)?;
-
-// With run
-db.kv.set_in(&run, "key", value)?;
-
-// Full control
-let version = db.kv.put(&run, "key", value)?;
-```
-
-## Method Mapping
-
-| Old | New |
-|-----|-----|
-| `kv_put(&run, k, v)` | `db.kv.put(&run, k, v)` |
-| `kv_get(&run, k)` | `db.kv.get_in(&run, k)` |
-| `facade.set(k, v)` | `db.kv.set(k, v)` |
-| `facade.get(k)` | `db.kv.get(k)` |
-| ... | ... |
-```
-
-#### 6.3 Tasks
+#### 6.2 Tasks
 
 - [ ] Add `#[deprecated]` to all old API items
-- [ ] Write migration guide
 - [ ] Update README
 - [ ] Update all examples
 - [ ] Update all tests to use new API
