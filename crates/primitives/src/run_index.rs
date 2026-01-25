@@ -643,10 +643,11 @@ impl RunIndex {
             .ok_or_else(|| Error::InvalidOperation(format!("Run '{}' not found", run_id)))?
             .value;
 
-        // Use run_meta.run_id (the internal UUID) for namespace.
-        // All primitives (KV, State, etc.) use the UUID for namespacing via Namespace::for_run().
-        let actual_run_id = RunId::from_string(&run_meta.run_id).ok_or_else(|| {
-            Error::InvalidOperation(format!("Invalid run UUID: {}", run_meta.run_id))
+        // Use run_meta.name (the user-provided run identifier) for namespace.
+        // The substrate layer uses ApiRunId.to_run_id() which converts the name to a RunId,
+        // so all primitives (KV, State, etc.) store data under namespace derived from name.
+        let actual_run_id = RunId::from_string(&run_meta.name).ok_or_else(|| {
+            Error::InvalidOperation(format!("Invalid run name: {}", run_meta.name))
         })?;
 
         // First, delete all run-scoped data (cascading delete)
