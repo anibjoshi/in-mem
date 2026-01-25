@@ -2,9 +2,12 @@
 //!
 //! This module re-exports types from internal crates with a clean public interface.
 
+// ============================================================================
+// Public API types - these are what users should use
+// ============================================================================
+
 // Core value types
 pub use strata_core::Value;
-pub use strata_core::JsonValue;
 
 // Version and versioned wrapper
 pub use strata_core::Version;
@@ -13,32 +16,28 @@ pub use strata_core::Timestamp;
 
 // Run types
 pub use strata_core::RunId;
-pub use strata_core::RunName;
-pub use strata_core::RunStatus;
-
-// JSON types
-pub use strata_core::JsonPath;
-pub use strata_core::JsonPatch;
 
 // Vector types
 pub use strata_core::DistanceMetric;
 
-// Re-export VectorMatch from substrate (it's defined there, not in core)
-pub use strata_api::substrate::VectorMatch;
+// Run state and info (users need these for run management)
+pub use strata_api::substrate::{RunInfo, RunState, RetentionPolicy};
 
-// API types from strata-api substrate
-pub use strata_api::substrate::{
-    ApiRunId, RunInfo, RunState, RetentionPolicy,
-    SearchFilter, VectorData,
-};
+// Vector search types
+pub use strata_api::substrate::{VectorMatch, VectorData, SearchFilter};
 
-// Re-export durability mode from engine
+// Durability mode for builder configuration
 pub use strata_engine::DurabilityMode;
 
-/// Convert a RunId to ApiRunId.
-///
-/// This is a helper for converting between internal and API types.
-pub fn run_id_to_api(run_id: &RunId) -> ApiRunId {
+// ============================================================================
+// Internal types - not exposed in public API
+// ============================================================================
+
+// Internal API types used by primitives
+pub(crate) use strata_api::substrate::ApiRunId;
+
+/// Convert a RunId to ApiRunId (internal use only).
+pub(crate) fn run_id_to_api(run_id: &RunId) -> ApiRunId {
     let uuid = uuid::Uuid::from_bytes(*run_id.as_bytes());
     ApiRunId::from_uuid(uuid)
 }
