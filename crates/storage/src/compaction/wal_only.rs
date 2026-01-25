@@ -24,6 +24,7 @@ use crate::format::{ManifestManager, SegmentHeader, WalRecord, WalRecordError, S
 use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tracing::warn;
 
 use super::{CompactInfo, CompactMode, CompactionError};
 
@@ -90,9 +91,10 @@ impl WalOnlyCompactor {
 
                             if let Err(e) = std::fs::remove_file(&segment_path) {
                                 // Log but continue - partial compaction is acceptable
-                                eprintln!(
-                                    "Warning: failed to remove segment {}: {}",
-                                    segment_number, e
+                                warn!(
+                                    segment = segment_number,
+                                    error = %e,
+                                    "Failed to remove WAL segment"
                                 );
                                 continue;
                             }
@@ -102,9 +104,10 @@ impl WalOnlyCompactor {
                         }
                         Err(e) => {
                             // Segment might have been removed by another process
-                            eprintln!(
-                                "Warning: failed to stat segment {}: {}",
-                                segment_number, e
+                            warn!(
+                                segment = segment_number,
+                                error = %e,
+                                "Failed to stat WAL segment"
                             );
                         }
                     }
@@ -114,9 +117,10 @@ impl WalOnlyCompactor {
                 }
                 Err(e) => {
                     // Error reading segment - skip it for safety
-                    eprintln!(
-                        "Warning: failed to check segment {}: {}",
-                        segment_number, e
+                    warn!(
+                        segment = segment_number,
+                        error = %e,
+                        "Failed to check WAL segment coverage"
                     );
                 }
             }
