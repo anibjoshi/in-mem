@@ -1,7 +1,8 @@
 [package]
-name = "strata"
+name = "stratadb"
 version = "0.1.0"
 edition = "2021"
+description = "Production-grade embedded database for AI agents"
 
 [workspace]
 resolver = "2"

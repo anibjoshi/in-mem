@@ -13,10 +13,10 @@ To reach developers across the modern tech stack, Strata provides **five API sur
 
 | Surface | Target Audience | Installation | Status |
 |---------|-----------------|--------------|--------|
-| **Rust** | Systems developers, performance-critical apps | `cargo add strata` | ✅ Done |
-| **Python** | AI/ML developers, data scientists | `pip install strata` | Planned |
-| **Node.js** | Web developers, serverless | `npm install strata` | Planned |
-| **CLI** | DevOps, debugging, exploration | `brew install strata` | Planned |
+| **Rust** | Systems developers, performance-critical apps | `cargo add stratadb` | ✅ Done |
+| **Python** | AI/ML developers, data scientists | `pip install stratadb` | Planned |
+| **Node.js** | Web developers, serverless | `npm install stratadb` | Planned |
+| **CLI** | DevOps, debugging, exploration | `brew install stratadb` | Planned |
 | **MCP** | AI agents (Claude, etc.) | Configure in AI client | Planned |
 
 All five surfaces wrap the same embedded Rust core. No network calls, no server processes (except MCP which runs as a subprocess).
@@ -69,12 +69,12 @@ All five surfaces wrap the same embedded Rust core. No network calls, no server 
 ### Installation
 ```toml
 [dependencies]
-strata = "0.1"
+stratadb = "0.1"
 ```
 
 ### API Example
 ```rust
-use strata::prelude::*;
+use stratadb::prelude::*;
 
 fn main() -> Result<()> {
     // Open database (creates if not exists)
@@ -131,12 +131,12 @@ fn main() -> Result<()> {
 
 ### Installation
 ```bash
-pip install strata
+pip install stratadb
 ```
 
 ### API Example
 ```python
-from strata import Strata, DistanceMetric
+from stratadb import Strata, DistanceMetric
 
 # Open database
 db = Strata.open("./my-agent-db")
@@ -189,7 +189,7 @@ with Strata.open("./db") as db:
 
 ### LangChain Integration Example
 ```python
-from strata import Strata
+from stratadb import Strata
 from langchain.vectorstores import VectorStore
 
 class StrataVectorStore(VectorStore):
@@ -247,16 +247,16 @@ strata-python/
 
 ### Installation
 ```bash
-npm install strata
+npm install stratadb
 # or
-yarn add strata
+yarn add stratadb
 # or
-pnpm add strata
+pnpm add stratadb
 ```
 
 ### API Example
 ```typescript
-import { Strata, DistanceMetric } from 'strata';
+import { Strata, DistanceMetric } from 'stratadb';
 
 // Open database
 const db = await Strata.open('./my-agent-db');
@@ -307,7 +307,7 @@ await db.close();
 
 ### Vercel AI SDK Integration Example
 ```typescript
-import { Strata } from 'strata';
+import { Strata } from 'stratadb';
 import { openai } from '@ai-sdk/openai';
 import { generateText } from 'ai';
 
@@ -376,13 +376,13 @@ strata-node/
 ### Installation
 ```bash
 # macOS
-brew install strata
+brew install stratadb
 
 # Linux
 curl -sSL https://strata.dev/install.sh | sh
 
 # Windows
-scoop install strata
+scoop install stratadb
 
 # From source
 cargo install strata-cli
@@ -542,7 +542,7 @@ Model Context Protocol (MCP) is a standard for AI models to interact with extern
 ### Installation
 The MCP server is bundled with the CLI:
 ```bash
-brew install strata  # Includes strata-mcp
+brew install stratadb  # Includes strata-mcp
 ```
 
 ### Configuration (Claude Desktop)
@@ -722,13 +722,13 @@ Based on Strata's mission of being the database for AI agents:
 
 | Surface | Package Name | Registry |
 |---------|--------------|----------|
-| Rust | `strata` | crates.io |
+| Rust | `stratadb` | crates.io |
 | Python | `stratadb` | PyPI |
 | Node.js | `stratadb` | npm |
-| CLI | `strata` | Homebrew, apt, etc. |
+| CLI | `stratadb` | Homebrew, apt, etc. |
 | MCP | (bundled with CLI) | - |
 
-Note: `strata` may be taken on PyPI/npm, so we use `stratadb`.
+Consistent naming across all platforms: **`stratadb`**
 
 ---
 

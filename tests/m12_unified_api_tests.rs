@@ -3,8 +3,8 @@
 //! Tests for the new unified API entry point (`strata` crate).
 //! Validates progressive disclosure pattern and ergonomic API design.
 
-use strata::prelude::*;
-use strata::DistanceMetric;
+use stratadb::prelude::*;
+use stratadb::DistanceMetric;
 use tempfile::TempDir;
 
 // ============================================================================

@@ -9,7 +9,7 @@
 //! ## Quick Start
 //!
 //! ```ignore
-//! use strata::prelude::*;
+//! use stratadb::prelude::*;
 //!
 //! // Open a database
 //! let db = Strata::open("./my-db")?;
