@@ -117,6 +117,56 @@ impl RetryConfig {
 }
 
 // ============================================================================
+// Persistence Mode (M13: Storage/Durability Split)
+// ============================================================================
+
+/// Controls where data is stored (orthogonal to durability)
+///
+/// This enum distinguishes between truly in-memory (ephemeral) databases
+/// and disk-backed databases. This is orthogonal to `DurabilityMode`,
+/// which controls WAL sync behavior.
+///
+/// # Persistence vs Durability
+///
+/// | PersistenceMode | DurabilityMode | Behavior |
+/// |-----------------|----------------|----------|
+/// | Ephemeral | (ignored) | No files, data lost on drop |
+/// | Disk | InMemory | Files created, no fsync |
+/// | Disk | Buffered | Files created, periodic fsync |
+/// | Disk | Strict | Files created, immediate fsync |
+///
+/// # Use Cases
+///
+/// - **Ephemeral**: Unit tests, caching, temporary computations
+/// - **Disk + InMemory**: Integration tests (fast, isolated, but files exist)
+/// - **Disk + Buffered**: Production workloads
+/// - **Disk + Strict**: Audit logs, critical data
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PersistenceMode {
+    /// No disk files at all - data exists only in memory
+    ///
+    /// - No directories created
+    /// - No WAL file
+    /// - No recovery possible
+    /// - Data lost when database is dropped
+    ///
+    /// Use for unit tests, caching, and truly ephemeral data.
+    Ephemeral,
+
+    /// Data stored on disk (temp or user-specified path)
+    ///
+    /// Creates directories and WAL file. Data can survive crashes
+    /// depending on the `DurabilityMode`.
+    Disk,
+}
+
+impl Default for PersistenceMode {
+    fn default() -> Self {
+        PersistenceMode::Disk
+    }
+}
+
+// ============================================================================
 // M4: Database Builder Pattern
 // ============================================================================
 
@@ -131,9 +181,12 @@ impl RetryConfig {
 /// use strata_engine::{Database, DatabaseBuilder};
 /// use strata_durability::wal::DurabilityMode;
 ///
-/// // InMemory mode for tests (fastest)
+/// // Ephemeral mode for unit tests (no disk I/O)
+/// let db = Database::ephemeral()?;
+///
+/// // No-durability mode for integration tests (disk, no fsync)
 /// let db = Database::builder()
-///     .in_memory()
+///     .no_durability()
 ///     .open_temp()?;
 ///
 /// // Buffered mode for production (balanced)
@@ -169,8 +222,10 @@ impl RetryConfig {
 pub struct DatabaseBuilder {
     /// Database path (None for temporary)
     path: Option<PathBuf>,
-    /// Durability mode
+    /// Durability mode (controls WAL sync behavior for disk-backed databases)
     durability: DurabilityMode,
+    /// Persistence mode (controls whether files are created at all)
+    persistence: PersistenceMode,
 }
 
 impl DatabaseBuilder {
@@ -181,6 +236,7 @@ impl DatabaseBuilder {
         Self {
             path: None,
             durability: DurabilityMode::Strict, // M3 default for backwards compatibility
+            persistence: PersistenceMode::Disk,
         }
     }
 
@@ -198,12 +254,31 @@ impl DatabaseBuilder {
         self
     }
 
-    /// Use InMemory mode (M4: fastest, no persistence)
+    /// Use no-durability mode (no WAL sync, files still created)
+    ///
+    /// This sets `DurabilityMode::InMemory` which bypasses WAL fsync.
+    /// **Note**: Disk files are still created. For truly file-free operation,
+    /// use [`Database::ephemeral()`] instead.
     ///
     /// Target latency: <3µs for engine/put_direct
     /// Throughput: 250K+ ops/sec
     ///
     /// All data lost on crash. Use for tests, caches, ephemeral data.
+    pub fn no_durability(mut self) -> Self {
+        self.durability = DurabilityMode::InMemory;
+        self
+    }
+
+    /// Deprecated: Use `no_durability()` instead.
+    ///
+    /// This method name was confusing because it only affects WAL sync behavior,
+    /// not storage location. Files are still created on disk.
+    ///
+    /// For truly in-memory operation with no disk files, use [`Database::ephemeral()`].
+    #[deprecated(
+        since = "0.14.0",
+        note = "Use .no_durability() instead - this sets WAL mode, not storage location. For no disk files, use Database::ephemeral()"
+    )]
     pub fn in_memory(mut self) -> Self {
         self.durability = DurabilityMode::InMemory;
         self
@@ -337,15 +412,19 @@ impl Default for DatabaseBuilder {
 /// })?;
 /// ```
 pub struct Database {
-    /// Data directory path
+    /// Data directory path (empty for ephemeral databases)
     data_dir: PathBuf,
 
     /// Sharded storage with O(1) lazy snapshots (thread-safe)
     storage: Arc<ShardedStore>,
 
     /// Write-ahead log (protected by mutex for exclusive access)
+    /// None for ephemeral databases (no disk I/O)
     /// Using parking_lot::Mutex to avoid lock poisoning on panic
-    wal: Arc<ParkingMutex<WAL>>,
+    wal: Option<Arc<ParkingMutex<WAL>>>,
+
+    /// Persistence mode (ephemeral vs disk-backed)
+    persistence_mode: PersistenceMode,
 
     /// Transaction coordinator for lifecycle management, version allocation, and metrics
     ///
@@ -387,7 +466,7 @@ impl Database {
     ///
     /// ```ignore
     /// let db = Database::builder()
-    ///     .in_memory()
+    ///     .no_durability()
     ///     .open_temp()?;
     /// ```
     pub fn builder() -> DatabaseBuilder {
@@ -484,7 +563,8 @@ impl Database {
         let db = Self {
             data_dir,
             storage: Arc::new(result.storage),
-            wal: Arc::new(ParkingMutex::new(wal)),
+            wal: Some(Arc::new(ParkingMutex::new(wal))),
+            persistence_mode: PersistenceMode::Disk,
             coordinator,
             commit_locks: DashMap::new(),
             durability_mode,
@@ -496,6 +576,67 @@ impl Database {
         // This must happen AFTER KV recovery completes, as primitives may
         // depend on config data stored in KV.
         crate::recovery_participant::recover_all_participants(&db)?;
+
+        Ok(db)
+    }
+
+    /// Create an ephemeral database with no disk I/O
+    ///
+    /// This creates a truly in-memory database that:
+    /// - Creates no files or directories
+    /// - Has no WAL (write-ahead log)
+    /// - Cannot recover after crash
+    /// - Loses all data when dropped
+    ///
+    /// Use this for:
+    /// - Unit tests that need maximum isolation
+    /// - Caching scenarios
+    /// - Temporary computations
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use strata_engine::Database;
+    /// use strata_core::types::RunId;
+    ///
+    /// let db = Database::ephemeral()?;
+    /// let run_id = RunId::new();
+    ///
+    /// // All operations work normally
+    /// db.transaction(run_id, |txn| {
+    ///     txn.put(key, value)?;
+    ///     Ok(())
+    /// })?;
+    ///
+    /// // But data is gone when db is dropped
+    /// drop(db);
+    /// ```
+    ///
+    /// # Comparison with `open_temp()` and `in_memory()`
+    ///
+    /// | Method | Disk Files | WAL | Recovery |
+    /// |--------|------------|-----|----------|
+    /// | `ephemeral()` | None | None | No |
+    /// | `builder().no_durability().open_temp()` | Yes (temp) | Yes (no sync) | Yes |
+    /// | `builder().buffered().open_temp()` | Yes (temp) | Yes (sync) | Yes |
+    pub fn ephemeral() -> Result<Self> {
+        // Create fresh storage
+        let storage = ShardedStore::new();
+
+        // Create coordinator starting at version 1 (no recovery needed)
+        let coordinator = TransactionCoordinator::new(1);
+
+        let db = Self {
+            data_dir: PathBuf::new(), // Empty path for ephemeral
+            storage: Arc::new(storage),
+            wal: None, // No WAL for ephemeral
+            persistence_mode: PersistenceMode::Ephemeral,
+            coordinator,
+            commit_locks: DashMap::new(),
+            durability_mode: DurabilityMode::InMemory, // Irrelevant but set for consistency
+            accepting_transactions: AtomicBool::new(true),
+            extensions: DashMap::new(),
+        };
 
         Ok(db)
     }
@@ -515,10 +656,20 @@ impl Database {
 
     /// Get access to the WAL for appending entries
     ///
-    /// Returns an Arc to the Mutex-protected WAL.
+    /// Returns an Arc to the Mutex-protected WAL, or None for ephemeral databases.
     /// Lock the mutex to append entries.
-    pub fn wal(&self) -> Arc<ParkingMutex<WAL>> {
-        Arc::clone(&self.wal)
+    pub fn wal(&self) -> Option<Arc<ParkingMutex<WAL>>> {
+        self.wal.as_ref().map(Arc::clone)
+    }
+
+    /// Check if this is an ephemeral (no-disk) database
+    pub fn is_ephemeral(&self) -> bool {
+        self.persistence_mode == PersistenceMode::Ephemeral
+    }
+
+    /// Get the persistence mode
+    pub fn persistence_mode(&self) -> PersistenceMode {
+        self.persistence_mode
     }
 
     /// Flush WAL to disk
@@ -526,9 +677,16 @@ impl Database {
     /// Forces all buffered WAL entries to be written to disk.
     /// This is automatically done based on durability mode, but can
     /// be called manually to ensure durability at a specific point.
+    ///
+    /// For ephemeral databases, this is a no-op.
     pub fn flush(&self) -> Result<()> {
-        let wal = self.wal.lock();
-        wal.fsync()
+        if let Some(ref wal) = self.wal {
+            let wal = wal.lock();
+            wal.fsync()
+        } else {
+            // Ephemeral mode - no-op
+            Ok(())
+        }
     }
 
     // ========================================================================
@@ -968,9 +1126,9 @@ impl Database {
         // 2. Allocate commit version
         let commit_version = self.coordinator.allocate_commit_version();
 
-        // 3. Write to WAL (skip for InMemory mode)
-        if self.durability_mode.requires_wal() {
-            let mut wal = self.wal.lock();
+        // 3. Write to WAL (skip for InMemory mode and ephemeral databases)
+        if self.durability_mode.requires_wal() && self.wal.is_some() {
+            let mut wal = self.wal.as_ref().unwrap().lock();
             let mut wal_writer = TransactionWALWriter::new(&mut wal, txn.txn_id, txn.run_id);
 
             // Write BeginTxn
@@ -1138,9 +1296,9 @@ impl Database {
         let commit_version = self.coordinator.allocate_commit_version();
 
         // 3. Write to WAL based on durability mode
-        // InMemory mode skips WAL entirely
-        if durability.requires_wal() {
-            let mut wal = self.wal.lock();
+        // InMemory mode and ephemeral databases skip WAL entirely
+        if durability.requires_wal() && self.wal.is_some() {
+            let mut wal = self.wal.as_ref().unwrap().lock();
             {
                 let mut wal_writer = TransactionWALWriter::new(&mut wal, txn.txn_id, txn.run_id);
                 wal_writer.write_begin()?;
@@ -1225,11 +1383,13 @@ impl Database {
         }
 
         // Flush WAL based on mode
-        // For InMemory mode, this is a no-op
+        // For InMemory mode and ephemeral databases, this is a no-op
         // For Buffered/Strict modes, ensure WAL is synced
         if self.durability_mode.requires_wal() {
-            let wal = self.wal.lock();
-            wal.fsync()?;
+            if let Some(ref wal) = self.wal {
+                let wal = wal.lock();
+                wal.fsync()?;
+            }
         }
 
         info!("Database shutdown complete");
@@ -1498,10 +1658,16 @@ impl Database {
     /// Gracefully close the database
     ///
     /// Ensures all WAL entries are flushed to disk before returning.
+    /// For ephemeral databases, this is a no-op.
     /// This should be called before dropping the database for guaranteed durability.
     pub fn close(&self) -> Result<()> {
-        let wal = self.wal.lock();
-        wal.fsync()
+        if let Some(ref wal) = self.wal {
+            let wal = wal.lock();
+            wal.fsync()
+        } else {
+            // Ephemeral mode - no-op
+            Ok(())
+        }
     }
 }
 
@@ -1616,8 +1782,8 @@ mod tests {
         {
             let db = Database::open(&db_path).unwrap();
 
-            // Write to WAL
-            let wal = db.wal();
+            // Write to WAL (disk-backed database always has WAL)
+            let wal = db.wal().expect("disk-backed database should have WAL");
             let mut wal_guard = wal.lock();
 
             wal_guard
@@ -2679,8 +2845,8 @@ mod tests {
     }
 
     #[test]
-    fn test_database_builder_in_memory() {
-        let builder = DatabaseBuilder::new().in_memory();
+    fn test_database_builder_no_durability() {
+        let builder = DatabaseBuilder::new().no_durability();
         assert_eq!(builder.get_durability(), DurabilityMode::InMemory);
     }
 
@@ -2725,7 +2891,7 @@ mod tests {
         // Last mode wins
         let builder = DatabaseBuilder::new()
             .path("/tmp/test")
-            .in_memory()
+            .no_durability()
             .buffered()
             .strict();
 
@@ -2738,7 +2904,7 @@ mod tests {
 
     #[test]
     fn test_database_builder_open_temp() {
-        let db = Database::builder().in_memory().open_temp().unwrap();
+        let db = Database::builder().no_durability().open_temp().unwrap();
 
         // Should have a temp path
         assert!(db.data_dir().exists());
@@ -2800,10 +2966,10 @@ mod tests {
     #[test]
     fn test_transaction_with_durability_strict() {
         let temp_dir = TempDir::new().unwrap();
-        // Open database with InMemory mode
+        // Open database with no-durability mode (no fsync)
         let db = Database::builder()
             .path(temp_dir.path().join("db"))
-            .in_memory()
+            .no_durability()
             .open()
             .unwrap();
 
@@ -2974,11 +3140,11 @@ mod tests {
             assert_eq!(db.durability_mode(), DurabilityMode::Strict);
         }
 
-        // Test with InMemory mode
+        // Test with no-durability mode (InMemory durability)
         {
             let db = Database::builder()
-                .path(temp_dir.path().join("inmemory"))
-                .in_memory()
+                .path(temp_dir.path().join("no_durability"))
+                .no_durability()
                 .open()
                 .unwrap();
             assert_eq!(db.durability_mode(), DurabilityMode::InMemory);
