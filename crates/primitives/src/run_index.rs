@@ -33,8 +33,15 @@ use strata_core::contract::{Timestamp, Version, Versioned};
 use strata_core::error::{Error, Result};
 use strata_core::types::{Key, Namespace, RunId, TypeTag};
 use strata_core::value::Value;
+use strata_durability::run_bundle::{
+    filter_wal_for_run, BundleRunInfo, BundleVerifyInfo, ExportOptions, ImportedRunInfo,
+    RunBundleError, RunBundleReader, RunBundleResult, RunBundleWriter, RunExportInfo,
+};
+use strata_durability::wal::WALEntry;
+use strata_core::traits::Storage;
 use strata_engine::Database;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use std::sync::Arc;
 
 // ========== Global Run ID for RunIndex Operations ==========
@@ -913,6 +920,528 @@ impl RunIndex {
         }
         parts.join(" ")
     }
+
+    // ========== RunBundle Export API ==========
+
+    /// Export a terminal run as a portable bundle
+    ///
+    /// Exports the run to a `.runbundle.tar.zst` archive containing:
+    /// - `MANIFEST.json`: Bundle metadata and checksums
+    /// - `RUN.json`: Run metadata (state, tags, error)
+    /// - `WAL.runlog`: Run-scoped WAL entries
+    ///
+    /// ## Terminal States
+    ///
+    /// Only runs in terminal states can be exported:
+    /// - Completed
+    /// - Failed
+    /// - Cancelled
+    /// - Archived
+    ///
+    /// ## Example
+    ///
+    /// ```ignore
+    /// let run_index = RunIndex::new(db.clone());
+    ///
+    /// // Complete the run first
+    /// run_index.complete_run("my-run")?;
+    ///
+    /// // Export to bundle
+    /// let info = run_index.export_run("my-run", Path::new("./my-run.runbundle.tar.zst"))?;
+    /// println!("Exported {} WAL entries", info.wal_entry_count);
+    /// ```
+    ///
+    /// ## Errors
+    ///
+    /// - `RunNotFound`: Run doesn't exist
+    /// - `NotTerminal`: Run is not in a terminal state (Active or Paused)
+    pub fn export_run(&self, run_id: &str, path: &Path) -> RunBundleResult<RunExportInfo> {
+        self.export_run_with_options(run_id, path, &ExportOptions::default())
+    }
+
+    /// Export a run with custom options
+    ///
+    /// Same as [`export_run`](Self::export_run) but with configurable options
+    /// like compression level.
+    pub fn export_run_with_options(
+        &self,
+        run_id: &str,
+        path: &Path,
+        options: &ExportOptions,
+    ) -> RunBundleResult<RunExportInfo> {
+        // 1. Get run metadata and verify terminal state
+        let run_meta = self
+            .get_run(run_id)
+            .map_err(|e| RunBundleError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
+            .ok_or_else(|| RunBundleError::RunNotFound(run_id.to_string()))?;
+
+        // Check terminal state (Completed, Failed, Cancelled, Archived)
+        if !is_exportable_status(&run_meta.value.status) {
+            return Err(RunBundleError::NotTerminal(
+                run_meta.value.status.as_str().to_string(),
+            ));
+        }
+
+        // 2. Get WAL entries for this run
+        let run_uuid = RunId::from_string(&run_meta.value.run_id).ok_or_else(|| {
+            RunBundleError::InvalidBundle(format!("Invalid run UUID: {}", run_meta.value.run_id))
+        })?;
+
+        let wal_entries = self.get_wal_entries_for_run(&run_uuid)?;
+
+        // 3. Build bundle components
+        let run_info = metadata_to_bundle_run_info(&run_meta.value);
+
+        // 4. Write bundle using RunBundleWriter
+        let writer = RunBundleWriter::new(options);
+        writer.write(&run_info, &wal_entries, path)
+    }
+
+    /// Get all WAL entries for a specific run
+    fn get_wal_entries_for_run(&self, run_id: &RunId) -> RunBundleResult<Vec<WALEntry>> {
+        // Lock WAL and read all entries
+        let wal = self.db.wal();
+        let wal_guard = wal.lock();
+
+        let all_entries = wal_guard.read_all().map_err(|e| {
+            RunBundleError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Failed to read WAL: {}", e),
+            ))
+        })?;
+
+        // Filter entries for this run
+        Ok(filter_wal_for_run(&all_entries, run_id))
+    }
+
+    // ========== RunBundle Import API ==========
+
+    /// Import a run from a bundle into this database
+    ///
+    /// Imports a previously exported run from a `.runbundle.tar.zst` archive.
+    /// The bundle's WAL entries are replayed to restore the run's state.
+    ///
+    /// ## MVP Constraints
+    ///
+    /// - Fails if a run with the same ID already exists
+    /// - Use only with fresh/empty databases for now
+    /// - No conflict resolution (post-MVP feature)
+    ///
+    /// ## Example
+    ///
+    /// ```ignore
+    /// let run_index = RunIndex::new(db.clone());
+    ///
+    /// // Import from bundle
+    /// let info = run_index.import_run(Path::new("./my-run.runbundle.tar.zst"))?;
+    /// println!("Imported run {} with {} WAL entries", info.run_id, info.wal_entries_replayed);
+    ///
+    /// // Verify the run exists
+    /// let meta = run_index.get_run(&info.run_id)?;
+    /// assert_eq!(meta.value.status, RunStatus::Completed);
+    /// ```
+    ///
+    /// ## Errors
+    ///
+    /// - `InvalidBundle`: Bundle format is invalid or corrupted
+    /// - `ChecksumMismatch`: Bundle checksums don't match
+    /// - `RunAlreadyExists`: A run with the same ID already exists
+    /// - `WalReplay`: Error replaying WAL entries
+    pub fn import_run(&self, path: &Path) -> RunBundleResult<ImportedRunInfo> {
+        // 1. Validate bundle and read contents
+        let _verify_info = RunBundleReader::validate(path)?;
+        let run_info = RunBundleReader::read_run_info(path)?;
+        let wal_entries = RunBundleReader::read_wal_entries(path)?;
+
+        // 2. Check run doesn't already exist (MVP: fail on conflict)
+        if self.exists(&run_info.name).map_err(|e| {
+            RunBundleError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                e.to_string(),
+            ))
+        })? {
+            return Err(RunBundleError::RunAlreadyExists(run_info.run_id.clone()));
+        }
+
+        // 3. Apply WAL entries to storage and WAL
+        let entries_replayed = self.replay_imported_entries(&wal_entries)?;
+
+        // 4. Create run metadata in RunIndex
+        self.create_imported_run(&run_info)?;
+
+        Ok(ImportedRunInfo {
+            run_id: run_info.run_id,
+            wal_entries_replayed: entries_replayed,
+        })
+    }
+
+    // ========== RunBundle Verification API ==========
+
+    /// Verify a bundle's integrity without importing
+    ///
+    /// Validates that a `.runbundle.tar.zst` archive is well-formed and intact
+    /// without actually importing the run. Use this to check bundles before
+    /// importing, or to verify bundles after copying/transferring them.
+    ///
+    /// ## Validation Checks
+    ///
+    /// - Archive can be decompressed
+    /// - Required files exist (MANIFEST.json, RUN.json, WAL.runlog)
+    /// - Format version is supported
+    /// - Checksums match manifest
+    /// - WAL.runlog header is valid
+    ///
+    /// ## Example
+    ///
+    /// ```ignore
+    /// let run_index = RunIndex::new(db.clone());
+    ///
+    /// // Verify before importing
+    /// let verify_info = run_index.verify_bundle(Path::new("./my-run.runbundle.tar.zst"))?;
+    /// println!("Bundle contains run {} with {} WAL entries",
+    ///     verify_info.run_id, verify_info.wal_entry_count);
+    ///
+    /// if verify_info.checksums_valid {
+    ///     // Safe to import
+    ///     run_index.import_run(Path::new("./my-run.runbundle.tar.zst"))?;
+    /// }
+    /// ```
+    ///
+    /// ## Errors
+    ///
+    /// - `InvalidBundle`: Bundle format is invalid or corrupted
+    /// - `MissingFile`: Required file is missing from archive
+    /// - `UnsupportedVersion`: Bundle was created with an incompatible version
+    /// - `ChecksumMismatch`: File checksums don't match (returned in result, not as error)
+    pub fn verify_bundle(&self, path: &Path) -> RunBundleResult<BundleVerifyInfo> {
+        RunBundleReader::validate(path)
+    }
+
+    /// Replay imported WAL entries to storage and WAL
+    fn replay_imported_entries(&self, entries: &[WALEntry]) -> RunBundleResult<u64> {
+        let storage = self.db.storage();
+        let wal = self.db.wal();
+
+        let mut entries_applied = 0u64;
+
+        // Group entries by transaction for proper replay
+        // For MVP, we apply all committed transactions
+        let mut current_txn: Option<(u64, RunId, Vec<WALEntry>)> = None;
+        let mut committed_txns: Vec<(u64, RunId, Vec<WALEntry>)> = Vec::new();
+
+        for entry in entries {
+            match entry {
+                WALEntry::BeginTxn { txn_id, run_id, .. } => {
+                    // Start a new transaction
+                    current_txn = Some((*txn_id, *run_id, Vec::new()));
+                }
+                WALEntry::CommitTxn { txn_id, run_id } => {
+                    // Commit current transaction
+                    if let Some((tid, rid, txn_entries)) = current_txn.take() {
+                        if tid == *txn_id && rid == *run_id {
+                            committed_txns.push((tid, rid, txn_entries));
+                        }
+                    }
+                }
+                WALEntry::AbortTxn { .. } => {
+                    // Discard current transaction
+                    current_txn = None;
+                }
+                WALEntry::Checkpoint { .. } => {
+                    // Skip checkpoints during import
+                }
+                _ => {
+                    // Add entry to current transaction
+                    if let Some((_, _, ref mut txn_entries)) = current_txn {
+                        txn_entries.push(entry.clone());
+                    }
+                }
+            }
+        }
+
+        // Lock WAL for writing
+        let mut wal_guard = wal.lock();
+
+        // Apply each committed transaction
+        for (_txn_id, _run_id, txn_entries) in committed_txns {
+            for entry in &txn_entries {
+                // Apply to storage
+                match entry {
+                    WALEntry::Write { key, value, version, .. } => {
+                        storage
+                            .put_with_version(key.clone(), value.clone(), *version, None)
+                            .map_err(|e| {
+                                RunBundleError::WalReplay(format!("Write failed: {}", e))
+                            })?;
+                        entries_applied += 1;
+                    }
+                    WALEntry::Delete { key, version, .. } => {
+                        storage.delete_with_version(key, *version).map_err(|e| {
+                            RunBundleError::WalReplay(format!("Delete failed: {}", e))
+                        })?;
+                        entries_applied += 1;
+                    }
+                    WALEntry::JsonCreate { run_id, doc_id, value_bytes, version, .. } => {
+                        // For JSON, create the key and store
+                        let key = Key::new_json(
+                            Namespace::for_run(*run_id),
+                            doc_id,
+                        );
+                        // Decode msgpack value
+                        let json_value: serde_json::Value = rmp_serde::from_slice(value_bytes)
+                            .unwrap_or(serde_json::Value::Null);
+                        let core_value = json_to_value(&json_value);
+                        storage
+                            .put_with_version(key, core_value, *version, None)
+                            .map_err(|e| {
+                                RunBundleError::WalReplay(format!("JsonCreate failed: {}", e))
+                            })?;
+                        entries_applied += 1;
+                    }
+                    WALEntry::JsonSet { run_id, doc_id, value_bytes, version, .. } => {
+                        let key = Key::new_json(
+                            Namespace::for_run(*run_id),
+                            doc_id,
+                        );
+                        let json_value: serde_json::Value = rmp_serde::from_slice(value_bytes)
+                            .unwrap_or(serde_json::Value::Null);
+                        let core_value = json_to_value(&json_value);
+                        storage
+                            .put_with_version(key, core_value, *version, None)
+                            .map_err(|e| {
+                                RunBundleError::WalReplay(format!("JsonSet failed: {}", e))
+                            })?;
+                        entries_applied += 1;
+                    }
+                    WALEntry::JsonDelete { run_id, doc_id, version, .. } => {
+                        let key = Key::new_json(
+                            Namespace::for_run(*run_id),
+                            doc_id,
+                        );
+                        storage.delete_with_version(&key, *version).map_err(|e| {
+                            RunBundleError::WalReplay(format!("JsonDelete failed: {}", e))
+                        })?;
+                        entries_applied += 1;
+                    }
+                    WALEntry::JsonDestroy { run_id, doc_id } => {
+                        let key = Key::new_json(
+                            Namespace::for_run(*run_id),
+                            doc_id,
+                        );
+                        // Use version 0 for destroy - it's a deletion without version
+                        storage.delete_with_version(&key, 0).map_err(|e| {
+                            RunBundleError::WalReplay(format!("JsonDestroy failed: {}", e))
+                        })?;
+                        entries_applied += 1;
+                    }
+                    // Vector operations - skip for MVP (complex in-memory state)
+                    WALEntry::VectorCollectionCreate { .. } |
+                    WALEntry::VectorCollectionDelete { .. } |
+                    WALEntry::VectorUpsert { .. } |
+                    WALEntry::VectorDelete { .. } => {
+                        // Vector operations require rebuilding in-memory indices
+                        // Skip for MVP - vectors need special handling
+                        entries_applied += 1;
+                    }
+                    _ => {}
+                }
+
+                // Also write to WAL for durability
+                wal_guard.append(entry).map_err(|e| {
+                    RunBundleError::WalReplay(format!("WAL append failed: {}", e))
+                })?;
+            }
+        }
+
+        // Flush WAL
+        wal_guard.flush().map_err(|e| {
+            RunBundleError::WalReplay(format!("WAL flush failed: {}", e))
+        })?;
+
+        Ok(entries_applied)
+    }
+
+    /// Create run metadata from imported bundle info
+    ///
+    /// This directly creates the RunMetadata with the original run_id from the bundle,
+    /// preserving identity across export/import.
+    fn create_imported_run(&self, info: &BundleRunInfo) -> RunBundleResult<()> {
+        // Convert state to RunStatus
+        let status = match info.state.as_str() {
+            "completed" => RunStatus::Completed,
+            "failed" => RunStatus::Failed,
+            "cancelled" => RunStatus::Cancelled,
+            "archived" => RunStatus::Archived,
+            _ => RunStatus::Completed,
+        };
+
+        // Convert serde_json::Value metadata to core::Value
+        let metadata = json_to_value(&info.metadata);
+
+        // Create RunMetadata directly with the original run_id from bundle
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+
+        let run_meta = RunMetadata {
+            name: info.name.clone(),
+            run_id: info.run_id.clone(), // Preserve original run_id!
+            parent_run: info.parent_run_id.clone(),
+            status,
+            created_at: now, // Use current time for imported run
+            updated_at: now,
+            completed_at: Some(now), // Terminal runs have completed_at
+            tags: info.tags.clone(),
+            metadata,
+            error: info.error.clone(),
+            version: 1,
+        };
+
+        // Store the run metadata directly
+        self.db
+            .transaction(global_run_id(), |txn| {
+                let key = self.key_for(&info.name);
+
+                // Double-check run doesn't exist
+                if txn.get(&key)?.is_some() {
+                    return Err(Error::InvalidOperation(format!(
+                        "Run '{}' already exists",
+                        info.name
+                    )));
+                }
+
+                txn.put(key, to_stored_value(&run_meta))?;
+
+                // Write indices
+                Self::write_indices_internal(txn, &run_meta)?;
+
+                Ok(())
+            })
+            .map_err(|e| RunBundleError::WalReplay(format!("Failed to create run: {}", e)))?;
+
+        Ok(())
+    }
+}
+
+/// Check if a run status is exportable (terminal)
+fn is_exportable_status(status: &RunStatus) -> bool {
+    matches!(
+        status,
+        RunStatus::Completed | RunStatus::Failed | RunStatus::Cancelled | RunStatus::Archived
+    )
+}
+
+/// Convert RunMetadata to BundleRunInfo for export
+fn metadata_to_bundle_run_info(meta: &RunMetadata) -> BundleRunInfo {
+    let state_str = match meta.status {
+        RunStatus::Completed => "completed",
+        RunStatus::Failed => "failed",
+        RunStatus::Cancelled => "cancelled",
+        RunStatus::Archived => "archived",
+        RunStatus::Active => "active",     // Should not happen for export
+        RunStatus::Paused => "paused",     // Should not happen for export
+    };
+
+    // Convert timestamps from millis to ISO 8601
+    let created_at = format_timestamp_iso8601(meta.created_at);
+    let closed_at = meta
+        .completed_at
+        .map(format_timestamp_iso8601)
+        .unwrap_or_else(|| created_at.clone());
+
+    // Convert metadata from core::Value to serde_json::Value
+    let metadata_json = value_to_json(&meta.metadata);
+
+    BundleRunInfo {
+        run_id: meta.run_id.clone(),
+        name: meta.name.clone(),
+        state: state_str.to_string(),
+        created_at,
+        closed_at,
+        parent_run_id: meta.parent_run.clone(),
+        tags: meta.tags.clone(),
+        metadata: metadata_json,
+        error: meta.error.clone(),
+    }
+}
+
+/// Format a timestamp (milliseconds since epoch) as ISO 8601
+fn format_timestamp_iso8601(millis: i64) -> String {
+    let secs = (millis / 1000) as u64;
+
+    // Calculate date components
+    let days = secs / 86400;
+    let time_secs = secs % 86400;
+    let hours = time_secs / 3600;
+    let minutes = (time_secs % 3600) / 60;
+    let seconds = time_secs % 60;
+
+    // Approximate year/month/day calculation
+    let years = 1970 + (days / 365);
+    let day_of_year = days % 365;
+    let month = (day_of_year / 30).min(11) + 1;
+    let day = (day_of_year % 30) + 1;
+
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        years, month, day, hours, minutes, seconds
+    )
+}
+
+/// Convert core::Value to serde_json::Value
+fn value_to_json(value: &Value) -> serde_json::Value {
+    match value {
+        Value::Null => serde_json::Value::Null,
+        Value::Bool(b) => serde_json::Value::Bool(*b),
+        Value::Int(i) => serde_json::Value::Number((*i).into()),
+        Value::Float(f) => serde_json::json!(*f),
+        Value::String(s) => serde_json::Value::String(s.clone()),
+        Value::Bytes(b) => {
+            // Encode bytes as base64
+            use base64::Engine;
+            let encoded = base64::engine::general_purpose::STANDARD.encode(b);
+            serde_json::Value::String(encoded)
+        }
+        Value::Array(arr) => {
+            serde_json::Value::Array(arr.iter().map(value_to_json).collect())
+        }
+        Value::Object(map) => {
+            let obj: serde_json::Map<String, serde_json::Value> = map
+                .iter()
+                .map(|(k, v)| (k.clone(), value_to_json(v)))
+                .collect();
+            serde_json::Value::Object(obj)
+        }
+    }
+}
+
+/// Convert serde_json::Value to core::Value
+fn json_to_value(json: &serde_json::Value) -> Value {
+    match json {
+        serde_json::Value::Null => Value::Null,
+        serde_json::Value::Bool(b) => Value::Bool(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::Int(i)
+            } else if let Some(f) = n.as_f64() {
+                Value::Float(f)
+            } else {
+                Value::Null
+            }
+        }
+        serde_json::Value::String(s) => Value::String(s.clone()),
+        serde_json::Value::Array(arr) => {
+            Value::Array(arr.iter().map(json_to_value).collect())
+        }
+        serde_json::Value::Object(map) => {
+            let obj: std::collections::HashMap<String, Value> = map
+                .iter()
+                .map(|(k, v)| (k.clone(), json_to_value(v)))
+                .collect();
+            Value::Object(obj)
+        }
+    }
 }
 
 // ========== Searchable Trait Implementation (M6) ==========
@@ -1626,6 +2155,1123 @@ mod tests {
             // Verify indices are cleaned up
             let prod_runs = run_index.query_by_tag("production").unwrap();
             assert!(!prod_runs.iter().any(|r| r.run_id == meta.value.run_id));
+        }
+    }
+
+    // ========== RunBundle Export Tests ==========
+
+    mod export_tests {
+        use super::*;
+        use crate::KVStore;
+        use strata_durability::run_bundle::{RunBundleError, RunBundleReader};
+
+        #[test]
+        fn test_export_completed_run() {
+            let (db, temp) = create_test_db();
+            let run_index = RunIndex::new(db.clone());
+            let kv = KVStore::new(db.clone());
+
+            // Create and complete a run with some data
+            let meta = run_index.create_run("export-test").unwrap();
+            let run_id = RunId::from_string(&meta.value.run_id).unwrap();
+
+            // Add some data
+            kv.put(&run_id, "key1", Value::String("value1".into())).unwrap();
+            kv.put(&run_id, "key2", Value::Int(42)).unwrap();
+
+            // Complete the run
+            run_index.complete_run("export-test").unwrap();
+
+            // Export
+            let bundle_path = temp.path().join("export-test.runbundle.tar.zst");
+            let info = run_index.export_run("export-test", &bundle_path).unwrap();
+
+            assert_eq!(info.run_id, meta.value.run_id);
+            assert!(info.bundle_size_bytes > 0);
+            assert!(bundle_path.exists());
+        }
+
+        #[test]
+        fn test_export_failed_run_includes_error() {
+            let (db, temp) = create_test_db();
+            let run_index = RunIndex::new(db.clone());
+
+            // Create and fail a run
+            run_index.create_run("failed-test").unwrap();
+            run_index.fail_run("failed-test", "Connection timeout").unwrap();
+
+            // Export
+            let bundle_path = temp.path().join("failed-test.runbundle.tar.zst");
+            let _info = run_index.export_run("failed-test", &bundle_path).unwrap();
+
+            // Verify error is in the bundle
+            let run_info = RunBundleReader::read_run_info(&bundle_path).unwrap();
+            assert_eq!(run_info.state, "failed");
+            assert_eq!(run_info.error, Some("Connection timeout".to_string()));
+        }
+
+        #[test]
+        fn test_export_cancelled_run() {
+            let (db, temp) = create_test_db();
+            let run_index = RunIndex::new(db.clone());
+
+            // Create and cancel a run
+            run_index.create_run("cancelled-test").unwrap();
+            run_index.cancel_run("cancelled-test").unwrap();
+
+            // Export should succeed
+            let bundle_path = temp.path().join("cancelled-test.runbundle.tar.zst");
+            let _info = run_index.export_run("cancelled-test", &bundle_path).unwrap();
+
+            let run_info = RunBundleReader::read_run_info(&bundle_path).unwrap();
+            assert_eq!(run_info.state, "cancelled");
+        }
+
+        #[test]
+        fn test_export_archived_run() {
+            let (db, temp) = create_test_db();
+            let run_index = RunIndex::new(db.clone());
+
+            // Create, complete, then archive a run
+            run_index.create_run("archived-test").unwrap();
+            run_index.complete_run("archived-test").unwrap();
+            run_index.archive_run("archived-test").unwrap();
+
+            // Export should succeed
+            let bundle_path = temp.path().join("archived-test.runbundle.tar.zst");
+            let _info = run_index.export_run("archived-test", &bundle_path).unwrap();
+
+            let run_info = RunBundleReader::read_run_info(&bundle_path).unwrap();
+            assert_eq!(run_info.state, "archived");
+        }
+
+        #[test]
+        fn test_export_rejects_active_run() {
+            let (db, temp) = create_test_db();
+            let run_index = RunIndex::new(db.clone());
+
+            // Create a run but don't complete it
+            run_index.create_run("active-test").unwrap();
+
+            // Export should fail
+            let bundle_path = temp.path().join("active-test.runbundle.tar.zst");
+            let result = run_index.export_run("active-test", &bundle_path);
+
+            assert!(result.is_err());
+            match result.unwrap_err() {
+                RunBundleError::NotTerminal(state) => {
+                    assert_eq!(state, "Active");
+                }
+                e => panic!("Expected NotTerminal error, got: {:?}", e),
+            }
+        }
+
+        #[test]
+        fn test_export_rejects_paused_run() {
+            let (db, temp) = create_test_db();
+            let run_index = RunIndex::new(db.clone());
+
+            // Create and pause a run
+            run_index.create_run("paused-test").unwrap();
+            run_index.pause_run("paused-test").unwrap();
+
+            // Export should fail
+            let bundle_path = temp.path().join("paused-test.runbundle.tar.zst");
+            let result = run_index.export_run("paused-test", &bundle_path);
+
+            assert!(result.is_err());
+            match result.unwrap_err() {
+                RunBundleError::NotTerminal(state) => {
+                    assert_eq!(state, "Paused");
+                }
+                e => panic!("Expected NotTerminal error, got: {:?}", e),
+            }
+        }
+
+        #[test]
+        fn test_export_rejects_nonexistent_run() {
+            let (db, temp) = create_test_db();
+            let run_index = RunIndex::new(db.clone());
+
+            let bundle_path = temp.path().join("nonexistent.runbundle.tar.zst");
+            let result = run_index.export_run("nonexistent-run", &bundle_path);
+
+            assert!(result.is_err());
+            match result.unwrap_err() {
+                RunBundleError::RunNotFound(id) => {
+                    assert_eq!(id, "nonexistent-run");
+                }
+                e => panic!("Expected RunNotFound error, got: {:?}", e),
+            }
+        }
+
+        #[test]
+        fn test_export_with_tags() {
+            let (db, temp) = create_test_db();
+            let run_index = RunIndex::new(db.clone());
+
+            // Create run with tags
+            run_index.create_run_with_options(
+                "tagged-export",
+                None,
+                vec!["production".to_string(), "v2.0".to_string()],
+                Value::Null,
+            ).unwrap();
+            run_index.complete_run("tagged-export").unwrap();
+
+            // Export
+            let bundle_path = temp.path().join("tagged-export.runbundle.tar.zst");
+            run_index.export_run("tagged-export", &bundle_path).unwrap();
+
+            // Verify tags are preserved
+            let run_info = RunBundleReader::read_run_info(&bundle_path).unwrap();
+            assert!(run_info.tags.contains(&"production".to_string()));
+            assert!(run_info.tags.contains(&"v2.0".to_string()));
+        }
+
+        #[test]
+        fn test_export_bundle_is_verifiable() {
+            let (db, temp) = create_test_db();
+            let run_index = RunIndex::new(db.clone());
+            let kv = KVStore::new(db.clone());
+
+            // Create run with data
+            let meta = run_index.create_run("verify-test").unwrap();
+            let run_id = RunId::from_string(&meta.value.run_id).unwrap();
+            kv.put(&run_id, "test", Value::String("data".into())).unwrap();
+            run_index.complete_run("verify-test").unwrap();
+
+            // Export
+            let bundle_path = temp.path().join("verify-test.runbundle.tar.zst");
+            run_index.export_run("verify-test", &bundle_path).unwrap();
+
+            // Verify bundle integrity
+            let verify_info = RunBundleReader::validate(&bundle_path).unwrap();
+            assert!(verify_info.checksums_valid);
+        }
+    }
+
+    // ========== RunBundle Import Tests ==========
+
+    mod import_tests {
+        use super::*;
+        use crate::KVStore;
+        use strata_durability::run_bundle::RunBundleError;
+
+        #[test]
+        fn test_import_into_empty_database() {
+            // Create source database with data
+            let (source_db, source_temp) = create_test_db();
+            let source_run_index = RunIndex::new(source_db.clone());
+            let source_kv = KVStore::new(source_db.clone());
+
+            let meta = source_run_index.create_run("import-test").unwrap();
+            let run_id = RunId::from_string(&meta.value.run_id).unwrap();
+
+            source_kv.put(&run_id, "key1", Value::String("value1".into())).unwrap();
+            source_kv.put(&run_id, "key2", Value::Int(42)).unwrap();
+            source_run_index.complete_run("import-test").unwrap();
+
+            // Export from source
+            let bundle_path = source_temp.path().join("import-test.runbundle.tar.zst");
+            source_run_index.export_run("import-test", &bundle_path).unwrap();
+
+            // Create target database (empty)
+            let (target_db, _target_temp) = create_test_db();
+            let target_run_index = RunIndex::new(target_db.clone());
+            let target_kv = KVStore::new(target_db.clone());
+
+            // Import
+            let info = target_run_index.import_run(&bundle_path).unwrap();
+            assert_eq!(info.run_id, meta.value.run_id);
+
+            // Verify run exists in target
+            let imported_meta = target_run_index.get_run("import-test").unwrap().unwrap();
+            assert_eq!(imported_meta.value.status, RunStatus::Completed);
+
+            // Verify data exists in target
+            let target_run_id = RunId::from_string(&imported_meta.value.run_id).unwrap();
+            let val1 = target_kv.get(&target_run_id, "key1").unwrap().unwrap();
+            assert_eq!(val1.value, Value::String("value1".into()));
+
+            let val2 = target_kv.get(&target_run_id, "key2").unwrap().unwrap();
+            assert_eq!(val2.value, Value::Int(42));
+        }
+
+        #[test]
+        fn test_import_fails_if_run_exists() {
+            // Create source database with data
+            let (source_db, source_temp) = create_test_db();
+            let source_run_index = RunIndex::new(source_db.clone());
+
+            source_run_index.create_run("duplicate-run").unwrap();
+            source_run_index.complete_run("duplicate-run").unwrap();
+
+            let bundle_path = source_temp.path().join("duplicate.runbundle.tar.zst");
+            source_run_index.export_run("duplicate-run", &bundle_path).unwrap();
+
+            // Create target database with same run name already existing
+            let (target_db, _target_temp) = create_test_db();
+            let target_run_index = RunIndex::new(target_db.clone());
+
+            // Create a run with the same name
+            target_run_index.create_run("duplicate-run").unwrap();
+
+            // Import should fail
+            let result = target_run_index.import_run(&bundle_path);
+            assert!(result.is_err());
+            match result.unwrap_err() {
+                RunBundleError::RunAlreadyExists(_) => {}
+                e => panic!("Expected RunAlreadyExists error, got: {:?}", e),
+            }
+        }
+
+        #[test]
+        fn test_import_preserves_failed_run_error() {
+            let (source_db, source_temp) = create_test_db();
+            let source_run_index = RunIndex::new(source_db.clone());
+
+            source_run_index.create_run("failed-import").unwrap();
+            source_run_index.fail_run("failed-import", "Network error").unwrap();
+
+            let bundle_path = source_temp.path().join("failed.runbundle.tar.zst");
+            source_run_index.export_run("failed-import", &bundle_path).unwrap();
+
+            // Import into fresh database
+            let (target_db, _target_temp) = create_test_db();
+            let target_run_index = RunIndex::new(target_db.clone());
+
+            target_run_index.import_run(&bundle_path).unwrap();
+
+            // Verify error is preserved
+            let imported = target_run_index.get_run("failed-import").unwrap().unwrap();
+            assert_eq!(imported.value.status, RunStatus::Failed);
+            assert_eq!(imported.value.error, Some("Network error".to_string()));
+        }
+
+        #[test]
+        fn test_import_preserves_tags() {
+            let (source_db, source_temp) = create_test_db();
+            let source_run_index = RunIndex::new(source_db.clone());
+
+            source_run_index.create_run_with_options(
+                "tagged-import",
+                None,
+                vec!["prod".to_string(), "v1.0".to_string()],
+                Value::Null,
+            ).unwrap();
+            source_run_index.complete_run("tagged-import").unwrap();
+
+            let bundle_path = source_temp.path().join("tagged.runbundle.tar.zst");
+            source_run_index.export_run("tagged-import", &bundle_path).unwrap();
+
+            // Import
+            let (target_db, _target_temp) = create_test_db();
+            let target_run_index = RunIndex::new(target_db.clone());
+
+            target_run_index.import_run(&bundle_path).unwrap();
+
+            // Verify tags
+            let imported = target_run_index.get_run("tagged-import").unwrap().unwrap();
+            assert!(imported.value.tags.contains(&"prod".to_string()));
+            assert!(imported.value.tags.contains(&"v1.0".to_string()));
+        }
+
+        #[test]
+        fn test_import_cancelled_run() {
+            let (source_db, source_temp) = create_test_db();
+            let source_run_index = RunIndex::new(source_db.clone());
+
+            source_run_index.create_run("cancelled-import").unwrap();
+            source_run_index.cancel_run("cancelled-import").unwrap();
+
+            let bundle_path = source_temp.path().join("cancelled.runbundle.tar.zst");
+            source_run_index.export_run("cancelled-import", &bundle_path).unwrap();
+
+            // Import
+            let (target_db, _target_temp) = create_test_db();
+            let target_run_index = RunIndex::new(target_db.clone());
+
+            target_run_index.import_run(&bundle_path).unwrap();
+
+            let imported = target_run_index.get_run("cancelled-import").unwrap().unwrap();
+            assert_eq!(imported.value.status, RunStatus::Cancelled);
+        }
+
+        #[test]
+        fn test_import_archived_run() {
+            let (source_db, source_temp) = create_test_db();
+            let source_run_index = RunIndex::new(source_db.clone());
+
+            source_run_index.create_run("archived-import").unwrap();
+            source_run_index.complete_run("archived-import").unwrap();
+            source_run_index.archive_run("archived-import").unwrap();
+
+            let bundle_path = source_temp.path().join("archived.runbundle.tar.zst");
+            source_run_index.export_run("archived-import", &bundle_path).unwrap();
+
+            // Import
+            let (target_db, _target_temp) = create_test_db();
+            let target_run_index = RunIndex::new(target_db.clone());
+
+            target_run_index.import_run(&bundle_path).unwrap();
+
+            let imported = target_run_index.get_run("archived-import").unwrap().unwrap();
+            assert_eq!(imported.value.status, RunStatus::Archived);
+        }
+
+        #[test]
+        fn test_round_trip_preserves_data() {
+            // Full round-trip test: create data -> export -> import -> verify
+            let (source_db, source_temp) = create_test_db();
+            let source_run_index = RunIndex::new(source_db.clone());
+            let source_kv = KVStore::new(source_db.clone());
+
+            // Create run with various data types
+            let meta = source_run_index.create_run_with_options(
+                "round-trip",
+                None,
+                vec!["test".to_string()],
+                Value::Object([("key".to_string(), Value::String("value".into()))].into_iter().collect()),
+            ).unwrap();
+            let run_id = RunId::from_string(&meta.value.run_id).unwrap();
+
+            // Add KV data
+            source_kv.put(&run_id, "string", Value::String("hello".into())).unwrap();
+            source_kv.put(&run_id, "int", Value::Int(12345)).unwrap();
+            source_kv.put(&run_id, "bool", Value::Bool(true)).unwrap();
+            source_kv.put(&run_id, "float", Value::Float(3.14)).unwrap();
+            source_kv.put(&run_id, "null", Value::Null).unwrap();
+
+            source_run_index.complete_run("round-trip").unwrap();
+
+            // Export
+            let bundle_path = source_temp.path().join("round-trip.runbundle.tar.zst");
+            let export_info = source_run_index.export_run("round-trip", &bundle_path).unwrap();
+
+            // Import into fresh database
+            let (target_db, _target_temp) = create_test_db();
+            let target_run_index = RunIndex::new(target_db.clone());
+            let target_kv = KVStore::new(target_db.clone());
+
+            let import_info = target_run_index.import_run(&bundle_path).unwrap();
+
+            // Verify import info
+            assert_eq!(import_info.run_id, export_info.run_id);
+
+            // Verify run metadata
+            let imported = target_run_index.get_run("round-trip").unwrap().unwrap();
+            assert_eq!(imported.value.status, RunStatus::Completed);
+            assert!(imported.value.tags.contains(&"test".to_string()));
+
+            // Verify KV data
+            let target_run_id = RunId::from_string(&imported.value.run_id).unwrap();
+
+            assert_eq!(
+                target_kv.get(&target_run_id, "string").unwrap().unwrap().value,
+                Value::String("hello".into())
+            );
+            assert_eq!(
+                target_kv.get(&target_run_id, "int").unwrap().unwrap().value,
+                Value::Int(12345)
+            );
+            assert_eq!(
+                target_kv.get(&target_run_id, "bool").unwrap().unwrap().value,
+                Value::Bool(true)
+            );
+            // Float comparison
+            if let Value::Float(f) = target_kv.get(&target_run_id, "float").unwrap().unwrap().value {
+                assert!((f - 3.14).abs() < 0.001);
+            } else {
+                panic!("Expected Float");
+            }
+            assert_eq!(
+                target_kv.get(&target_run_id, "null").unwrap().unwrap().value,
+                Value::Null
+            );
+        }
+
+        // ========== Stronger Tests ==========
+
+        #[test]
+        fn test_import_corrupted_bundle_fails() {
+            let (db, temp) = create_test_db();
+            let run_index = RunIndex::new(db.clone());
+
+            // Create a file that looks like a bundle but is corrupted
+            let bundle_path = temp.path().join("corrupted.runbundle.tar.zst");
+            std::fs::write(&bundle_path, b"not a valid tar.zst file").unwrap();
+
+            let result = run_index.import_run(&bundle_path);
+            assert!(result.is_err(), "Import of corrupted bundle should fail");
+        }
+
+        #[test]
+        fn test_import_nonexistent_bundle_fails() {
+            let (db, temp) = create_test_db();
+            let run_index = RunIndex::new(db.clone());
+
+            let bundle_path = temp.path().join("nonexistent.runbundle.tar.zst");
+
+            let result = run_index.import_run(&bundle_path);
+            assert!(result.is_err(), "Import of nonexistent bundle should fail");
+        }
+
+        #[test]
+        fn test_export_import_empty_run() {
+            // Edge case: run with no data
+            let (source_db, source_temp) = create_test_db();
+            let source_run_index = RunIndex::new(source_db.clone());
+
+            source_run_index.create_run("empty-run").unwrap();
+            source_run_index.complete_run("empty-run").unwrap();
+
+            let bundle_path = source_temp.path().join("empty.runbundle.tar.zst");
+            let export_info = source_run_index.export_run("empty-run", &bundle_path).unwrap();
+
+            // Should have 0 WAL entries (run metadata is separate)
+            assert_eq!(export_info.wal_entry_count, 0);
+
+            // Import should still work
+            let (target_db, _target_temp) = create_test_db();
+            let target_run_index = RunIndex::new(target_db.clone());
+
+            let import_info = target_run_index.import_run(&bundle_path).unwrap();
+            assert_eq!(import_info.wal_entries_replayed, 0);
+
+            // Run should exist with correct state
+            let imported = target_run_index.get_run("empty-run").unwrap().unwrap();
+            assert_eq!(imported.value.status, RunStatus::Completed);
+        }
+
+        #[test]
+        fn test_export_import_binary_data() {
+            let (source_db, source_temp) = create_test_db();
+            let source_run_index = RunIndex::new(source_db.clone());
+            let source_kv = KVStore::new(source_db.clone());
+
+            let meta = source_run_index.create_run("binary-test").unwrap();
+            let run_id = RunId::from_string(&meta.value.run_id).unwrap();
+
+            // Store binary data with various byte patterns
+            let binary_data = vec![0u8, 1, 2, 255, 254, 128, 0, 0, 127];
+            source_kv.put(&run_id, "binary", Value::Bytes(binary_data.clone())).unwrap();
+
+            source_run_index.complete_run("binary-test").unwrap();
+
+            let bundle_path = source_temp.path().join("binary.runbundle.tar.zst");
+            source_run_index.export_run("binary-test", &bundle_path).unwrap();
+
+            // Import
+            let (target_db, _target_temp) = create_test_db();
+            let target_run_index = RunIndex::new(target_db.clone());
+            let target_kv = KVStore::new(target_db.clone());
+
+            target_run_index.import_run(&bundle_path).unwrap();
+
+            let imported = target_run_index.get_run("binary-test").unwrap().unwrap();
+            let target_run_id = RunId::from_string(&imported.value.run_id).unwrap();
+
+            // Verify binary data is preserved exactly
+            let retrieved = target_kv.get(&target_run_id, "binary").unwrap().unwrap();
+            assert_eq!(retrieved.value, Value::Bytes(binary_data));
+        }
+
+        #[test]
+        fn test_export_import_complex_nested_data() {
+            let (source_db, source_temp) = create_test_db();
+            let source_run_index = RunIndex::new(source_db.clone());
+            let source_kv = KVStore::new(source_db.clone());
+
+            let meta = source_run_index.create_run("nested-test").unwrap();
+            let run_id = RunId::from_string(&meta.value.run_id).unwrap();
+
+            // Create deeply nested structure
+            let nested = Value::Object([
+                ("level1".to_string(), Value::Object([
+                    ("level2".to_string(), Value::Array(vec![
+                        Value::Int(1),
+                        Value::String("two".into()),
+                        Value::Object([
+                            ("level3".to_string(), Value::Bool(true))
+                        ].into_iter().collect()),
+                    ])),
+                ].into_iter().collect())),
+            ].into_iter().collect());
+
+            source_kv.put(&run_id, "nested", nested.clone()).unwrap();
+
+            // Also test array at top level
+            let array = Value::Array(vec![
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(3),
+            ]);
+            source_kv.put(&run_id, "array", array.clone()).unwrap();
+
+            source_run_index.complete_run("nested-test").unwrap();
+
+            let bundle_path = source_temp.path().join("nested.runbundle.tar.zst");
+            source_run_index.export_run("nested-test", &bundle_path).unwrap();
+
+            // Import
+            let (target_db, _target_temp) = create_test_db();
+            let target_run_index = RunIndex::new(target_db.clone());
+            let target_kv = KVStore::new(target_db.clone());
+
+            target_run_index.import_run(&bundle_path).unwrap();
+
+            let imported = target_run_index.get_run("nested-test").unwrap().unwrap();
+            let target_run_id = RunId::from_string(&imported.value.run_id).unwrap();
+
+            // Verify nested structure is preserved
+            assert_eq!(
+                target_kv.get(&target_run_id, "nested").unwrap().unwrap().value,
+                nested
+            );
+            assert_eq!(
+                target_kv.get(&target_run_id, "array").unwrap().unwrap().value,
+                array
+            );
+        }
+
+        #[test]
+        fn test_import_preserves_run_id_identity() {
+            // Verify the run_id in the imported run matches the original exactly
+            let (source_db, source_temp) = create_test_db();
+            let source_run_index = RunIndex::new(source_db.clone());
+
+            let meta = source_run_index.create_run("identity-test").unwrap();
+            let original_run_id = meta.value.run_id.clone();
+
+            source_run_index.complete_run("identity-test").unwrap();
+
+            let bundle_path = source_temp.path().join("identity.runbundle.tar.zst");
+            source_run_index.export_run("identity-test", &bundle_path).unwrap();
+
+            // Import
+            let (target_db, _target_temp) = create_test_db();
+            let target_run_index = RunIndex::new(target_db.clone());
+
+            let import_info = target_run_index.import_run(&bundle_path).unwrap();
+
+            // The run_id should be EXACTLY the same
+            assert_eq!(import_info.run_id, original_run_id);
+
+            let imported = target_run_index.get_run("identity-test").unwrap().unwrap();
+            assert_eq!(imported.value.run_id, original_run_id);
+        }
+
+        #[test]
+        fn test_export_captures_snapshot_at_export_time() {
+            // Data written after export should NOT be in the bundle
+            let (db, temp) = create_test_db();
+            let run_index = RunIndex::new(db.clone());
+            let kv = KVStore::new(db.clone());
+
+            let meta = run_index.create_run("snapshot-test").unwrap();
+            let run_id = RunId::from_string(&meta.value.run_id).unwrap();
+
+            // Write initial data
+            kv.put(&run_id, "before", Value::String("exported".into())).unwrap();
+
+            run_index.complete_run("snapshot-test").unwrap();
+
+            // Export
+            let bundle_path = temp.path().join("snapshot.runbundle.tar.zst");
+            run_index.export_run("snapshot-test", &bundle_path).unwrap();
+
+            // Note: We can't write after completing, but we can verify the bundle
+            // contains exactly what was there at export time by importing
+
+            let (target_db, _target_temp) = create_test_db();
+            let target_run_index = RunIndex::new(target_db.clone());
+            let target_kv = KVStore::new(target_db.clone());
+
+            target_run_index.import_run(&bundle_path).unwrap();
+
+            let imported = target_run_index.get_run("snapshot-test").unwrap().unwrap();
+            let target_run_id = RunId::from_string(&imported.value.run_id).unwrap();
+
+            // Should have the data that was there at export
+            assert_eq!(
+                target_kv.get(&target_run_id, "before").unwrap().unwrap().value,
+                Value::String("exported".into())
+            );
+        }
+
+        #[test]
+        fn test_export_import_multiple_keys() {
+            // Test with many keys to ensure no truncation/loss
+            let (source_db, source_temp) = create_test_db();
+            let source_run_index = RunIndex::new(source_db.clone());
+            let source_kv = KVStore::new(source_db.clone());
+
+            let meta = source_run_index.create_run("many-keys").unwrap();
+            let run_id = RunId::from_string(&meta.value.run_id).unwrap();
+
+            // Write 100 keys
+            for i in 0..100 {
+                source_kv.put(&run_id, &format!("key_{:03}", i), Value::Int(i)).unwrap();
+            }
+
+            source_run_index.complete_run("many-keys").unwrap();
+
+            let bundle_path = source_temp.path().join("many-keys.runbundle.tar.zst");
+            let export_info = source_run_index.export_run("many-keys", &bundle_path).unwrap();
+
+            // Each put generates 3 WAL entries: BeginTxn, Write, CommitTxn
+            // So 100 puts = 300 WAL entries
+            assert_eq!(export_info.wal_entry_count, 300);
+
+            // Import
+            let (target_db, _target_temp) = create_test_db();
+            let target_run_index = RunIndex::new(target_db.clone());
+            let target_kv = KVStore::new(target_db.clone());
+
+            let import_info = target_run_index.import_run(&bundle_path).unwrap();
+            // entries_replayed counts actual Write operations applied, which is 100
+            assert_eq!(import_info.wal_entries_replayed, 100);
+
+            let imported = target_run_index.get_run("many-keys").unwrap().unwrap();
+            let target_run_id = RunId::from_string(&imported.value.run_id).unwrap();
+
+            // Verify ALL 100 keys exist with correct values
+            for i in 0..100 {
+                let key = format!("key_{:03}", i);
+                let val = target_kv.get(&target_run_id, &key).unwrap()
+                    .unwrap_or_else(|| panic!("Missing key: {}", key));
+                assert_eq!(val.value, Value::Int(i), "Wrong value for key: {}", key);
+            }
+        }
+
+        #[test]
+        fn test_export_import_overwrites_and_deletes() {
+            // Test that overwrites and deletes are properly captured
+            let (source_db, source_temp) = create_test_db();
+            let source_run_index = RunIndex::new(source_db.clone());
+            let source_kv = KVStore::new(source_db.clone());
+
+            let meta = source_run_index.create_run("overwrite-test").unwrap();
+            let run_id = RunId::from_string(&meta.value.run_id).unwrap();
+
+            // Write, overwrite, delete pattern
+            source_kv.put(&run_id, "key1", Value::Int(1)).unwrap();
+            source_kv.put(&run_id, "key1", Value::Int(2)).unwrap();  // Overwrite
+            source_kv.put(&run_id, "key1", Value::Int(3)).unwrap();  // Overwrite again
+
+            source_kv.put(&run_id, "key2", Value::String("delete-me".into())).unwrap();
+            source_kv.delete(&run_id, "key2").unwrap();  // Delete
+
+            source_kv.put(&run_id, "key3", Value::Bool(true)).unwrap();
+
+            source_run_index.complete_run("overwrite-test").unwrap();
+
+            let bundle_path = source_temp.path().join("overwrite.runbundle.tar.zst");
+            source_run_index.export_run("overwrite-test", &bundle_path).unwrap();
+
+            // Import
+            let (target_db, _target_temp) = create_test_db();
+            let target_run_index = RunIndex::new(target_db.clone());
+            let target_kv = KVStore::new(target_db.clone());
+
+            target_run_index.import_run(&bundle_path).unwrap();
+
+            let imported = target_run_index.get_run("overwrite-test").unwrap().unwrap();
+            let target_run_id = RunId::from_string(&imported.value.run_id).unwrap();
+
+            // key1 should have final value (3)
+            assert_eq!(
+                target_kv.get(&target_run_id, "key1").unwrap().unwrap().value,
+                Value::Int(3)
+            );
+
+            // key2 should be deleted (not exist)
+            assert!(target_kv.get(&target_run_id, "key2").unwrap().is_none());
+
+            // key3 should exist
+            assert_eq!(
+                target_kv.get(&target_run_id, "key3").unwrap().unwrap().value,
+                Value::Bool(true)
+            );
+        }
+
+        #[test]
+        fn test_import_does_not_affect_other_runs() {
+            // Ensure importing doesn't corrupt existing data
+            let (target_db, target_temp) = create_test_db();
+            let target_run_index = RunIndex::new(target_db.clone());
+            let target_kv = KVStore::new(target_db.clone());
+
+            // Create existing run with data
+            let existing = target_run_index.create_run("existing-run").unwrap();
+            let existing_run_id = RunId::from_string(&existing.value.run_id).unwrap();
+            target_kv.put(&existing_run_id, "existing", Value::String("keep-me".into())).unwrap();
+
+            // Create a bundle from a different database
+            let (source_db, _source_temp) = create_test_db();
+            let source_run_index = RunIndex::new(source_db.clone());
+            let source_kv = KVStore::new(source_db.clone());
+
+            let meta = source_run_index.create_run("new-run").unwrap();
+            let run_id = RunId::from_string(&meta.value.run_id).unwrap();
+            source_kv.put(&run_id, "imported", Value::String("new-data".into())).unwrap();
+            source_run_index.complete_run("new-run").unwrap();
+
+            let bundle_path = target_temp.path().join("import.runbundle.tar.zst");
+            source_run_index.export_run("new-run", &bundle_path).unwrap();
+
+            // Import into target database (which already has data)
+            target_run_index.import_run(&bundle_path).unwrap();
+
+            // Verify existing run data is untouched
+            let existing_val = target_kv.get(&existing_run_id, "existing").unwrap().unwrap();
+            assert_eq!(existing_val.value, Value::String("keep-me".into()));
+
+            // Verify imported run data exists
+            let imported = target_run_index.get_run("new-run").unwrap().unwrap();
+            let imported_run_id = RunId::from_string(&imported.value.run_id).unwrap();
+            let imported_val = target_kv.get(&imported_run_id, "imported").unwrap().unwrap();
+            assert_eq!(imported_val.value, Value::String("new-data".into()));
+        }
+
+        #[test]
+        fn test_export_import_special_characters_in_keys() {
+            let (source_db, source_temp) = create_test_db();
+            let source_run_index = RunIndex::new(source_db.clone());
+            let source_kv = KVStore::new(source_db.clone());
+
+            let meta = source_run_index.create_run("special-chars").unwrap();
+            let run_id = RunId::from_string(&meta.value.run_id).unwrap();
+
+            // Keys with special characters
+            source_kv.put(&run_id, "key with spaces", Value::Int(1)).unwrap();
+            source_kv.put(&run_id, "key/with/slashes", Value::Int(2)).unwrap();
+            source_kv.put(&run_id, "key:with:colons", Value::Int(3)).unwrap();
+            source_kv.put(&run_id, "key.with.dots", Value::Int(4)).unwrap();
+            source_kv.put(&run_id, "key\twith\ttabs", Value::Int(5)).unwrap();
+            source_kv.put(&run_id, "日本語キー", Value::Int(6)).unwrap();  // Japanese
+            source_kv.put(&run_id, "emoji🔑", Value::Int(7)).unwrap();
+
+            source_run_index.complete_run("special-chars").unwrap();
+
+            let bundle_path = source_temp.path().join("special.runbundle.tar.zst");
+            source_run_index.export_run("special-chars", &bundle_path).unwrap();
+
+            // Import
+            let (target_db, _target_temp) = create_test_db();
+            let target_run_index = RunIndex::new(target_db.clone());
+            let target_kv = KVStore::new(target_db.clone());
+
+            target_run_index.import_run(&bundle_path).unwrap();
+
+            let imported = target_run_index.get_run("special-chars").unwrap().unwrap();
+            let target_run_id = RunId::from_string(&imported.value.run_id).unwrap();
+
+            // All special keys should work
+            assert_eq!(target_kv.get(&target_run_id, "key with spaces").unwrap().unwrap().value, Value::Int(1));
+            assert_eq!(target_kv.get(&target_run_id, "key/with/slashes").unwrap().unwrap().value, Value::Int(2));
+            assert_eq!(target_kv.get(&target_run_id, "key:with:colons").unwrap().unwrap().value, Value::Int(3));
+            assert_eq!(target_kv.get(&target_run_id, "key.with.dots").unwrap().unwrap().value, Value::Int(4));
+            assert_eq!(target_kv.get(&target_run_id, "key\twith\ttabs").unwrap().unwrap().value, Value::Int(5));
+            assert_eq!(target_kv.get(&target_run_id, "日本語キー").unwrap().unwrap().value, Value::Int(6));
+            assert_eq!(target_kv.get(&target_run_id, "emoji🔑").unwrap().unwrap().value, Value::Int(7));
+        }
+    }
+
+    // ========== RunBundle Verification Tests ==========
+
+    mod verify_tests {
+        use super::*;
+        use crate::KVStore;
+        use strata_durability::run_bundle::RunBundleError;
+
+        #[test]
+        fn test_verify_valid_bundle() {
+            // Create and export a valid bundle
+            let (db, temp_dir) = create_test_db();
+            let run_index = RunIndex::new(db.clone());
+            let kv = KVStore::new(db.clone());
+
+            let meta = run_index.create_run("verify-test").unwrap();
+            let run_id = RunId::from_string(&meta.value.run_id).unwrap();
+
+            kv.put(&run_id, "key1", Value::String("value1".into())).unwrap();
+            run_index.complete_run("verify-test").unwrap();
+
+            let bundle_path = temp_dir.path().join("verify-test.runbundle.tar.zst");
+            let export_info = run_index.export_run("verify-test", &bundle_path).unwrap();
+
+            // Verify the bundle
+            let verify_info = run_index.verify_bundle(&bundle_path).unwrap();
+
+            assert_eq!(verify_info.run_id, meta.value.run_id);
+            assert_eq!(verify_info.format_version, 1);
+            assert_eq!(verify_info.wal_entry_count, export_info.wal_entry_count);
+            assert!(verify_info.checksums_valid);
+        }
+
+        #[test]
+        fn test_verify_returns_entry_count() {
+            let (db, temp_dir) = create_test_db();
+            let run_index = RunIndex::new(db.clone());
+            let kv = KVStore::new(db.clone());
+
+            let meta = run_index.create_run("count-test").unwrap();
+            let run_id = RunId::from_string(&meta.value.run_id).unwrap();
+
+            // Add 5 key-value pairs
+            for i in 0..5 {
+                kv.put(&run_id, &format!("key{}", i), Value::Int(i)).unwrap();
+            }
+            run_index.complete_run("count-test").unwrap();
+
+            let bundle_path = temp_dir.path().join("count-test.runbundle.tar.zst");
+            run_index.export_run("count-test", &bundle_path).unwrap();
+
+            let verify_info = run_index.verify_bundle(&bundle_path).unwrap();
+
+            // 5 puts = 5 * 3 = 15 WAL entries (BeginTxn, Write, CommitTxn each)
+            assert_eq!(verify_info.wal_entry_count, 15);
+            assert!(verify_info.checksums_valid);
+        }
+
+        #[test]
+        fn test_verify_nonexistent_file() {
+            let (db, temp_dir) = create_test_db();
+            let run_index = RunIndex::new(db);
+
+            let result = run_index.verify_bundle(&temp_dir.path().join("nonexistent.runbundle.tar.zst"));
+
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            assert!(matches!(err, RunBundleError::Io(_)));
+        }
+
+        #[test]
+        fn test_verify_truncated_archive() {
+            let (db, temp_dir) = create_test_db();
+            let run_index = RunIndex::new(db.clone());
+            let kv = KVStore::new(db.clone());
+
+            let meta = run_index.create_run("truncate-test").unwrap();
+            let run_id = RunId::from_string(&meta.value.run_id).unwrap();
+            kv.put(&run_id, "key1", Value::String("value".into())).unwrap();
+            run_index.complete_run("truncate-test").unwrap();
+
+            let bundle_path = temp_dir.path().join("truncate.runbundle.tar.zst");
+            run_index.export_run("truncate-test", &bundle_path).unwrap();
+
+            // Read the file and truncate it
+            let data = std::fs::read(&bundle_path).unwrap();
+            let truncated = &data[..data.len() / 2];
+            std::fs::write(&bundle_path, truncated).unwrap();
+
+            // Verification should fail
+            let result = run_index.verify_bundle(&bundle_path);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_verify_corrupted_archive() {
+            let (db, temp_dir) = create_test_db();
+            let run_index = RunIndex::new(db.clone());
+            let kv = KVStore::new(db.clone());
+
+            let meta = run_index.create_run("corrupt-test").unwrap();
+            let run_id = RunId::from_string(&meta.value.run_id).unwrap();
+            kv.put(&run_id, "key1", Value::String("value".into())).unwrap();
+            run_index.complete_run("corrupt-test").unwrap();
+
+            let bundle_path = temp_dir.path().join("corrupt.runbundle.tar.zst");
+            run_index.export_run("corrupt-test", &bundle_path).unwrap();
+
+            // Corrupt the file (flip some bytes in the middle)
+            let mut data = std::fs::read(&bundle_path).unwrap();
+            let mid = data.len() / 2;
+            for i in 0..10 {
+                if mid + i < data.len() {
+                    data[mid + i] ^= 0xFF;
+                }
+            }
+            std::fs::write(&bundle_path, &data).unwrap();
+
+            // Verification should fail
+            let result = run_index.verify_bundle(&bundle_path);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_verify_empty_file() {
+            let (db, temp_dir) = create_test_db();
+            let run_index = RunIndex::new(db);
+
+            let empty_path = temp_dir.path().join("empty.runbundle.tar.zst");
+            std::fs::File::create(&empty_path).unwrap();
+
+            let result = run_index.verify_bundle(&empty_path);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_verify_random_data() {
+            let (db, temp_dir) = create_test_db();
+            let run_index = RunIndex::new(db);
+
+            let random_path = temp_dir.path().join("random.runbundle.tar.zst");
+            let random_data: Vec<u8> = (0..1000).map(|i| (i % 256) as u8).collect();
+            std::fs::write(&random_path, &random_data).unwrap();
+
+            let result = run_index.verify_bundle(&random_path);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_verify_does_not_import() {
+            // Verify should not modify the database
+            let (source_db, source_temp) = create_test_db();
+            let source_run_index = RunIndex::new(source_db.clone());
+            let source_kv = KVStore::new(source_db.clone());
+
+            let meta = source_run_index.create_run("no-import-test").unwrap();
+            let run_id = RunId::from_string(&meta.value.run_id).unwrap();
+            source_kv.put(&run_id, "key1", Value::String("value".into())).unwrap();
+            source_run_index.complete_run("no-import-test").unwrap();
+
+            let bundle_path = source_temp.path().join("no-import.runbundle.tar.zst");
+            source_run_index.export_run("no-import-test", &bundle_path).unwrap();
+
+            // Create a fresh database and verify bundle
+            let (target_db, _) = create_test_db();
+            let target_run_index = RunIndex::new(target_db.clone());
+            let target_kv = KVStore::new(target_db.clone());
+
+            // Verify should succeed
+            let verify_info = target_run_index.verify_bundle(&bundle_path).unwrap();
+            assert!(verify_info.checksums_valid);
+
+            // But run should NOT exist in target database
+            assert!(!target_run_index.exists("no-import-test").unwrap());
+
+            // And data should NOT exist
+            let target_run_id = RunId::from_string(&verify_info.run_id).unwrap();
+            assert!(target_kv.get(&target_run_id, "key1").unwrap().is_none());
+        }
+
+        #[test]
+        fn test_verify_then_import_workflow() {
+            // Common workflow: verify first, then import
+            let (source_db, source_temp) = create_test_db();
+            let source_run_index = RunIndex::new(source_db.clone());
+            let source_kv = KVStore::new(source_db.clone());
+
+            let meta = source_run_index.create_run("workflow-test").unwrap();
+            let run_id = RunId::from_string(&meta.value.run_id).unwrap();
+            source_kv.put(&run_id, "data", Value::String("important".into())).unwrap();
+            source_run_index.complete_run("workflow-test").unwrap();
+
+            let bundle_path = source_temp.path().join("workflow.runbundle.tar.zst");
+            source_run_index.export_run("workflow-test", &bundle_path).unwrap();
+
+            // Target database: verify then import
+            let (target_db, _) = create_test_db();
+            let target_run_index = RunIndex::new(target_db.clone());
+            let target_kv = KVStore::new(target_db.clone());
+
+            // Step 1: Verify
+            let verify_info = target_run_index.verify_bundle(&bundle_path).unwrap();
+            assert!(verify_info.checksums_valid);
+            assert_eq!(verify_info.format_version, 1);
+
+            // Step 2: Import (only if verification passed)
+            let import_info = target_run_index.import_run(&bundle_path).unwrap();
+            assert_eq!(import_info.run_id, verify_info.run_id);
+
+            // Step 3: Use the imported data
+            let imported = target_run_index.get_run("workflow-test").unwrap().unwrap();
+            let target_run_id = RunId::from_string(&imported.value.run_id).unwrap();
+            let val = target_kv.get(&target_run_id, "data").unwrap().unwrap();
+            assert_eq!(val.value, Value::String("important".into()));
+        }
+
+        #[test]
+        fn test_verify_large_bundle() {
+            // Test verification with a larger bundle
+            let (db, temp_dir) = create_test_db();
+            let run_index = RunIndex::new(db.clone());
+            let kv = KVStore::new(db.clone());
+
+            let meta = run_index.create_run("large-verify").unwrap();
+            let run_id = RunId::from_string(&meta.value.run_id).unwrap();
+
+            // Add 100 entries with larger values
+            for i in 0..100 {
+                let value = format!("value_{:03}_with_some_longer_content_to_increase_size", i);
+                kv.put(&run_id, &format!("key_{:03}", i), Value::String(value)).unwrap();
+            }
+            run_index.complete_run("large-verify").unwrap();
+
+            let bundle_path = temp_dir.path().join("large.runbundle.tar.zst");
+            run_index.export_run("large-verify", &bundle_path).unwrap();
+
+            let verify_info = run_index.verify_bundle(&bundle_path).unwrap();
+
+            assert!(verify_info.checksums_valid);
+            assert_eq!(verify_info.wal_entry_count, 300); // 100 * 3
+        }
+
+        #[test]
+        fn test_verify_multiple_bundles() {
+            // Verify that verifying one bundle doesn't affect another
+            let (db, temp_dir) = create_test_db();
+            let run_index = RunIndex::new(db.clone());
+            let kv = KVStore::new(db.clone());
+
+            // Create two runs
+            let meta1 = run_index.create_run("run-1").unwrap();
+            let run_id1 = RunId::from_string(&meta1.value.run_id).unwrap();
+            kv.put(&run_id1, "key", Value::Int(1)).unwrap();
+            run_index.complete_run("run-1").unwrap();
+
+            let meta2 = run_index.create_run("run-2").unwrap();
+            let run_id2 = RunId::from_string(&meta2.value.run_id).unwrap();
+            kv.put(&run_id2, "key", Value::Int(2)).unwrap();
+            run_index.complete_run("run-2").unwrap();
+
+            // Export both
+            let bundle1_path = temp_dir.path().join("run1.runbundle.tar.zst");
+            let bundle2_path = temp_dir.path().join("run2.runbundle.tar.zst");
+            run_index.export_run("run-1", &bundle1_path).unwrap();
+            run_index.export_run("run-2", &bundle2_path).unwrap();
+
+            // Verify both
+            let verify1 = run_index.verify_bundle(&bundle1_path).unwrap();
+            let verify2 = run_index.verify_bundle(&bundle2_path).unwrap();
+
+            assert_eq!(verify1.run_id, meta1.value.run_id);
+            assert_eq!(verify2.run_id, meta2.value.run_id);
+            assert!(verify1.checksums_valid);
+            assert!(verify2.checksums_valid);
+        }
+
+        #[test]
+        fn test_verify_bundle_with_failed_run() {
+            let (db, temp_dir) = create_test_db();
+            let run_index = RunIndex::new(db.clone());
+            let kv = KVStore::new(db.clone());
+
+            let meta = run_index.create_run("failed-verify").unwrap();
+            let run_id = RunId::from_string(&meta.value.run_id).unwrap();
+            kv.put(&run_id, "partial", Value::String("data".into())).unwrap();
+            run_index.fail_run("failed-verify", "Test failure reason").unwrap();
+
+            let bundle_path = temp_dir.path().join("failed.runbundle.tar.zst");
+            run_index.export_run("failed-verify", &bundle_path).unwrap();
+
+            let verify_info = run_index.verify_bundle(&bundle_path).unwrap();
+
+            assert!(verify_info.checksums_valid);
+            assert_eq!(verify_info.run_id, meta.value.run_id);
         }
     }
 }

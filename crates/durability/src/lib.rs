@@ -25,6 +25,7 @@
 pub mod encoding; // Entry encoding/decoding with CRC
 pub mod recovery; // WAL replay logic
 pub mod recovery_manager; // Crash Recovery
+pub mod run_bundle; // Portable execution artifacts (RunBundle)
 pub mod run_lifecycle; // Run Lifecycle WAL Operations
 pub mod snapshot; // Snapshot writer and serialization
 pub mod snapshot_types; // Snapshot envelope and header types
@@ -66,3 +67,11 @@ pub use wal_manager::{WalManager, WalStats};
 pub use wal_reader::WalReader;
 pub use wal_types::{TxId, WalEntry, WalEntryError, MAX_WAL_ENTRY_SIZE, WAL_FORMAT_VERSION};
 pub use wal_writer::WalWriter;
+
+// RunBundle types
+pub use run_bundle::{
+    filter_wal_for_run, BundleContents, BundleManifest, BundleRunInfo, BundleVerifyInfo,
+    ExportOptions, ImportedRunInfo, ReadBundleContents, RunBundleError, RunBundleReader,
+    RunBundleResult, RunBundleWriter, RunExportInfo, WalLogInfo, WalLogIterator, WalLogReader,
+    WalLogWriter, RUNBUNDLE_EXTENSION, RUNBUNDLE_FORMAT_VERSION,
+};
