@@ -37,11 +37,11 @@
 
 use crate::encoding::{decode_entry, encode_entry};
 use strata_core::{
-    error::{Error, Result},
-    json::JsonPath,
-    types::{JsonDocId, Key, RunId},
+    error::Result,
+    primitives::json::JsonPath,
+    types::{Key, RunId},
     value::Value,
-    Timestamp,
+    StrataError, Timestamp,
 };
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
@@ -147,7 +147,7 @@ pub enum WALEntry {
         /// Run this operation belongs to
         run_id: RunId,
         /// Document identifier
-        doc_id: JsonDocId,
+        doc_id: String,
         /// Initial JSON value (msgpack serialized)
         value_bytes: Vec<u8>,
         /// Version assigned to this document
@@ -164,7 +164,7 @@ pub enum WALEntry {
         /// Run this operation belongs to
         run_id: RunId,
         /// Document identifier
-        doc_id: JsonDocId,
+        doc_id: String,
         /// Path to set value at
         path: JsonPath,
         /// New value at path (msgpack serialized)
@@ -180,7 +180,7 @@ pub enum WALEntry {
         /// Run this operation belongs to
         run_id: RunId,
         /// Document identifier
-        doc_id: JsonDocId,
+        doc_id: String,
         /// Path to delete
         path: JsonPath,
         /// New document version after this operation
@@ -194,7 +194,7 @@ pub enum WALEntry {
         /// Run this operation belongs to
         run_id: RunId,
         /// Document identifier
-        doc_id: JsonDocId,
+        doc_id: String,
     },
 
     // ========================================================================
@@ -606,7 +606,7 @@ impl WAL {
         {
             let mut writer = self.writer.lock();
             writer.write_all(&encoded).map_err(|e| {
-                Error::StorageError(format!("Failed to write entry at offset {}: {}", offset, e))
+                StrataError::storage(format!("Failed to write entry at offset {}: {}", offset, e))
             })?;
         }
 
@@ -623,7 +623,7 @@ impl WAL {
                 let mut writer = self.writer.lock();
                 writer
                     .flush()
-                    .map_err(|e| Error::StorageError(format!("Failed to flush: {}", e)))?;
+                    .map_err(|e| StrataError::storage(format!("Failed to flush: {}", e)))?;
             }
             DurabilityMode::Strict => {
                 // Flush and fsync immediately
@@ -662,7 +662,7 @@ impl WAL {
         let mut writer = self.writer.lock();
         writer
             .flush()
-            .map_err(|e| Error::StorageError(format!("Failed to flush WAL: {}", e)))
+            .map_err(|e| StrataError::storage(format!("Failed to flush WAL: {}", e)))
     }
 
     /// Force sync to disk (flush + fsync)
@@ -675,13 +675,13 @@ impl WAL {
         // Flush buffer
         writer
             .flush()
-            .map_err(|e| Error::StorageError(format!("Failed to flush: {}", e)))?;
+            .map_err(|e| StrataError::storage(format!("Failed to flush: {}", e)))?;
 
         // Fsync to disk
         writer
             .get_mut()
             .sync_all()
-            .map_err(|e| Error::StorageError(format!("Failed to fsync: {}", e)))?;
+            .map_err(|e| StrataError::storage(format!("Failed to fsync: {}", e)))?;
 
         Ok(())
     }
@@ -746,18 +746,18 @@ impl WAL {
                         offset_in_buf += bytes_consumed;
                         file_offset += bytes_consumed as u64;
                     }
-                    Err(Error::IncompleteEntry { .. }) => {
+                    Err(StrataError::Storage { ref message, .. }) if message.contains("Incomplete entry") => {
                         // Incomplete entry - need more data, keep the remaining bytes
                         // This is expected when entry spans buffer boundaries
                         break;
                     }
-                    Err(Error::Corruption(msg)) => {
+                    Err(StrataError::Corruption { message }) => {
                         // CRC mismatch or deserialization failure - actual corruption!
                         // Return entries read so far and stop (conservative approach:
                         // don't skip past corruption, return valid entries before it)
                         error!(
                             offset = file_offset,
-                            error = %msg,
+                            error = %message,
                             entries_recovered = entries.len(),
                             "WAL corruption detected - returning valid entries before corruption"
                         );
@@ -1456,19 +1456,18 @@ mod tests {
     // JSON Entry Type Tests
     // ========================================================================
 
-    use strata_core::json::JsonPath;
-    use strata_core::types::JsonDocId;
+    use strata_core::primitives::json::JsonPath;
 
     #[test]
     fn test_json_create_entry() {
         let run_id = RunId::new();
-        let doc_id = JsonDocId::new();
+        let doc_id = "test-doc";
         // Simulate msgpack-serialized empty object
         let value_bytes = vec![0x80]; // msgpack empty map
 
         let entry = WALEntry::JsonCreate {
             run_id,
-            doc_id,
+            doc_id: doc_id.to_string(),
             value_bytes,
             version: 1,
             timestamp: now(),
@@ -1484,14 +1483,14 @@ mod tests {
     #[test]
     fn test_json_set_entry() {
         let run_id = RunId::new();
-        let doc_id = JsonDocId::new();
+        let doc_id = "test-doc";
         let path = "user.name".parse::<JsonPath>().unwrap();
         // Simulate msgpack-serialized string "Alice"
         let value_bytes = b"\xa5Alice".to_vec();
 
         let entry = WALEntry::JsonSet {
             run_id,
-            doc_id,
+            doc_id: doc_id.to_string(),
             path: path.clone(),
             value_bytes,
             version: 2,
@@ -1516,12 +1515,12 @@ mod tests {
     #[test]
     fn test_json_delete_entry() {
         let run_id = RunId::new();
-        let doc_id = JsonDocId::new();
+        let doc_id = "test-doc";
         let path = "temp.field".parse::<JsonPath>().unwrap();
 
         let entry = WALEntry::JsonDelete {
             run_id,
-            doc_id,
+            doc_id: doc_id.to_string(),
             path,
             version: 3,
         };
@@ -1535,9 +1534,9 @@ mod tests {
     #[test]
     fn test_json_destroy_entry() {
         let run_id = RunId::new();
-        let doc_id = JsonDocId::new();
+        let doc_id = "test-doc";
 
-        let entry = WALEntry::JsonDestroy { run_id, doc_id };
+        let entry = WALEntry::JsonDestroy { run_id, doc_id: doc_id.to_string() };
 
         assert_eq!(entry.run_id(), Some(run_id));
         assert_eq!(entry.version(), None); // JsonDestroy has no version
@@ -1548,30 +1547,30 @@ mod tests {
     #[test]
     fn test_json_entries_serialize() {
         let run_id = RunId::new();
-        let doc_id = JsonDocId::new();
+        let doc_id = "test-doc";
 
         let entries = vec![
             WALEntry::JsonCreate {
                 run_id,
-                doc_id,
+                doc_id: doc_id.to_string(),
                 value_bytes: vec![0x80], // msgpack empty map
                 version: 1,
                 timestamp: now(),
             },
             WALEntry::JsonSet {
                 run_id,
-                doc_id,
+                doc_id: doc_id.to_string(),
                 path: "name".parse().unwrap(),
                 value_bytes: b"\xa4test".to_vec(), // msgpack string "test"
                 version: 2,
             },
             WALEntry::JsonDelete {
                 run_id,
-                doc_id,
+                doc_id: doc_id.to_string(),
                 path: "temp".parse().unwrap(),
                 version: 3,
             },
-            WALEntry::JsonDestroy { run_id, doc_id },
+            WALEntry::JsonDestroy { run_id, doc_id: doc_id.to_string() },
         ];
 
         for entry in entries {

@@ -33,7 +33,7 @@ use crate::extensions::{
 use strata_concurrency::TransactionContext;
 use strata_core::contract::{Timestamp, Version, Versioned};
 use strata_core::error::Result;
-use strata_core::json::{JsonPath, JsonValue};
+use strata_core::primitives::json::{JsonPath, JsonValue};
 use strata_core::types::RunId;
 use strata_core::value::Value;
 use strata_engine::Database;
@@ -254,14 +254,14 @@ impl StateHandle {
     }
 
     /// Compare-and-swap update
-    pub fn cas(&self, name: &str, expected_version: u64, new_value: Value) -> Result<u64> {
+    pub fn cas(&self, name: &str, expected_version: Version, new_value: Value) -> Result<Version> {
         self.db.transaction(self.run_id, |txn| {
             txn.state_cas(name, expected_version, new_value)
         })
     }
 
     /// Unconditional set
-    pub fn set(&self, name: &str, value: Value) -> Result<u64> {
+    pub fn set(&self, name: &str, value: Value) -> Result<Version> {
         self.db.transaction(self.run_id, |txn| {
             txn.state_set(name, value)
         })

@@ -120,17 +120,17 @@ impl StateCell {
 
     /// Initialize a cell with a value (only if it doesn't exist)
     ///
-    /// Returns `Versioned<u64>` containing the version number with metadata.
+    /// Returns `Versioned<Version>` containing the version with metadata.
     /// The version uses `Version::Counter` type.
     ///
     /// # StateCell Versioned Returns
-    pub fn init(&self, run_id: &RunId, name: &str, value: Value) -> Result<Versioned<u64>> {
+    pub fn init(&self, run_id: &RunId, name: &str, value: Value) -> Result<Versioned<Version>> {
         self.db.transaction(*run_id, |txn| {
             let key = self.key_for(run_id, name);
 
             // Check if exists
             if txn.get(&key)?.is_some() {
-                return Err(strata_core::error::Error::InvalidOperation(format!(
+                return Err(strata_core::StrataError::invalid_input(format!(
                     "StateCell '{}' already exists",
                     name
                 )));
@@ -139,7 +139,7 @@ impl StateCell {
             // Create new state
             let state = State::new(value);
             txn.put(key, to_stored_value(&state))?;
-            Ok(Versioned::new(state.version, Version::counter(state.version)))
+            Ok(Versioned::new(state.version, state.version))
         })
     }
 
@@ -160,9 +160,9 @@ impl StateCell {
         match snapshot.get(&key)? {
             Some(vv) => {
                 let state: State = from_stored_value(&vv.value)
-                    .map_err(|e| strata_core::error::Error::SerializationError(e.to_string()))?;
-                let version = Version::counter(state.version);
-                let timestamp = Timestamp::from_micros(state.updated_at as u64);
+                    .map_err(|e| strata_core::StrataError::serialization(e.to_string()))?;
+                let version = state.version;
+                let timestamp = Timestamp::from_micros(state.updated_at);
                 Ok(Some(Versioned::with_timestamp(state, version, timestamp)))
             }
             None => Ok(None),
@@ -180,10 +180,10 @@ impl StateCell {
             match txn.get(&key)? {
                 Some(v) => {
                     let state: State = from_stored_value(&v).map_err(|e| {
-                        strata_core::error::Error::SerializationError(e.to_string())
+                        strata_core::StrataError::serialization(e.to_string())
                     })?;
-                    let version = Version::counter(state.version);
-                    let timestamp = Timestamp::from_micros(state.updated_at as u64);
+                    let version = state.version;
+                    let timestamp = Timestamp::from_micros(state.updated_at);
                     Ok(Some(Versioned::with_timestamp(state, version, timestamp)))
                 }
                 None => Ok(None),
@@ -279,7 +279,7 @@ impl StateCell {
 
             // Apply before_counter filter (based on cell's internal counter, not txn version)
             if let Some(before) = before_counter {
-                if state.version >= before {
+                if state.version.as_u64() >= before {
                     continue;
                 }
             }
@@ -287,8 +287,8 @@ impl StateCell {
             // Build Versioned<Value> with counter-based version
             let versioned = Versioned::with_timestamp(
                 state.value,
-                Version::counter(state.version),
-                Timestamp::from_micros(state.updated_at as u64),
+                state.version,
+                Timestamp::from_micros(state.updated_at),
             );
 
             results.push(versioned);
@@ -308,7 +308,7 @@ impl StateCell {
 
     /// Compare-and-swap: Update only if version matches
     ///
-    /// Returns `Versioned<u64>` containing new version on success.
+    /// Returns `Versioned<Version>` containing new version on success.
     /// Uses `Version::Counter` type.
     ///
     /// # StateCell Versioned Returns
@@ -316,17 +316,17 @@ impl StateCell {
         &self,
         run_id: &RunId,
         name: &str,
-        expected_version: u64,
+        expected_version: Version,
         new_value: Value,
-    ) -> Result<Versioned<u64>> {
+    ) -> Result<Versioned<Version>> {
         self.db.transaction(*run_id, |txn| {
             let key = self.key_for(run_id, name);
 
             let current: State = match txn.get(&key)? {
                 Some(v) => from_stored_value(&v)
-                    .map_err(|e| strata_core::error::Error::SerializationError(e.to_string()))?,
+                    .map_err(|e| strata_core::StrataError::serialization(e.to_string()))?,
                 None => {
-                    return Err(strata_core::error::Error::InvalidOperation(format!(
+                    return Err(strata_core::StrataError::invalid_input(format!(
                         "StateCell '{}' not found",
                         name
                     )))
@@ -334,20 +334,21 @@ impl StateCell {
             };
 
             if current.version != expected_version {
-                return Err(strata_core::error::Error::VersionMismatch {
-                    expected: expected_version,
-                    actual: current.version,
-                });
+                return Err(strata_core::StrataError::conflict(format!(
+                    "Version mismatch: expected {:?}, got {:?}",
+                    expected_version, current.version
+                )));
             }
 
+            let new_version = current.version.increment();
             let new_state = State {
                 value: new_value,
-                version: current.version + 1,
+                version: new_version,
                 updated_at: State::now(),
             };
 
             txn.put(key, to_stored_value(&new_state))?;
-            Ok(Versioned::new(new_state.version, Version::counter(new_state.version)))
+            Ok(Versioned::new(new_state.version, new_state.version))
         })
     }
 
@@ -357,18 +358,18 @@ impl StateCell {
     /// Creates the cell if it doesn't exist.
     ///
     /// # StateCell Versioned Returns
-    pub fn set(&self, run_id: &RunId, name: &str, value: Value) -> Result<Versioned<u64>> {
+    pub fn set(&self, run_id: &RunId, name: &str, value: Value) -> Result<Versioned<Version>> {
         self.db.transaction(*run_id, |txn| {
             let key = self.key_for(run_id, name);
 
             let new_version = match txn.get(&key)? {
                 Some(v) => {
                     let current: State = from_stored_value(&v).map_err(|e| {
-                        strata_core::error::Error::SerializationError(e.to_string())
+                        strata_core::StrataError::serialization(e.to_string())
                     })?;
-                    current.version + 1
+                    current.version.increment()
                 }
-                None => 1,
+                None => Version::counter(1),
             };
 
             let new_state = State {
@@ -378,7 +379,7 @@ impl StateCell {
             };
 
             txn.put(key, to_stored_value(&new_state))?;
-            Ok(Versioned::new(new_state.version, Version::counter(new_state.version)))
+            Ok(Versioned::new(new_state.version, new_state.version))
         })
     }
 
@@ -414,7 +415,7 @@ impl StateCell {
     /// ```
     ///
     /// # StateCell Versioned Returns
-    pub fn transition<F, T>(&self, run_id: &RunId, name: &str, f: F) -> Result<(T, Versioned<u64>)>
+    pub fn transition<F, T>(&self, run_id: &RunId, name: &str, f: F) -> Result<(T, Versioned<Version>)>
     where
         F: Fn(&State) -> Result<(Value, T)>,
     {
@@ -436,10 +437,10 @@ impl StateCell {
                 // Read current state within the transaction
                 let current: State = match txn.get(&key)? {
                     Some(v) => from_stored_value(&v).map_err(|e| {
-                        strata_core::error::Error::SerializationError(e.to_string())
+                        strata_core::StrataError::serialization(e.to_string())
                     })?,
                     None => {
-                        return Err(strata_core::error::Error::InvalidOperation(format!(
+                        return Err(strata_core::StrataError::invalid_input(format!(
                             "StateCell '{}' not found",
                             name_owned
                         )))
@@ -450,7 +451,7 @@ impl StateCell {
                 let (new_value, result) = f(&current)?;
 
                 // Write new state with incremented version
-                let new_version = current.version + 1;
+                let new_version = current.version.increment();
                 let new_state = State {
                     value: new_value,
                     version: new_version,
@@ -458,7 +459,7 @@ impl StateCell {
                 };
 
                 txn.put(key.clone(), to_stored_value(&new_state))?;
-                Ok((result, Versioned::new(new_version, Version::counter(new_version))))
+                Ok((result, Versioned::new(new_version, new_version)))
             })
     }
 
@@ -467,7 +468,7 @@ impl StateCell {
     /// First attempts to initialize the cell with `initial` value,
     /// then applies the transition function.
     ///
-    /// Returns `(user_result, Versioned<u64>)` tuple.
+    /// Returns `(user_result, Versioned<Version>)` tuple.
     ///
     /// # StateCell Versioned Returns
     pub fn transition_or_init<F, T>(
@@ -476,7 +477,7 @@ impl StateCell {
         name: &str,
         initial: Value,
         f: F,
-    ) -> Result<(T, Versioned<u64>)>
+    ) -> Result<(T, Versioned<Version>)>
     where
         F: Fn(&State) -> Result<(Value, T)>,
     {
@@ -508,7 +509,7 @@ impl StateCell {
         req: &strata_core::SearchRequest,
     ) -> strata_core::error::Result<strata_core::SearchResponse> {
         use crate::searchable::{build_search_response, SearchCandidate};
-        use strata_core::search_types::DocRef;
+        use strata_core::search_types::EntityRef;
         use strata_core::traits::SnapshotView;
         use std::time::Instant;
 
@@ -540,7 +541,7 @@ impl StateCell {
 
             // Time range filter
             if let Some((start_ts, end_ts)) = req.time_range {
-                if state.updated_at < start_ts as i64 || state.updated_at > end_ts as i64 {
+                if state.updated_at < start_ts || state.updated_at > end_ts {
                     continue;
                 }
             }
@@ -550,9 +551,9 @@ impl StateCell {
             let text = self.extract_state_text(&cell_name, &state);
 
             candidates.push(SearchCandidate::new(
-                DocRef::State { run_id: req.run_id, name: cell_name },
+                EntityRef::State { run_id: req.run_id, name: cell_name },
                 text,
-                Some(state.updated_at as u64),
+                Some(state.updated_at),
             ));
         }
 
@@ -600,22 +601,22 @@ impl StateCellExt for TransactionContext {
         match self.get(&key)? {
             Some(v) => {
                 let state: State = from_stored_value(&v)
-                    .map_err(|e| strata_core::error::Error::SerializationError(e.to_string()))?;
+                    .map_err(|e| strata_core::StrataError::serialization(e.to_string()))?;
                 Ok(Some(state.value))
             }
             None => Ok(None),
         }
     }
 
-    fn state_cas(&mut self, name: &str, expected_version: u64, new_value: Value) -> Result<u64> {
+    fn state_cas(&mut self, name: &str, expected_version: Version, new_value: Value) -> Result<Version> {
         let ns = Namespace::for_run(self.run_id);
         let key = Key::new_state(ns, name);
 
         let current: State = match self.get(&key)? {
             Some(v) => from_stored_value(&v)
-                .map_err(|e| strata_core::error::Error::SerializationError(e.to_string()))?,
+                .map_err(|e| strata_core::StrataError::serialization(e.to_string()))?,
             None => {
-                return Err(strata_core::error::Error::InvalidOperation(format!(
+                return Err(strata_core::StrataError::invalid_input(format!(
                     "StateCell '{}' not found",
                     name
                 )))
@@ -623,33 +624,34 @@ impl StateCellExt for TransactionContext {
         };
 
         if current.version != expected_version {
-            return Err(strata_core::error::Error::VersionMismatch {
-                expected: expected_version,
-                actual: current.version,
-            });
+            return Err(strata_core::StrataError::conflict(format!(
+                "Version mismatch: expected {:?}, got {:?}",
+                expected_version, current.version
+            )));
         }
 
+        let new_version = current.version.increment();
         let new_state = State {
             value: new_value,
-            version: current.version + 1,
+            version: new_version,
             updated_at: State::now(),
         };
 
         self.put(key, to_stored_value(&new_state))?;
-        Ok(new_state.version)
+        Ok(new_version)
     }
 
-    fn state_set(&mut self, name: &str, value: Value) -> Result<u64> {
+    fn state_set(&mut self, name: &str, value: Value) -> Result<Version> {
         let ns = Namespace::for_run(self.run_id);
         let key = Key::new_state(ns, name);
 
         let new_version = match self.get(&key)? {
             Some(v) => {
                 let current: State = from_stored_value(&v)
-                    .map_err(|e| strata_core::error::Error::SerializationError(e.to_string()))?;
-                current.version + 1
+                    .map_err(|e| strata_core::StrataError::serialization(e.to_string()))?;
+                current.version.increment()
             }
-            None => 1,
+            None => Version::counter(1),
         };
 
         let new_state = State {
@@ -659,7 +661,7 @@ impl StateCellExt for TransactionContext {
         };
 
         self.put(key, to_stored_value(&new_state))?;
-        Ok(new_state.version)
+        Ok(new_version)
     }
 }
 
@@ -680,7 +682,7 @@ mod tests {
     #[test]
     fn test_state_creation() {
         let state = State::new(Value::Int(42));
-        assert_eq!(state.version, 1);
+        assert_eq!(state.version, Version::counter(1));
         assert!(state.updated_at > 0);
         assert_eq!(state.value, Value::Int(42));
     }
@@ -721,12 +723,12 @@ mod tests {
         let run_id = RunId::new();
 
         let versioned = sc.init(&run_id, "counter", Value::Int(0)).unwrap();
-        assert_eq!(versioned.value, 1);
+        assert_eq!(versioned.value, Version::counter(1));
         assert!(versioned.version.is_counter());
 
         let state = sc.read(&run_id, "counter").unwrap().unwrap();
         assert_eq!(state.value.value, Value::Int(0));
-        assert_eq!(state.value.version, 1);
+        assert_eq!(state.value.version, Version::counter(1));
         assert!(state.version.is_counter());
     }
 
@@ -823,13 +825,13 @@ mod tests {
         sc.init(&run_id, "counter", Value::Int(0)).unwrap();
 
         // CAS with correct version
-        let new_versioned = sc.cas(&run_id, "counter", 1, Value::Int(1)).unwrap();
-        assert_eq!(new_versioned.value, 2);
+        let new_versioned = sc.cas(&run_id, "counter", Version::counter(1), Value::Int(1)).unwrap();
+        assert_eq!(new_versioned.value, Version::counter(2));
         assert!(new_versioned.version.is_counter());
 
         let state = sc.read(&run_id, "counter").unwrap().unwrap();
         assert_eq!(state.value.value, Value::Int(1));
-        assert_eq!(state.value.version, 2);
+        assert_eq!(state.value.version, Version::counter(2));
     }
 
     #[test]
@@ -840,10 +842,10 @@ mod tests {
         sc.init(&run_id, "counter", Value::Int(0)).unwrap();
 
         // CAS with wrong version
-        let result = sc.cas(&run_id, "counter", 999, Value::Int(1));
+        let result = sc.cas(&run_id, "counter", Version::counter(999), Value::Int(1));
         assert!(matches!(
             result,
-            Err(strata_core::error::Error::VersionMismatch { .. })
+            Err(strata_core::StrataError::Conflict { .. })
         ));
     }
 
@@ -852,7 +854,7 @@ mod tests {
         let (_temp, _db, sc) = setup();
         let run_id = RunId::new();
 
-        let result = sc.cas(&run_id, "nonexistent", 1, Value::Int(1));
+        let result = sc.cas(&run_id, "nonexistent", Version::counter(1), Value::Int(1));
         assert!(result.is_err());
     }
 
@@ -862,7 +864,7 @@ mod tests {
         let run_id = RunId::new();
 
         let versioned = sc.set(&run_id, "new-cell", Value::Int(42)).unwrap();
-        assert_eq!(versioned.value, 1);
+        assert_eq!(versioned.value, Version::counter(1));
 
         let state = sc.read(&run_id, "new-cell").unwrap().unwrap();
         assert_eq!(state.value.value, Value::Int(42));
@@ -875,7 +877,7 @@ mod tests {
 
         sc.init(&run_id, "cell", Value::Int(1)).unwrap();
         let versioned = sc.set(&run_id, "cell", Value::Int(100)).unwrap();
-        assert_eq!(versioned.value, 2);
+        assert_eq!(versioned.value, Version::counter(2));
 
         let state = sc.read(&run_id, "cell").unwrap().unwrap();
         assert_eq!(state.value.value, Value::Int(100));
@@ -890,11 +892,11 @@ mod tests {
 
         for i in 1..=10 {
             let v = sc.set(&run_id, "cell", Value::Int(i)).unwrap();
-            assert_eq!(v.value, (i + 1) as u64);
+            assert_eq!(v.value, Version::counter((i + 1) as u64));
         }
 
         let state = sc.read(&run_id, "cell").unwrap().unwrap();
-        assert_eq!(state.value.version, 11);
+        assert_eq!(state.value.version, Version::counter(11));
     }
 
     // ========== Transition Tests ==========
@@ -917,12 +919,12 @@ mod tests {
             .unwrap();
 
         assert_eq!(result, 1);
-        assert_eq!(new_versioned.value, 2);
+        assert_eq!(new_versioned.value, Version::counter(2));
         assert!(new_versioned.version.is_counter());
 
         let state = sc.read(&run_id, "counter").unwrap().unwrap();
         assert_eq!(state.value.value, Value::Int(1));
-        assert_eq!(state.value.version, 2);
+        assert_eq!(state.value.version, Version::counter(2));
     }
 
     #[test]
@@ -1000,7 +1002,7 @@ mod tests {
 
         let state = sc.read(&run_id, "counter").unwrap().unwrap();
         assert_eq!(state.value.value, Value::Int(5));
-        assert_eq!(state.value.version, 6);
+        assert_eq!(state.value.version, Version::counter(6));
     }
 
     // ========== StateCellExt Tests ==========
@@ -1046,10 +1048,10 @@ mod tests {
         sc.init(&run_id, "cell", Value::Int(1)).unwrap();
 
         let new_version = db
-            .transaction(run_id, |txn| txn.state_cas("cell", 1, Value::Int(2)))
+            .transaction(run_id, |txn| txn.state_cas("cell", Version::counter(1), Value::Int(2)))
             .unwrap();
 
-        assert_eq!(new_version, 2);
+        assert_eq!(new_version, Version::counter(2));
 
         let state = sc.read(&run_id, "cell").unwrap().unwrap();
         assert_eq!(state.value.value, Value::Int(2));
@@ -1064,7 +1066,7 @@ mod tests {
             .transaction(run_id, |txn| txn.state_set("new-cell", Value::Int(42)))
             .unwrap();
 
-        assert_eq!(version, 1);
+        assert_eq!(version, Version::counter(1));
 
         let state = sc.read(&run_id, "new-cell").unwrap().unwrap();
         assert_eq!(state.value.value, Value::Int(42));
@@ -1103,7 +1105,7 @@ mod tests {
 
         let state = sc.read(&run_id, "cell").unwrap().unwrap();
         assert_eq!(state.value.value, Value::Int(42));
-        assert_eq!(state.value.version, 1);
+        assert_eq!(state.value.version, Version::counter(1));
         assert!(state.version.is_counter());
     }
 
@@ -1168,7 +1170,7 @@ mod tests {
         let run_id = RunId::new();
 
         let versioned = sc.init(&run_id, "cell", Value::Int(0)).unwrap();
-        assert_eq!(versioned.value, 1);
+        assert_eq!(versioned.value, Version::counter(1));
         assert!(versioned.version.is_counter());
         assert_eq!(versioned.version, Version::counter(1));
     }
@@ -1192,7 +1194,7 @@ mod tests {
         let run_id = RunId::new();
 
         sc.init(&run_id, "cell", Value::Int(0)).unwrap();
-        let versioned = sc.cas(&run_id, "cell", 1, Value::Int(1)).unwrap();
+        let versioned = sc.cas(&run_id, "cell", Version::counter(1), Value::Int(1)).unwrap();
 
         assert!(versioned.version.is_counter());
         assert_eq!(versioned.version, Version::counter(2));

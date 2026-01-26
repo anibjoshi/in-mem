@@ -305,7 +305,7 @@ impl StateCell for SubstrateImpl {
             }
             Some(expected) => {
                 // CAS with expected version
-                match self.state().cas(&run_id, cell, expected, value) {
+                match self.state().cas(&run_id, cell, Version::counter(expected), value) {
                     Ok(versioned) => Ok(Some(versioned.version)),
                     Err(_) => Ok(None), // Version mismatch
                 }
@@ -372,7 +372,7 @@ impl StateCell for SubstrateImpl {
         // Wrap the substrate closure to match the primitive's signature
         let primitive_closure = |state: &strata_primitives::State| {
             let new_value = f(&state.value)
-                .map_err(|e| strata_core::error::Error::InvalidOperation(e.to_string()))?;
+                .map_err(|e| strata_core::StrataError::invalid_input(e.to_string()))?;
             Ok((new_value.clone(), new_value))
         };
 
@@ -398,7 +398,7 @@ impl StateCell for SubstrateImpl {
         // Wrap the substrate closure to match the primitive's signature
         let primitive_closure = |state: &strata_primitives::State| {
             let new_value = f(&state.value)
-                .map_err(|e| strata_core::error::Error::InvalidOperation(e.to_string()))?;
+                .map_err(|e| strata_core::StrataError::invalid_input(e.to_string()))?;
             Ok((new_value.clone(), new_value))
         };
 

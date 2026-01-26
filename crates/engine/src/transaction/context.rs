@@ -17,7 +17,7 @@
 use crate::transaction_ops::TransactionOps;
 use strata_concurrency::TransactionContext;
 use strata_core::{
-    EntityRef, Event, JsonDocId, JsonPath, JsonValue, MetadataFilter, RunMetadata, RunStatus, State,
+    EntityRef, Event, JsonPath, JsonValue, MetadataFilter, RunMetadata, RunStatus, State,
     StrataError, Timestamp, Value, VectorEntry, VectorMatch, Version, Versioned,
 };
 use strata_core::types::{Key, Namespace, RunId, TypeTag};
@@ -244,7 +244,7 @@ impl<'a> TransactionOps for Transaction<'a> {
 
     fn event_append(&mut self, event_type: &str, payload: Value) -> Result<Version, StrataError> {
         let sequence = self.next_sequence();
-        let timestamp = Timestamp::now().as_micros() as i64;
+        let timestamp = Timestamp::now().as_micros();
         let prev_hash = self.last_hash;
 
         // Create the event
@@ -340,7 +340,7 @@ impl<'a> TransactionOps for Transaction<'a> {
             })?;
             return Ok(Some(Versioned::new(
                 state.clone(),
-                Version::counter(state.version),
+                state.version,
             )));
         }
 
@@ -378,13 +378,13 @@ impl<'a> TransactionOps for Transaction<'a> {
 
         self.ctx.put(full_key, Value::Bytes(state_bytes)).map_err(StrataError::from)?;
 
-        Ok(Version::counter(version))
+        Ok(version)
     }
 
     fn state_cas(
         &mut self,
         name: &str,
-        expected_version: u64,
+        expected_version: Version,
         value: Value,
     ) -> Result<Version, StrataError> {
         let full_key = self.state_key(name);
@@ -410,14 +410,14 @@ impl<'a> TransactionOps for Transaction<'a> {
         if current.version != expected_version {
             return Err(StrataError::version_conflict(
                 EntityRef::state(self.run_id(), name),
-                Version::counter(expected_version),
-                Version::counter(current.version),
+                expected_version,
+                current.version,
             ));
         }
 
         // Create new state with incremented version
-        let new_state = State::with_version(value, expected_version + 1);
-        let new_version = new_state.version;
+        let new_version = expected_version.increment();
+        let new_state = State::with_version(value, new_version);
 
         // Serialize and store
         let state_bytes = serde_json::to_vec(&new_state).map_err(|e| {
@@ -428,7 +428,7 @@ impl<'a> TransactionOps for Transaction<'a> {
 
         self.ctx.put(full_key, Value::Bytes(state_bytes)).map_err(StrataError::from)?;
 
-        Ok(Version::counter(new_version))
+        Ok(new_version)
     }
 
     fn state_delete(&mut self, name: &str) -> Result<bool, StrataError> {
@@ -464,17 +464,17 @@ impl<'a> TransactionOps for Transaction<'a> {
     // Json Operations (Phase 4) - Stub implementations
     // =========================================================================
 
-    fn json_create(&mut self, _doc_id: &JsonDocId, _value: JsonValue) -> Result<Version, StrataError> {
+    fn json_create(&mut self, _doc_id: &str, _value: JsonValue) -> Result<Version, StrataError> {
         unimplemented!("Json operations will be implemented in Phase 4")
     }
 
-    fn json_get(&self, _doc_id: &JsonDocId) -> Result<Option<Versioned<JsonValue>>, StrataError> {
+    fn json_get(&self, _doc_id: &str) -> Result<Option<Versioned<JsonValue>>, StrataError> {
         unimplemented!("Json operations will be implemented in Phase 4")
     }
 
     fn json_get_path(
         &self,
-        _doc_id: &JsonDocId,
+        _doc_id: &str,
         _path: &JsonPath,
     ) -> Result<Option<JsonValue>, StrataError> {
         unimplemented!("Json operations will be implemented in Phase 4")
@@ -482,22 +482,22 @@ impl<'a> TransactionOps for Transaction<'a> {
 
     fn json_set(
         &mut self,
-        _doc_id: &JsonDocId,
+        _doc_id: &str,
         _path: &JsonPath,
         _value: JsonValue,
     ) -> Result<Version, StrataError> {
         unimplemented!("Json operations will be implemented in Phase 4")
     }
 
-    fn json_delete(&mut self, _doc_id: &JsonDocId) -> Result<bool, StrataError> {
+    fn json_delete(&mut self, _doc_id: &str) -> Result<bool, StrataError> {
         unimplemented!("Json operations will be implemented in Phase 4")
     }
 
-    fn json_exists(&self, _doc_id: &JsonDocId) -> Result<bool, StrataError> {
+    fn json_exists(&self, _doc_id: &str) -> Result<bool, StrataError> {
         unimplemented!("Json operations will be implemented in Phase 4")
     }
 
-    fn json_destroy(&mut self, _doc_id: &JsonDocId) -> Result<bool, StrataError> {
+    fn json_destroy(&mut self, _doc_id: &str) -> Result<bool, StrataError> {
         unimplemented!("Json operations will be implemented in Phase 4")
     }
 
@@ -838,7 +838,7 @@ mod tests {
         assert!(result.is_some());
         let versioned = result.unwrap();
         assert_eq!(versioned.value.value, Value::Int(0));
-        assert_eq!(versioned.value.version, 1);
+        assert_eq!(versioned.value.version, Version::counter(1));
     }
 
     #[test]
@@ -849,13 +849,13 @@ mod tests {
 
         // Initialize then CAS
         txn.state_init("counter", Value::Int(0)).unwrap();
-        let new_version = txn.state_cas("counter", 1, Value::Int(1)).unwrap();
+        let new_version = txn.state_cas("counter", Version::counter(1), Value::Int(1)).unwrap();
         assert_eq!(new_version, Version::counter(2)); // Version incremented
 
         // Verify the value changed
         let result = txn.state_read("counter").unwrap().unwrap();
         assert_eq!(result.value.value, Value::Int(1));
-        assert_eq!(result.value.version, 2);
+        assert_eq!(result.value.version, Version::counter(2));
     }
 
     #[test]
@@ -866,7 +866,7 @@ mod tests {
 
         // Initialize then CAS with wrong version
         txn.state_init("counter", Value::Int(0)).unwrap();
-        let result = txn.state_cas("counter", 99, Value::Int(1)); // Wrong version
+        let result = txn.state_cas("counter", Version::counter(99), Value::Int(1)); // Wrong version
 
         assert!(result.is_err());
         match result.unwrap_err() {

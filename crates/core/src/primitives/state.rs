@@ -2,6 +2,7 @@
 //!
 //! These types define the structure of versioned state cells.
 
+use crate::contract::Version;
 use crate::value::Value;
 use serde::{Deserialize, Serialize};
 
@@ -9,16 +10,16 @@ use serde::{Deserialize, Serialize};
 ///
 /// Each state cell has:
 /// - A value (arbitrary data)
-/// - A version number (monotonically increasing)
+/// - A version (Counter-based, monotonically increasing)
 /// - A timestamp of last update
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct State {
     /// Current value
     pub value: Value,
-    /// Version number (monotonically increasing)
-    pub version: u64,
-    /// Last update timestamp (milliseconds since epoch)
-    pub updated_at: i64,
+    /// Version (Counter-based for CAS operations)
+    pub version: Version,
+    /// Last update timestamp (microseconds since epoch)
+    pub updated_at: u64,
 }
 
 impl State {
@@ -26,13 +27,13 @@ impl State {
     pub fn new(value: Value) -> Self {
         Self {
             value,
-            version: 1,
+            version: Version::counter(1),
             updated_at: Self::now(),
         }
     }
 
     /// Create a new state with explicit version
-    pub fn with_version(value: Value, version: u64) -> Self {
+    pub fn with_version(value: Value, version: Version) -> Self {
         Self {
             value,
             version,
@@ -40,11 +41,11 @@ impl State {
         }
     }
 
-    /// Get current timestamp in milliseconds
-    pub fn now() -> i64 {
+    /// Get current timestamp in microseconds
+    pub fn now() -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_millis() as i64
+            .as_micros() as u64
     }
 }

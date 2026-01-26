@@ -493,7 +493,7 @@ impl RunIndex for SubstrateImpl {
                 value: info,
                 version: Version::Txn(0),
                 // Convert i64 millis to Timestamp
-                timestamp: strata_core::Timestamp::from_millis(m.value.created_at.max(0) as u64),
+                timestamp: strata_core::Timestamp::from_micros(m.value.created_at),
             }
         }))
     }
@@ -540,7 +540,7 @@ impl RunIndex for SubstrateImpl {
                     value: info,
                     version: Version::Txn(0),
                     // Convert i64 millis to Timestamp
-                    timestamp: strata_core::Timestamp::from_millis(m.created_at.max(0) as u64),
+                    timestamp: strata_core::Timestamp::from_micros(m.created_at),
                 }
             })
             .collect())
@@ -712,7 +712,7 @@ impl RunIndex for SubstrateImpl {
         // Convert hits back to RunInfo by looking up each run
         let mut results = Vec::new();
         for hit in response.hits {
-            if let strata_core::search_types::DocRef::Run { run_id } = hit.doc_ref {
+            if let strata_core::search_types::EntityRef::Run { run_id } = hit.doc_ref {
                 let api_run_id = ApiRunId::from_uuid(uuid::Uuid::from_bytes(*run_id.as_bytes()));
                 if let Some(info) = self.run_get(&api_run_id)? {
                     results.push(info);
@@ -829,7 +829,7 @@ fn metadata_to_versioned_info(m: strata_primitives::RunMetadata) -> Versioned<Ru
     Versioned {
         value: info,
         version: Version::Txn(0),
-        timestamp: strata_core::Timestamp::from_millis(m.created_at.max(0) as u64),
+        timestamp: strata_core::Timestamp::from_micros(m.created_at),
     }
 }
 
