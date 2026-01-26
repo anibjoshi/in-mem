@@ -70,6 +70,10 @@ mod types;
 // Handler modules
 mod handlers;
 
+// Test modules
+#[cfg(test)]
+mod tests;
+
 // Re-export public API
 pub use command::Command;
 pub use error::Error;
