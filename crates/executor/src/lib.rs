@@ -63,6 +63,7 @@ mod command;
 mod convert;
 mod error;
 mod executor;
+pub mod json;
 mod output;
 mod types;
 
