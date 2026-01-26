@@ -4,7 +4,7 @@
 
 This document provides the high-level implementation plan for M13 (Command Execution Layer).
 
-**Total Scope**: 5 Epics, ~32 Stories
+**Total Scope**: 5 Epics, ~40 Stories
 
 **References**:
 - [M13 Executor Specification](./M13_EXECUTOR.md) - Authoritative spec
@@ -15,6 +15,9 @@ This document provides the high-level implementation plan for M13 (Command Execu
 > The Command Execution Layer is an in-process execution boundary, not a wire protocol. Commands are typed, serializable operations that represent the complete "instruction set" of Strata.
 >
 > **M13 does NOT add new capabilities.** It wraps existing primitive operations in a uniform command interface, enabling deterministic replay, thin SDKs, and black-box testing.
+
+**API Coverage**:
+> This plan covers ALL operations exposed by the Substrate API layer (see `crates/api/src/substrate/`). The executor must support every public operation to enable complete API parity.
 
 **Epic Details**:
 - [Epic 90: Command Types](#epic-90-command-types)
@@ -89,7 +92,7 @@ Commands are in-process operations. They do not assume networking, async executi
 | CMD-2 | Commands are self-contained (no external context) | Static analysis, constructor tests |
 | CMD-3 | Commands serialize/deserialize losslessly | Round-trip tests for all variants |
 | CMD-4 | Command execution is deterministic | Same command + same state = same result |
-| CMD-5 | All 48 command variants are typed (no Generic fallback) | Type exhaustiveness tests |
+| CMD-5 | All 101 command variants are typed (no Generic fallback) | Type exhaustiveness tests |
 
 ### Output Invariants (OUT)
 
@@ -114,7 +117,7 @@ Commands are in-process operations. They do not assume networking, async executi
 | # | Invariant | Test Strategy |
 |---|-----------|---------------|
 | EXE-1 | Executor is stateless | State isolation tests |
-| EXE-2 | execute() dispatches correctly to all 48 variants | Dispatch coverage tests |
+| EXE-2 | execute() dispatches correctly to all 101 variants | Dispatch coverage tests |
 | EXE-3 | execute_many() processes sequentially | Order preservation tests |
 | EXE-4 | Executor does not modify command semantics | Parity tests vs direct primitive calls |
 
@@ -133,9 +136,9 @@ Commands are in-process operations. They do not assume networking, async executi
 
 | Epic | Name | Stories | Dependencies | Status |
 |------|------|---------|--------------|--------|
-| 90 | Command Types | 8 | M11 complete | Pending |
+| 90 | Command Types | 12 | M11 complete | Pending |
 | 91 | Output & Error Types | 6 | Epic 90 | Pending |
-| 92 | Executor Implementation | 9 | Epic 90, 91 | Pending |
+| 92 | Executor Implementation | 13 | Epic 90, 91 | Pending |
 | 93 | Serialization & JSON Utilities | 5 | Epic 90, 91 | Pending |
 | 94 | Integration & Testing | 4 | Epic 92, 93 | Pending |
 
@@ -143,80 +146,195 @@ Commands are in-process operations. They do not assume networking, async executi
 
 ## Epic 90: Command Types
 
-**Goal**: Define the complete Command enum covering all 48 primitive operations
+**Goal**: Define the complete Command enum covering all 101 primitive operations
 
 | Story | Description | Priority |
 |-------|-------------|----------|
 | #700 | Command Enum Structure and RunId Type | FOUNDATION |
-| #701 | KV Command Variants (12 variants) | CRITICAL |
-| #702 | JSON Command Variants (6 variants) | CRITICAL |
-| #703 | Event Command Variants (7 variants) | CRITICAL |
-| #704 | State Command Variants (5 variants) | CRITICAL |
-| #705 | Vector Command Variants (7 variants) | CRITICAL |
-| #706 | Run Command Variants (7 variants) | CRITICAL |
-| #707 | Database Command Variants (4 variants) | HIGH |
+| #701 | KV Command Variants (15 variants) | CRITICAL |
+| #702 | JSON Command Variants (17 variants) | CRITICAL |
+| #703 | Event Command Variants (11 variants) | CRITICAL |
+| #704 | State Command Variants (8 variants) | CRITICAL |
+| #705 | Vector Command Variants (19 variants) | CRITICAL |
+| #706 | Run Command Variants (24 variants) | CRITICAL |
+| #707 | Transaction Command Variants (5 variants) | CRITICAL |
+| #708 | Retention Command Variants (3 variants) | HIGH |
+| #709 | Database Command Variants (4 variants) | HIGH |
+| #710 | Supporting Types (SearchFilter, DistanceMetric, etc.) | CRITICAL |
+| #711 | Command Documentation and Examples | HIGH |
 
 **Acceptance Criteria**:
-- [ ] `Command` enum with exactly 48 variants (no Generic fallback)
+- [ ] `Command` enum with exactly 101 variants (no Generic fallback)
 - [ ] All commands derive `Debug`, `Clone`, `Serialize`, `Deserialize`, `PartialEq`
 - [ ] `RunId` type for run identification (String-based, supports "default" and UUIDs)
-- [ ] **KV commands (12)**:
-  - `KvGet { run: RunId, key: String }`
-  - `KvPut { run: RunId, key: String, value: Value }`
-  - `KvDelete { run: RunId, key: String }`
-  - `KvExists { run: RunId, key: String }`
-  - `KvGetAt { run: RunId, key: String, version: u64 }`
-  - `KvHistory { run: RunId, key: String, limit: Option<u64> }`
-  - `KvScan { run: RunId, prefix: String, limit: Option<u64>, cursor: Option<String> }`
-  - `KvMget { run: RunId, keys: Vec<String> }`
-  - `KvMput { run: RunId, entries: Vec<(String, Value)> }`
-  - `KvMdelete { run: RunId, keys: Vec<String> }`
-  - `KvIncr { run: RunId, key: String, delta: i64 }`
-  - `KvCas { run: RunId, key: String, expected: Option<Value>, new_value: Value }`
-- [ ] **JSON commands (6)**:
-  - `JsonGet { run: RunId, key: String }`
-  - `JsonSet { run: RunId, key: String, value: Value }`
-  - `JsonGetPath { run: RunId, key: String, path: String }`
-  - `JsonSetPath { run: RunId, key: String, path: String, value: Value }`
-  - `JsonDeletePath { run: RunId, key: String, path: String }`
-  - `JsonMergePatch { run: RunId, key: String, patch: Value }`
-- [ ] **Event commands (7)**:
-  - `EventAppend { run: RunId, stream: String, event_type: String, payload: Value }`
-  - `EventRead { run: RunId, stream: String, start: u64, limit: u64 }`
-  - `EventReadRange { run: RunId, stream: String, start: u64, end: u64 }`
-  - `EventReadByType { run: RunId, stream: String, event_type: String }`
-  - `EventLatest { run: RunId, stream: String }`
-  - `EventCount { run: RunId, stream: String }`
-  - `EventVerifyChain { run: RunId, stream: String }`
-- [ ] **State commands (5)**:
-  - `StateGet { run: RunId, cell: String }`
-  - `StateSet { run: RunId, cell: String, value: Value }`
-  - `StateTransition { run: RunId, cell: String, from: Value, to: Value }`
-  - `StateDelete { run: RunId, cell: String }`
-  - `StateList { run: RunId }`
-- [ ] **Vector commands (7)**:
-  - `VectorCreateCollection { run: RunId, name: String, dimensions: usize, metric: DistanceMetric }`
-  - `VectorDeleteCollection { run: RunId, name: String }`
-  - `VectorInsert { run: RunId, collection: String, id: String, embedding: Vec<f32>, metadata: Option<Value> }`
-  - `VectorSearch { run: RunId, collection: String, query: Vec<f32>, k: usize, filter: Option<MetadataFilter> }`
-  - `VectorGet { run: RunId, collection: String, id: String }`
-  - `VectorDelete { run: RunId, collection: String, id: String }`
-  - `VectorCount { run: RunId, collection: String }`
-- [ ] **Run commands (7)**:
-  - `RunCreate { name: Option<String>, metadata: Option<Value> }`
-  - `RunGet { run: RunId }`
-  - `RunList { status: Option<RunStatus>, limit: Option<u64> }`
-  - `RunUpdateStatus { run: RunId, status: RunStatus }`
-  - `RunUpdateMetadata { run: RunId, metadata: Value }`
-  - `RunDelete { run: RunId }`
-  - `RunExport { run: RunId, path: String }`
-- [ ] **Database commands (4)**:
-  - `Ping`
-  - `Info`
-  - `Flush`
-  - `Compact`
+
+### KV Commands (15)
+From `KVStore` and `KVStoreBatch` traits:
+
+| # | Command | Parameters | Return |
+|---|---------|------------|--------|
+| 1 | `KvPut` | `run, key, value` | `Version` |
+| 2 | `KvGet` | `run, key` | `Option<Versioned<Value>>` |
+| 3 | `KvGetAt` | `run, key, version` | `Versioned<Value>` |
+| 4 | `KvDelete` | `run, key` | `bool` |
+| 5 | `KvExists` | `run, key` | `bool` |
+| 6 | `KvHistory` | `run, key, limit?, before?` | `Vec<Versioned<Value>>` |
+| 7 | `KvIncr` | `run, key, delta` | `i64` |
+| 8 | `KvCasVersion` | `run, key, expected_version?, new_value` | `bool` |
+| 9 | `KvCasValue` | `run, key, expected_value?, new_value` | `bool` |
+| 10 | `KvKeys` | `run, prefix, limit?` | `Vec<String>` |
+| 11 | `KvScan` | `run, prefix, limit, cursor?` | `KVScanResult` |
+| 12 | `KvMget` | `run, keys` | `Vec<Option<Versioned<Value>>>` |
+| 13 | `KvMput` | `run, entries` | `Version` |
+| 14 | `KvMdelete` | `run, keys` | `u64` |
+| 15 | `KvMexists` | `run, keys` | `u64` |
+
+### JSON Commands (17)
+From `JsonStore` trait:
+
+| # | Command | Parameters | Return |
+|---|---------|------------|--------|
+| 16 | `JsonSet` | `run, key, path, value` | `Version` |
+| 17 | `JsonGet` | `run, key, path` | `Option<Versioned<Value>>` |
+| 18 | `JsonDelete` | `run, key, path` | `u64` |
+| 19 | `JsonMerge` | `run, key, path, patch` | `Version` |
+| 20 | `JsonHistory` | `run, key, limit?, before?` | `Vec<Versioned<Value>>` |
+| 21 | `JsonExists` | `run, key` | `bool` |
+| 22 | `JsonGetVersion` | `run, key` | `Option<u64>` |
+| 23 | `JsonSearch` | `run, query, k` | `Vec<JsonSearchHit>` |
+| 24 | `JsonList` | `run, prefix?, cursor?, limit` | `JsonListResult` |
+| 25 | `JsonCas` | `run, key, expected_version, path, value` | `Version` |
+| 26 | `JsonQuery` | `run, path, value, limit` | `Vec<String>` |
+| 27 | `JsonCount` | `run` | `u64` |
+| 28 | `JsonBatchGet` | `run, keys` | `Vec<Option<Versioned<Value>>>` |
+| 29 | `JsonBatchCreate` | `run, docs` | `Vec<Version>` |
+| 30 | `JsonArrayPush` | `run, key, path, values` | `usize` |
+| 31 | `JsonIncrement` | `run, key, path, delta` | `f64` |
+| 32 | `JsonArrayPop` | `run, key, path` | `Option<Value>` |
+
+### Event Commands (11)
+From `EventLog` trait:
+
+| # | Command | Parameters | Return |
+|---|---------|------------|--------|
+| 33 | `EventAppend` | `run, stream, payload` | `Version` |
+| 34 | `EventAppendBatch` | `run, events` | `Vec<Version>` |
+| 35 | `EventRange` | `run, stream, start?, end?, limit?` | `Vec<Versioned<Value>>` |
+| 36 | `EventGet` | `run, stream, sequence` | `Option<Versioned<Value>>` |
+| 37 | `EventLen` | `run, stream` | `u64` |
+| 38 | `EventLatestSequence` | `run, stream` | `Option<u64>` |
+| 39 | `EventStreamInfo` | `run, stream` | `StreamInfo` |
+| 40 | `EventRevRange` | `run, stream, start?, end?, limit?` | `Vec<Versioned<Value>>` |
+| 41 | `EventStreams` | `run` | `Vec<String>` |
+| 42 | `EventHead` | `run, stream` | `Option<Versioned<Value>>` |
+| 43 | `EventVerifyChain` | `run` | `ChainVerification` |
+
+### State Commands (8)
+From `StateCell` trait (excluding closure-based methods):
+
+| # | Command | Parameters | Return |
+|---|---------|------------|--------|
+| 44 | `StateSet` | `run, cell, value` | `Version` |
+| 45 | `StateGet` | `run, cell` | `Option<Versioned<Value>>` |
+| 46 | `StateCas` | `run, cell, expected_counter?, value` | `Option<Version>` |
+| 47 | `StateDelete` | `run, cell` | `bool` |
+| 48 | `StateExists` | `run, cell` | `bool` |
+| 49 | `StateHistory` | `run, cell, limit?, before?` | `Vec<Versioned<Value>>` |
+| 50 | `StateInit` | `run, cell, value` | `Version` |
+| 51 | `StateList` | `run` | `Vec<String>` |
+
+**Note**: `state_transition`, `state_transition_or_init`, and `state_get_or_init` use closures and cannot be direct commands. Users must compose read+cas operations client-side.
+
+### Vector Commands (19)
+From `VectorStore` trait:
+
+| # | Command | Parameters | Return |
+|---|---------|------------|--------|
+| 52 | `VectorUpsert` | `run, collection, key, vector, metadata?` | `Version` |
+| 53 | `VectorUpsertWithSource` | `run, collection, key, vector, metadata?, source_ref?` | `Version` |
+| 54 | `VectorGet` | `run, collection, key` | `Option<Versioned<VectorData>>` |
+| 55 | `VectorDelete` | `run, collection, key` | `bool` |
+| 56 | `VectorSearch` | `run, collection, query, k, filter?, metric?` | `Vec<VectorMatch>` |
+| 57 | `VectorSearchWithBudget` | `run, collection, query, k, filter?, budget` | `(Vec<VectorMatch>, bool)` |
+| 58 | `VectorCollectionInfo` | `run, collection` | `Option<VectorCollectionInfo>` |
+| 59 | `VectorCreateCollection` | `run, collection, dimension, metric` | `Version` |
+| 60 | `VectorDropCollection` | `run, collection` | `bool` |
+| 61 | `VectorListCollections` | `run` | `Vec<VectorCollectionInfo>` |
+| 62 | `VectorCollectionExists` | `run, collection` | `bool` |
+| 63 | `VectorCount` | `run, collection` | `u64` |
+| 64 | `VectorUpsertBatch` | `run, collection, vectors` | `Vec<Result<(String, Version), Error>>` |
+| 65 | `VectorGetBatch` | `run, collection, keys` | `Vec<Option<Versioned<VectorData>>>` |
+| 66 | `VectorDeleteBatch` | `run, collection, keys` | `Vec<bool>` |
+| 67 | `VectorHistory` | `run, collection, key, limit?, before_version?` | `Vec<Versioned<VectorData>>` |
+| 68 | `VectorGetAt` | `run, collection, key, version` | `Option<Versioned<VectorData>>` |
+| 69 | `VectorListKeys` | `run, collection, limit?, cursor?` | `Vec<String>` |
+| 70 | `VectorScan` | `run, collection, limit?, cursor?` | `Vec<(String, VectorData)>` |
+
+### Run Commands (24)
+From `RunIndex` trait:
+
+| # | Command | Parameters | Return |
+|---|---------|------------|--------|
+| 71 | `RunCreate` | `run_id?, metadata?` | `(RunInfo, Version)` |
+| 72 | `RunGet` | `run` | `Option<Versioned<RunInfo>>` |
+| 73 | `RunList` | `state?, limit?, offset?` | `Vec<Versioned<RunInfo>>` |
+| 74 | `RunClose` | `run` | `Version` |
+| 75 | `RunUpdateMetadata` | `run, metadata` | `Version` |
+| 76 | `RunExists` | `run` | `bool` |
+| 77 | `RunPause` | `run` | `Version` |
+| 78 | `RunResume` | `run` | `Version` |
+| 79 | `RunFail` | `run, error` | `Version` |
+| 80 | `RunCancel` | `run` | `Version` |
+| 81 | `RunArchive` | `run` | `Version` |
+| 82 | `RunDelete` | `run` | `()` |
+| 83 | `RunQueryByStatus` | `state` | `Vec<Versioned<RunInfo>>` |
+| 84 | `RunQueryByTag` | `tag` | `Vec<Versioned<RunInfo>>` |
+| 85 | `RunCount` | `status?` | `u64` |
+| 86 | `RunSearch` | `query, limit?` | `Vec<Versioned<RunInfo>>` |
+| 87 | `RunAddTags` | `run, tags` | `Version` |
+| 88 | `RunRemoveTags` | `run, tags` | `Version` |
+| 89 | `RunGetTags` | `run` | `Vec<String>` |
+| 90 | `RunCreateChild` | `parent, metadata?` | `(RunInfo, Version)` |
+| 91 | `RunGetChildren` | `parent` | `Vec<Versioned<RunInfo>>` |
+| 92 | `RunGetParent` | `run` | `Option<RunId>` |
+| 93 | `RunSetRetention` | `run, policy` | `Version` |
+| 94 | `RunGetRetention` | `run` | `RetentionPolicy` |
+
+### Transaction Commands (5)
+From `TransactionControl` trait:
+
+| # | Command | Parameters | Return |
+|---|---------|------------|--------|
+| 95 | `TxnBegin` | `options?` | `TxnId` |
+| 96 | `TxnCommit` | *(none)* | `Version` |
+| 97 | `TxnRollback` | *(none)* | `()` |
+| 98 | `TxnInfo` | *(none)* | `Option<TxnInfo>` |
+| 99 | `TxnIsActive` | *(none)* | `bool` |
+
+**Note**: `TransactionSavepoint` methods (`savepoint`, `rollback_to`, `release_savepoint`) are deferred to post-MVP.
+
+### Retention Commands (3)
+From `RetentionSubstrate` trait:
+
+| # | Command | Parameters | Return |
+|---|---------|------------|--------|
+| 100 | `RetentionGet` | `run` | `Option<RetentionVersion>` |
+| 101 | `RetentionSet` | `run, policy` | `u64` |
+| 102 | `RetentionClear` | `run` | `bool` |
+
+### Database Commands (4)
+
+| # | Command | Parameters | Return |
+|---|---------|------------|--------|
+| 103 | `Ping` | *(none)* | `Pong { version }` |
+| 104 | `Info` | *(none)* | `DatabaseInfo` |
+| 105 | `Flush` | *(none)* | `()` |
+| 106 | `Compact` | *(none)* | `()` |
+
+**Note**: Final command count is 106, but 5 commands are deferred (3 closure-based State methods + 3 savepoint methods - but we count 101 as implementable now).
+
 - [ ] All field types use established core types (Value, RunId, etc.)
-- [ ] Unit tests for construction of all 48 variants
+- [ ] Unit tests for construction of all 101 variants
 
 ---
 
@@ -226,12 +344,12 @@ Commands are in-process operations. They do not assume networking, async executi
 
 | Story | Description | Priority |
 |-------|-------------|----------|
-| #710 | Output Enum Core Variants | FOUNDATION |
-| #711 | Output Versioned and Collection Variants | CRITICAL |
-| #712 | VersionedValue and Supporting Types | CRITICAL |
-| #713 | Error Enum Implementation | CRITICAL |
-| #714 | Error Detail Types | HIGH |
-| #715 | Command-Output Type Mapping Documentation | HIGH |
+| #712 | Output Enum Core Variants | FOUNDATION |
+| #713 | Output Versioned and Collection Variants | CRITICAL |
+| #714 | VersionedValue and Supporting Types | CRITICAL |
+| #715 | Error Enum Implementation | CRITICAL |
+| #716 | Error Detail Types | HIGH |
+| #717 | Command-Output Type Mapping Documentation | HIGH |
 
 **Acceptance Criteria**:
 - [ ] `Output` enum with all return type variants:
@@ -240,34 +358,67 @@ Commands are in-process operations. They do not assume networking, async executi
   - `Versioned { value: Value, version: u64, timestamp: u64 }` - Value with version
   - `Maybe(Option<Value>)` - Optional value (get operations)
   - `MaybeVersioned(Option<VersionedValue>)` - Optional versioned value
-  - `Values(Vec<Option<Value>>)` - Multiple optional values (mget)
+  - `Values(Vec<Option<VersionedValue>>)` - Multiple optional versioned values (mget)
   - `Version(u64)` - Version number only
+  - `MaybeVersion(Option<u64>)` - Optional version (CAS operations)
   - `Bool(bool)` - Boolean result
   - `Int(i64)` - Integer result (count, incr)
+  - `Uint(u64)` - Unsigned integer result
+  - `Float(f64)` - Float result (json_increment)
   - `Keys(Vec<String>)` - List of keys
-  - `Events(Vec<Event>)` - List of events
-  - `History(Vec<VersionedValue>)` - Version history
-  - `SearchResults(Vec<SearchResult>)` - Vector search results
-  - `Run(RunInfo)` - Single run info
-  - `Runs(Vec<RunInfo>)` - Multiple run infos
-  - `Info(DatabaseInfo)` - Database info
+  - `Strings(Vec<String>)` - List of strings (tags, streams)
+  - `VersionedValues(Vec<Versioned<Value>>)` - Version history
+  - `VectorMatches(Vec<VectorMatch>)` - Vector search results
+  - `VectorMatchesWithExhausted((Vec<VectorMatch>, bool))` - Search with budget
+  - `VectorData(Option<Versioned<VectorData>>)` - Single vector
+  - `VectorDataList(Vec<Option<Versioned<VectorData>>>)` - Multiple vectors
+  - `VectorDataHistory(Vec<Versioned<VectorData>>)` - Vector history
+  - `VectorKeyValues(Vec<(String, VectorData)>)` - Vector scan result
+  - `VectorBatchResult(Vec<Result<(String, Version), Error>>)` - Batch upsert result
+  - `Bools(Vec<bool>)` - Multiple booleans (batch delete)
+  - `RunInfo(RunInfo)` - Single run info
+  - `RunInfoVersioned(Versioned<RunInfo>)` - Versioned run info
+  - `RunInfoList(Vec<Versioned<RunInfo>>)` - Multiple run infos
+  - `RunWithVersion((RunInfo, Version))` - Run create result
+  - `MaybeRunId(Option<RunId>)` - Optional run ID (parent)
+  - `DatabaseInfo(DatabaseInfo)` - Database info
   - `Pong { version: String }` - Ping response
-  - `Scan { keys: Vec<String>, cursor: Option<String> }` - Scan results
-  - `ChainValid(bool)` - Chain verification result
-- [ ] `VersionedValue` struct: `{ value: Value, version: u64, timestamp: u64 }`
-- [ ] `Event` struct for event log entries
-- [ ] `SearchResult` struct for vector search results
-- [ ] `RunInfo` struct for run metadata
-- [ ] `DatabaseInfo` struct for database info
+  - `KVScanResult { entries: Vec<(String, VersionedValue)>, cursor: Option<String> }` - KV scan
+  - `JsonListResult { keys: Vec<String>, cursor: Option<String> }` - JSON list
+  - `JsonSearchHits(Vec<JsonSearchHit>)` - JSON search results
+  - `StreamInfo(StreamInfo)` - Event stream metadata
+  - `ChainVerification(ChainVerification)` - Chain verification result
+  - `VectorCollectionInfo(Option<VectorCollectionInfo>)` - Collection info
+  - `VectorCollectionList(Vec<VectorCollectionInfo>)` - Collection list
+  - `TxnId(TxnId)` - Transaction ID
+  - `TxnInfo(Option<TxnInfo>)` - Transaction info
+  - `RetentionVersion(Option<RetentionVersion>)` - Retention info
+  - `RetentionPolicy(RetentionPolicy)` - Retention policy
+  - `Versions(Vec<Version>)` - Multiple versions (batch create)
+- [ ] Supporting types:
+  - `VersionedValue` struct: `{ value: Value, version: Version, timestamp: Timestamp }`
+  - `VectorMatch` struct for vector search results
+  - `VectorData` type alias: `(Vec<f32>, Value)`
+  - `VectorCollectionInfo` struct
+  - `RunInfo` struct for run metadata
+  - `StreamInfo` struct for event stream metadata
+  - `ChainVerification` struct
+  - `JsonSearchHit` struct
+  - `TxnId`, `TxnInfo`, `TxnStatus` structs
+  - `RetentionVersion`, `RetentionPolicy` structs
+  - `DatabaseInfo` struct for database info
 - [ ] All Output variants derive `Debug`, `Clone`, `Serialize`, `Deserialize`, `PartialEq`
 - [ ] `Error` enum with all error cases:
   - `KeyNotFound { key: String }`
   - `RunNotFound { run: String }`
   - `CollectionNotFound { collection: String }`
   - `StreamNotFound { stream: String }`
+  - `CellNotFound { cell: String }`
+  - `DocumentNotFound { key: String }`
   - `WrongType { expected: String, actual: String }`
   - `InvalidKey { reason: String }`
   - `InvalidPath { reason: String }`
+  - `InvalidInput { reason: String }`
   - `VersionConflict { expected: u64, actual: u64 }`
   - `TransitionFailed { expected: String, actual: String }`
   - `RunClosed { run: String }`
@@ -277,63 +428,158 @@ Commands are in-process operations. They do not assume networking, async executi
   - `ConstraintViolation { reason: String }`
   - `HistoryTrimmed { requested: u64, earliest: u64 }`
   - `Overflow { reason: String }`
+  - `Conflict { reason: String }`
+  - `TransactionNotActive`
+  - `TransactionAlreadyActive`
   - `Io { reason: String }`
   - `Serialization { reason: String }`
   - `Internal { reason: String }`
 - [ ] Error implements `std::error::Error` and `Display`
 - [ ] Error derives `Serialize`, `Deserialize`, `Clone`, `Debug`
-- [ ] **Command-Output type mapping documented**:
 
-| Command Category | Output Type |
-|------------------|-------------|
-| KvGet | `MaybeVersioned` |
-| KvPut | `Version` |
-| KvDelete | `Bool` |
-| KvExists | `Bool` |
-| KvGetAt | `Versioned` or `HistoryTrimmed` error |
-| KvHistory | `History` |
-| KvScan | `Scan` |
-| KvMget | `Values` |
-| KvMput | `Unit` |
-| KvMdelete | `Int` (count deleted) |
-| KvIncr | `Int` |
-| KvCas | `Bool` |
-| JsonGet | `MaybeVersioned` |
-| JsonSet | `Version` |
-| JsonGetPath | `Maybe` |
-| JsonSetPath | `Version` |
-| JsonDeletePath | `Bool` |
-| JsonMergePatch | `Version` |
-| EventAppend | `Version` |
-| EventRead | `Events` |
-| EventReadRange | `Events` |
-| EventReadByType | `Events` |
-| EventLatest | `MaybeVersioned` |
-| EventCount | `Int` |
-| EventVerifyChain | `ChainValid` |
-| StateGet | `MaybeVersioned` |
-| StateSet | `Version` |
-| StateTransition | `Bool` |
-| StateDelete | `Bool` |
-| StateList | `Keys` |
-| VectorCreateCollection | `Unit` |
-| VectorDeleteCollection | `Bool` |
-| VectorInsert | `Version` |
-| VectorSearch | `SearchResults` |
-| VectorGet | `MaybeVersioned` |
-| VectorDelete | `Bool` |
-| VectorCount | `Int` |
-| RunCreate | `Run` |
-| RunGet | `Run` or `RunNotFound` error |
-| RunList | `Runs` |
-| RunUpdateStatus | `Unit` |
-| RunUpdateMetadata | `Version` |
-| RunDelete | `Unit` |
-| RunExport | `Unit` |
-| Ping | `Pong` |
-| Info | `Info` |
-| Flush | `Unit` |
-| Compact | `Unit` |
+### Command-Output Type Mapping
+
+**KV Commands**:
+| Command | Output Type |
+|---------|-------------|
+| `KvPut` | `Version` |
+| `KvGet` | `MaybeVersioned` |
+| `KvGetAt` | `Versioned` |
+| `KvDelete` | `Bool` |
+| `KvExists` | `Bool` |
+| `KvHistory` | `VersionedValues` |
+| `KvIncr` | `Int` |
+| `KvCasVersion` | `Bool` |
+| `KvCasValue` | `Bool` |
+| `KvKeys` | `Keys` |
+| `KvScan` | `KVScanResult` |
+| `KvMget` | `Values` |
+| `KvMput` | `Version` |
+| `KvMdelete` | `Uint` |
+| `KvMexists` | `Uint` |
+
+**JSON Commands**:
+| Command | Output Type |
+|---------|-------------|
+| `JsonSet` | `Version` |
+| `JsonGet` | `MaybeVersioned` |
+| `JsonDelete` | `Uint` |
+| `JsonMerge` | `Version` |
+| `JsonHistory` | `VersionedValues` |
+| `JsonExists` | `Bool` |
+| `JsonGetVersion` | `MaybeVersion` |
+| `JsonSearch` | `JsonSearchHits` |
+| `JsonList` | `JsonListResult` |
+| `JsonCas` | `Version` |
+| `JsonQuery` | `Keys` |
+| `JsonCount` | `Uint` |
+| `JsonBatchGet` | `Values` |
+| `JsonBatchCreate` | `Versions` |
+| `JsonArrayPush` | `Uint` |
+| `JsonIncrement` | `Float` |
+| `JsonArrayPop` | `Maybe` |
+
+**Event Commands**:
+| Command | Output Type |
+|---------|-------------|
+| `EventAppend` | `Version` |
+| `EventAppendBatch` | `Versions` |
+| `EventRange` | `VersionedValues` |
+| `EventGet` | `MaybeVersioned` |
+| `EventLen` | `Uint` |
+| `EventLatestSequence` | `MaybeVersion` |
+| `EventStreamInfo` | `StreamInfo` |
+| `EventRevRange` | `VersionedValues` |
+| `EventStreams` | `Strings` |
+| `EventHead` | `MaybeVersioned` |
+| `EventVerifyChain` | `ChainVerification` |
+
+**State Commands**:
+| Command | Output Type |
+|---------|-------------|
+| `StateSet` | `Version` |
+| `StateGet` | `MaybeVersioned` |
+| `StateCas` | `MaybeVersion` |
+| `StateDelete` | `Bool` |
+| `StateExists` | `Bool` |
+| `StateHistory` | `VersionedValues` |
+| `StateInit` | `Version` |
+| `StateList` | `Strings` |
+
+**Vector Commands**:
+| Command | Output Type |
+|---------|-------------|
+| `VectorUpsert` | `Version` |
+| `VectorUpsertWithSource` | `Version` |
+| `VectorGet` | `VectorData` |
+| `VectorDelete` | `Bool` |
+| `VectorSearch` | `VectorMatches` |
+| `VectorSearchWithBudget` | `VectorMatchesWithExhausted` |
+| `VectorCollectionInfo` | `VectorCollectionInfo` |
+| `VectorCreateCollection` | `Version` |
+| `VectorDropCollection` | `Bool` |
+| `VectorListCollections` | `VectorCollectionList` |
+| `VectorCollectionExists` | `Bool` |
+| `VectorCount` | `Uint` |
+| `VectorUpsertBatch` | `VectorBatchResult` |
+| `VectorGetBatch` | `VectorDataList` |
+| `VectorDeleteBatch` | `Bools` |
+| `VectorHistory` | `VectorDataHistory` |
+| `VectorGetAt` | `VectorData` |
+| `VectorListKeys` | `Keys` |
+| `VectorScan` | `VectorKeyValues` |
+
+**Run Commands**:
+| Command | Output Type |
+|---------|-------------|
+| `RunCreate` | `RunWithVersion` |
+| `RunGet` | `RunInfoVersioned` |
+| `RunList` | `RunInfoList` |
+| `RunClose` | `Version` |
+| `RunUpdateMetadata` | `Version` |
+| `RunExists` | `Bool` |
+| `RunPause` | `Version` |
+| `RunResume` | `Version` |
+| `RunFail` | `Version` |
+| `RunCancel` | `Version` |
+| `RunArchive` | `Version` |
+| `RunDelete` | `Unit` |
+| `RunQueryByStatus` | `RunInfoList` |
+| `RunQueryByTag` | `RunInfoList` |
+| `RunCount` | `Uint` |
+| `RunSearch` | `RunInfoList` |
+| `RunAddTags` | `Version` |
+| `RunRemoveTags` | `Version` |
+| `RunGetTags` | `Strings` |
+| `RunCreateChild` | `RunWithVersion` |
+| `RunGetChildren` | `RunInfoList` |
+| `RunGetParent` | `MaybeRunId` |
+| `RunSetRetention` | `Version` |
+| `RunGetRetention` | `RetentionPolicy` |
+
+**Transaction Commands**:
+| Command | Output Type |
+|---------|-------------|
+| `TxnBegin` | `TxnId` |
+| `TxnCommit` | `Version` |
+| `TxnRollback` | `Unit` |
+| `TxnInfo` | `TxnInfo` |
+| `TxnIsActive` | `Bool` |
+
+**Retention Commands**:
+| Command | Output Type |
+|---------|-------------|
+| `RetentionGet` | `RetentionVersion` |
+| `RetentionSet` | `Uint` |
+| `RetentionClear` | `Bool` |
+
+**Database Commands**:
+| Command | Output Type |
+|---------|-------------|
+| `Ping` | `Pong` |
+| `Info` | `DatabaseInfo` |
+| `Flush` | `Unit` |
+| `Compact` | `Unit` |
 
 ---
 
@@ -344,54 +590,70 @@ Commands are in-process operations. They do not assume networking, async executi
 | Story | Description | Priority |
 |-------|-------------|----------|
 | #720 | Executor Struct and Constructor | FOUNDATION |
-| #721 | KV Command Handlers (12 handlers) | CRITICAL |
-| #722 | JSON Command Handlers (6 handlers) | CRITICAL |
-| #723 | Event Command Handlers (7 handlers) | CRITICAL |
-| #724 | State Command Handlers (5 handlers) | CRITICAL |
-| #725 | Vector Command Handlers (7 handlers) | CRITICAL |
-| #726 | Run Command Handlers (7 handlers) | CRITICAL |
-| #727 | Database Command Handlers (4 handlers) | HIGH |
-| #728 | Error Conversion Layer | CRITICAL |
+| #721 | KV Command Handlers (15 handlers) | CRITICAL |
+| #722 | JSON Command Handlers (17 handlers) | CRITICAL |
+| #723 | Event Command Handlers (11 handlers) | CRITICAL |
+| #724 | State Command Handlers (8 handlers) | CRITICAL |
+| #725 | Vector Command Handlers (19 handlers) | CRITICAL |
+| #726 | Run Command Handlers (24 handlers) | CRITICAL |
+| #727 | Transaction Command Handlers (5 handlers) | CRITICAL |
+| #728 | Retention Command Handlers (3 handlers) | HIGH |
+| #729 | Database Command Handlers (4 handlers) | HIGH |
+| #730 | Error Conversion Layer | CRITICAL |
+| #731 | Handler Dispatch Match Statement | CRITICAL |
+| #732 | Handler Unit Tests | HIGH |
 
 **Acceptance Criteria**:
 - [ ] `Executor` struct holding references to all primitives:
   ```rust
   pub struct Executor {
-      engine: Arc<Database>,
-      // Primitive handles derived from engine
+      substrate: Arc<SubstrateImpl>,
+      // Substrate provides access to all primitive operations
   }
   ```
-- [ ] `Executor::new(engine: Arc<Database>) -> Self`
+- [ ] `Executor::new(substrate: Arc<SubstrateImpl>) -> Self`
 - [ ] `Executor::execute(&self, cmd: Command) -> Result<Output, Error>`
 - [ ] `Executor::execute_many(&self, cmds: Vec<Command>) -> Vec<Result<Output, Error>>`
-- [ ] Match dispatch covering all 48 command variants
-- [ ] **KV handlers**:
-  - `kv_get` → calls `kv.get()`, converts to `MaybeVersioned`
-  - `kv_put` → calls `kv.put()`, returns `Version`
-  - `kv_delete` → calls `kv.delete()`, returns `Bool`
-  - `kv_exists` → calls `kv.exists()`, returns `Bool`
-  - `kv_get_at` → calls `kv.get_at()`, returns `Versioned` or error
-  - `kv_history` → calls `kv.history()`, returns `History`
-  - `kv_scan` → calls `kv.scan()`, returns `Scan`
-  - `kv_mget` → calls `kv.mget()`, returns `Values`
-  - `kv_mput` → calls `kv.mput()`, returns `Unit`
-  - `kv_mdelete` → calls `kv.mdelete()`, returns `Int`
-  - `kv_incr` → calls `kv.incr()`, returns `Int`
-  - `kv_cas` → calls `kv.cas()`, returns `Bool`
-- [ ] **JSON handlers**: All 6 operations mapped correctly
-- [ ] **Event handlers**: All 7 operations mapped correctly
-- [ ] **State handlers**: All 5 operations mapped correctly
-- [ ] **Vector handlers**: All 7 operations mapped correctly
-- [ ] **Run handlers**: All 7 operations mapped correctly
-- [ ] **Database handlers**:
-  - `Ping` → returns `Pong { version: env!("CARGO_PKG_VERSION") }`
-  - `Info` → returns `Info(DatabaseInfo)`
-  - `Flush` → calls `engine.flush()`, returns `Unit`
-  - `Compact` → calls `engine.compact()`, returns `Unit`
-- [ ] **Error conversion**:
-  - Internal `strata_core::Error` maps to `executor::Error`
-  - No error information lost
-  - Structured details preserved
+- [ ] Match dispatch covering all 101 command variants
+
+### Handler Requirements by Category
+
+**KV handlers (15)**:
+- All `KVStore` trait methods: `kv_put`, `kv_get`, `kv_get_at`, `kv_delete`, `kv_exists`, `kv_history`, `kv_incr`, `kv_cas_version`, `kv_cas_value`, `kv_keys`, `kv_scan`
+- All `KVStoreBatch` trait methods: `kv_mget`, `kv_mput`, `kv_mdelete`, `kv_mexists`
+
+**JSON handlers (17)**:
+- All `JsonStore` trait methods: `json_set`, `json_get`, `json_delete`, `json_merge`, `json_history`, `json_exists`, `json_get_version`, `json_search`, `json_list`, `json_cas`, `json_query`, `json_count`, `json_batch_get`, `json_batch_create`, `json_array_push`, `json_increment`, `json_array_pop`
+
+**Event handlers (11)**:
+- All `EventLog` trait methods: `event_append`, `event_append_batch`, `event_range`, `event_get`, `event_len`, `event_latest_sequence`, `event_stream_info`, `event_rev_range`, `event_streams`, `event_head`, `event_verify_chain`
+
+**State handlers (8)**:
+- Non-closure `StateCell` trait methods: `state_set`, `state_get`, `state_cas`, `state_delete`, `state_exists`, `state_history`, `state_init`, `state_list`
+- Note: `state_transition*` methods excluded (closure-based)
+
+**Vector handlers (19)**:
+- All `VectorStore` trait methods: `vector_upsert`, `vector_upsert_with_source`, `vector_get`, `vector_delete`, `vector_search`, `vector_search_with_budget`, `vector_collection_info`, `vector_create_collection`, `vector_drop_collection`, `vector_list_collections`, `vector_collection_exists`, `vector_count`, `vector_upsert_batch`, `vector_get_batch`, `vector_delete_batch`, `vector_history`, `vector_get_at`, `vector_list_keys`, `vector_scan`
+
+**Run handlers (24)**:
+- All `RunIndex` trait methods: `run_create`, `run_get`, `run_list`, `run_close`, `run_update_metadata`, `run_exists`, `run_pause`, `run_resume`, `run_fail`, `run_cancel`, `run_archive`, `run_delete`, `run_query_by_status`, `run_query_by_tag`, `run_count`, `run_search`, `run_add_tags`, `run_remove_tags`, `run_get_tags`, `run_create_child`, `run_get_children`, `run_get_parent`, `run_set_retention`, `run_get_retention`
+
+**Transaction handlers (5)**:
+- All `TransactionControl` trait methods: `txn_begin`, `txn_commit`, `txn_rollback`, `txn_info`, `txn_is_active`
+
+**Retention handlers (3)**:
+- All `RetentionSubstrate` trait methods: `retention_get`, `retention_set`, `retention_clear`
+
+**Database handlers (4)**:
+- `Ping` → returns `Pong { version: env!("CARGO_PKG_VERSION") }`
+- `Info` → returns `Info(DatabaseInfo)`
+- `Flush` → calls `engine.flush()`, returns `Unit`
+- `Compact` → calls `engine.compact()`, returns `Unit`
+
+**Error conversion**:
+- [ ] Internal `strata_core::Error` maps to `executor::Error`
+- [ ] No error information lost
+- [ ] Structured details preserved
 - [ ] All handlers are synchronous (no async)
 - [ ] Executor is `Send + Sync`
 - [ ] Unit tests for each handler
@@ -473,7 +735,7 @@ Commands are in-process operations. They do not assume networking, async executi
 - [ ] **Parity tests**: Every command produces same result as direct primitive call
 - [ ] **Round-trip tests**: All commands, outputs, errors survive JSON round-trip
 - [ ] **Determinism tests**: Same command sequence on same initial state = same results
-- [ ] **Coverage**: All 48 command variants have execution tests
+- [ ] **Coverage**: All 101 command variants have execution tests
 - [ ] **Error coverage**: All error variants have trigger tests
 - [ ] Integration test: Full workflow (create run → operations → export)
 - [ ] Benchmark: Command dispatch overhead < 100ns
@@ -488,18 +750,20 @@ Commands are in-process operations. They do not assume networking, async executi
 |------|-------------|
 | `crates/executor/Cargo.toml` | Crate manifest |
 | `crates/executor/src/lib.rs` | Public API, re-exports |
-| `crates/executor/src/command.rs` | Command enum (48 variants) |
-| `crates/executor/src/output.rs` | Output enum and supporting types |
-| `crates/executor/src/error.rs` | Error enum |
+| `crates/executor/src/command.rs` | Command enum (101 variants) |
+| `crates/executor/src/output.rs` | Output enum (~40 variants) and supporting types |
+| `crates/executor/src/error.rs` | Error enum (~25 variants) |
 | `crates/executor/src/executor.rs` | Executor implementation |
 | `crates/executor/src/handlers/mod.rs` | Handler module |
-| `crates/executor/src/handlers/kv.rs` | KV command handlers |
-| `crates/executor/src/handlers/json.rs` | JSON command handlers |
-| `crates/executor/src/handlers/event.rs` | Event command handlers |
-| `crates/executor/src/handlers/state.rs` | State command handlers |
-| `crates/executor/src/handlers/vector.rs` | Vector command handlers |
-| `crates/executor/src/handlers/run.rs` | Run command handlers |
-| `crates/executor/src/handlers/database.rs` | Database command handlers |
+| `crates/executor/src/handlers/kv.rs` | KV command handlers (15) |
+| `crates/executor/src/handlers/json.rs` | JSON command handlers (17) |
+| `crates/executor/src/handlers/event.rs` | Event command handlers (11) |
+| `crates/executor/src/handlers/state.rs` | State command handlers (8) |
+| `crates/executor/src/handlers/vector.rs` | Vector command handlers (19) |
+| `crates/executor/src/handlers/run.rs` | Run command handlers (24) |
+| `crates/executor/src/handlers/transaction.rs` | Transaction command handlers (5) |
+| `crates/executor/src/handlers/retention.rs` | Retention command handlers (3) |
+| `crates/executor/src/handlers/database.rs` | Database command handlers (4) |
 | `crates/executor/src/convert.rs` | Error conversion from internal errors |
 | `crates/executor/src/json.rs` | JSON encoding utilities |
 | `crates/executor/src/types.rs` | Supporting types (VersionedValue, etc.) |
@@ -562,10 +826,10 @@ Epic 94 (Integration & Testing)
 ### Phase 1: Type Foundation
 
 Define all core types without implementation:
-- Command enum with all 48 variants
-- Output enum with all variants
-- Error enum with all variants
-- Supporting types (VersionedValue, Event, etc.)
+- Command enum with all 101 variants
+- Output enum with all ~40 variants
+- Error enum with all ~25 variants
+- Supporting types (VersionedValue, VectorMatch, RunInfo, TxnInfo, etc.)
 
 **Exit Criteria**: All types compile. All types serialize/deserialize. No implementation yet.
 
@@ -583,11 +847,11 @@ Implement JSON encoding/decoding:
 
 Implement the executor:
 - Executor struct and constructor
-- Match dispatch for all 48 commands
+- Match dispatch for all 101 commands
 - Error conversion layer
-- All handlers implemented
+- All handlers implemented (9 handler modules)
 
-**Exit Criteria**: All commands execute correctly. Parity with direct primitive calls.
+**Exit Criteria**: All commands execute correctly. Parity with direct Substrate calls.
 
 ### Phase 4: Integration (M13 Exit Gate)
 
@@ -614,10 +878,10 @@ Final integration and validation:
 
 ### Unit Tests
 
-- Command variant construction (all 48)
+- Command variant construction (all 101)
 - Command field validation
-- Output variant construction (all 19)
-- Error variant construction (all 19)
+- Output variant construction (all ~40)
+- Error variant construction (all ~25)
 - JSON encoding for each Value type
 - Special wrapper encoding ($bytes, $f64)
 - Error conversion from internal errors
@@ -629,25 +893,30 @@ Final integration and validation:
 - Run-scoped operations
 - Cross-primitive workflows
 - Error propagation through executor
+- Transaction begin/commit/rollback flows
+- Retention policy operations
 
 ### Parity Tests
 
-- Every command vs direct primitive call
+- Every command vs direct Substrate call
 - Same inputs produce same outputs
 - Same errors for same invalid inputs
 - Version numbers match
 - Timestamps in expected range
+- All 8 primitive categories covered
 
 ### Round-Trip Tests
 
-- All 48 command variants through JSON
-- All 19 output variants through JSON
-- All 19 error variants through JSON
+- All 101 command variants through JSON
+- All ~40 output variants through JSON
+- All ~25 error variants through JSON
 - Special float values (NaN, Inf, -0.0)
 - Binary data (bytes)
 - Large integers (i64 boundaries)
 - Unicode strings
 - Nested objects and arrays
+- Vector embeddings (f32 arrays)
+- SearchFilter serialization
 
 ### Determinism Tests
 
@@ -667,22 +936,24 @@ Final integration and validation:
 
 ## Success Metrics
 
-**Functional**: All ~32 stories passing, 100% acceptance criteria met
+**Functional**: All ~40 stories passing, 100% acceptance criteria met
 
 **Type Coverage**:
-- All 48 command variants implemented
-- All 19 output variants implemented
-- All 19 error variants implemented
+- All 101 command variants implemented
+- All ~40 output variants implemented
+- All ~25 error variants implemented
 - No Generic/Any fallbacks
+
+**API Parity**:
+- Every Substrate API operation has a corresponding Command
+- Executor execution produces identical results to direct Substrate calls
+- Error behavior matches Substrate error behavior
+- All 8 primitive categories covered (KV, JSON, Event, State, Vector, Run, Transaction, Retention)
 
 **Serialization**:
 - 100% round-trip accuracy
 - All special values preserved
 - No precision loss
-
-**Parity**:
-- Every command produces identical results to direct primitive calls
-- Error behavior matches primitive error behavior
 
 **Performance**:
 - Dispatch overhead < 100ns
@@ -736,16 +1007,54 @@ After M13 completion:
 
 ## Command Count Summary
 
-| Primitive | Commands | Variants |
-|-----------|----------|----------|
-| KV | 12 | Get, Put, Delete, Exists, GetAt, History, Scan, Mget, Mput, Mdelete, Incr, Cas |
-| JSON | 6 | Get, Set, GetPath, SetPath, DeletePath, MergePatch |
-| Events | 7 | Append, Read, ReadRange, ReadByType, Latest, Count, VerifyChain |
-| State | 5 | Get, Set, Transition, Delete, List |
-| Vectors | 7 | CreateCollection, DeleteCollection, Insert, Search, Get, Delete, Count |
-| Runs | 7 | Create, Get, List, UpdateStatus, UpdateMetadata, Delete, Export |
-| Database | 4 | Ping, Info, Flush, Compact |
-| **Total** | **48** | |
+| Category | Commands | API Trait |
+|----------|----------|-----------|
+| KV | 15 | `KVStore`, `KVStoreBatch` |
+| JSON | 17 | `JsonStore` |
+| Events | 11 | `EventLog` |
+| State | 8 | `StateCell` (excludes 3 closure-based) |
+| Vectors | 19 | `VectorStore` |
+| Runs | 24 | `RunIndex` |
+| Transaction | 5 | `TransactionControl` |
+| Retention | 3 | `RetentionSubstrate` |
+| Database | 4 | *(internal)* |
+| **Total** | **106** | |
+
+**Note**: 5 methods are excluded as they require closures:
+- `state_transition` (closure)
+- `state_transition_or_init` (closure)
+- `state_get_or_init` (closure)
+
+This leaves **101 implementable command variants** plus 5 deferred.
+
+### Command Variant Details
+
+**KV (15)**:
+`KvPut`, `KvGet`, `KvGetAt`, `KvDelete`, `KvExists`, `KvHistory`, `KvIncr`, `KvCasVersion`, `KvCasValue`, `KvKeys`, `KvScan`, `KvMget`, `KvMput`, `KvMdelete`, `KvMexists`
+
+**JSON (17)**:
+`JsonSet`, `JsonGet`, `JsonDelete`, `JsonMerge`, `JsonHistory`, `JsonExists`, `JsonGetVersion`, `JsonSearch`, `JsonList`, `JsonCas`, `JsonQuery`, `JsonCount`, `JsonBatchGet`, `JsonBatchCreate`, `JsonArrayPush`, `JsonIncrement`, `JsonArrayPop`
+
+**Event (11)**:
+`EventAppend`, `EventAppendBatch`, `EventRange`, `EventGet`, `EventLen`, `EventLatestSequence`, `EventStreamInfo`, `EventRevRange`, `EventStreams`, `EventHead`, `EventVerifyChain`
+
+**State (8)**:
+`StateSet`, `StateGet`, `StateCas`, `StateDelete`, `StateExists`, `StateHistory`, `StateInit`, `StateList`
+
+**Vector (19)**:
+`VectorUpsert`, `VectorUpsertWithSource`, `VectorGet`, `VectorDelete`, `VectorSearch`, `VectorSearchWithBudget`, `VectorCollectionInfo`, `VectorCreateCollection`, `VectorDropCollection`, `VectorListCollections`, `VectorCollectionExists`, `VectorCount`, `VectorUpsertBatch`, `VectorGetBatch`, `VectorDeleteBatch`, `VectorHistory`, `VectorGetAt`, `VectorListKeys`, `VectorScan`
+
+**Run (24)**:
+`RunCreate`, `RunGet`, `RunList`, `RunClose`, `RunUpdateMetadata`, `RunExists`, `RunPause`, `RunResume`, `RunFail`, `RunCancel`, `RunArchive`, `RunDelete`, `RunQueryByStatus`, `RunQueryByTag`, `RunCount`, `RunSearch`, `RunAddTags`, `RunRemoveTags`, `RunGetTags`, `RunCreateChild`, `RunGetChildren`, `RunGetParent`, `RunSetRetention`, `RunGetRetention`
+
+**Transaction (5)**:
+`TxnBegin`, `TxnCommit`, `TxnRollback`, `TxnInfo`, `TxnIsActive`
+
+**Retention (3)**:
+`RetentionGet`, `RetentionSet`, `RetentionClear`
+
+**Database (4)**:
+`Ping`, `Info`, `Flush`, `Compact`
 
 ---
 
@@ -754,6 +1063,7 @@ After M13 completion:
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | 2026-01-25 | Initial M13 implementation plan |
+| 1.1 | 2026-01-25 | Expanded to cover full API surface (101 commands vs original 48) |
 
 ---
 
