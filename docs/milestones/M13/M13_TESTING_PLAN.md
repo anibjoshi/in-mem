@@ -8,166 +8,150 @@ This document defines the testing strategy for M13 (Command Execution Layer), fo
 
 ## Critical Context
 
-**After M13, strata-api is deleted.** The executor becomes the sole API surface for Strata. This means:
+### Two-Step Landing Strategy
 
-1. All existing `tests/substrate_api_comprehensive/` tests must be **ported** to use Commands
-2. The executor tests are **the API tests** - not a separate translation layer
-3. Test scope includes **durability, concurrency, invariants** - everything
+**M13 is additive.** The executor exists alongside strata-api. Deletion comes later.
 
 ```
-BEFORE M13:                          AFTER M13:
+M13 (This Milestone):                M13.1/M14 (Future):
 ┌─────────────────────┐              ┌─────────────────────┐
 │  Python/MCP         │              │  Python/MCP         │
 └─────────┬───────────┘              └─────────┬───────────┘
           │                                    │
-          ▼                                    │
-┌─────────────────────┐                        │
-│  strata-api         │  ◄── DELETED           │
-│  (Substrate/Facade) │                        │
+          ▼                                    ▼
+┌─────────────────────┐              ┌─────────────────────┐
+│  strata-api         │◄── EXISTS    │  strata-executor    │◄── SOLE API
+│  (Substrate/Facade) │              │  (Commands)         │
+└─────────┬───────────┘              └─────────┬───────────┘
+          │                                    │
+┌─────────┴───────────┐                        │
+│  strata-executor    │◄── NEW                 │
+│  (Commands)         │                        │
 └─────────┬───────────┘                        │
-          │                                    ▼
-          ▼                          ┌─────────────────────┐
-┌─────────────────────┐              │  strata-executor    │
-│  strata-engine      │              │  (Commands)         │
-└─────────────────────┘              └─────────┬───────────┘
-                                               │
-                                               ▼
-                                     ┌─────────────────────┐
-                                     │  strata-engine      │
-                                     └─────────────────────┘
+          │                                    │
+          ▼                                    ▼
+┌─────────────────────┐              ┌─────────────────────┐
+│  strata-engine      │              │  strata-engine      │
+└─────────────────────┘              └─────────────────────┘
 ```
+
+### M13 Testing Focus
+
+In M13, we test **parity** between executor and substrate:
+
+1. Every executor command produces the same result as the equivalent substrate call
+2. Serialization round-trips work correctly
+3. Error mapping preserves error types
+
+We do NOT port all substrate tests yet. That happens in M13.1/M14 when substrate is deleted.
+
+### M13.1/M14 Testing Focus (Future)
+
+When strata-api is deleted:
+
+1. Port all `tests/substrate_api_comprehensive/` to use Commands
+2. Executor tests become the canonical API tests
+3. Test scope expands to durability, concurrency, invariants
 
 ---
 
-## What We're Testing
+## What We're Testing in M13
 
-The executor is the **complete API surface**. We test:
+M13 tests focus on the **executor layer itself**, not full API behavior (substrate tests cover that).
 
-| Category | What's Tested | Source |
-|----------|---------------|--------|
-| **Correctness** | Commands produce correct results | Port from substrate tests |
-| **Durability** | Data survives crash/recovery | Port from substrate tests |
-| **Concurrency** | Thread-safe execution | Port from substrate tests |
-| **Invariants** | Seven Invariants hold | Port from substrate tests |
-| **Edge cases** | Boundaries, unicode, limits | Port from substrate tests |
-| **Serialization** | Commands/Outputs survive JSON | NEW for M13 |
-| **Error mapping** | Correct error types returned | NEW for M13 |
+| Category | What's Tested | Priority |
+|----------|---------------|----------|
+| **Parity** | Executor produces same results as substrate | CRITICAL |
+| **Serialization** | Commands/Outputs survive JSON round-trip | CRITICAL |
+| **Determinism** | Same command + same state = same result | CRITICAL |
+| **Error mapping** | Substrate errors map correctly to executor errors | HIGH |
+| **Edge cases** | Serialization edge cases (NaN, bytes, i64 boundaries) | HIGH |
+| **execute_many** | Batch execution order and semantics | MEDIUM |
+
+**NOT tested in M13** (covered by existing substrate tests, ported in M13.1):
+- Durability (crash/recovery)
+- Concurrency (thread safety)
+- Full behavioral correctness
+- All edge cases
 
 ---
 
-## Tests to Port from substrate_api_comprehensive
+## M13 Parity Tests
 
-### Inventory of Existing Tests
+Parity tests verify that executor commands produce the same results as direct substrate calls.
 
-```
-tests/substrate_api_comprehensive/
-├── kv/
-│   ├── basic_ops.rs          → executor/kv/basic_ops.rs
-│   ├── atomic_ops.rs         → executor/kv/atomic_ops.rs
-│   ├── batch_ops.rs          → executor/kv/batch_ops.rs
-│   ├── scan_ops.rs           → executor/kv/scan_ops.rs
-│   ├── edge_cases.rs         → executor/kv/edge_cases.rs
-│   ├── value_types.rs        → executor/kv/value_types.rs
-│   ├── durability.rs         → executor/kv/durability.rs
-│   ├── concurrency.rs        → executor/kv/concurrency.rs
-│   ├── transactions.rs       → executor/kv/transactions.rs
-│   └── recovery_invariants.rs→ executor/kv/recovery.rs
-├── jsonstore/
-│   ├── basic_ops.rs          → executor/json/basic_ops.rs
-│   ├── path_ops.rs           → executor/json/path_ops.rs
-│   ├── merge_ops.rs          → executor/json/merge_ops.rs
-│   ├── history_ops.rs        → executor/json/history_ops.rs
-│   ├── tier1_ops.rs          → executor/json/tier1_ops.rs
-│   ├── tier2_ops.rs          → executor/json/tier2_ops.rs
-│   ├── tier3_ops.rs          → executor/json/tier3_ops.rs
-│   ├── edge_cases.rs         → executor/json/edge_cases.rs
-│   ├── durability.rs         → executor/json/durability.rs
-│   └── concurrency.rs        → executor/json/concurrency.rs
-├── eventlog/
-│   ├── basic_ops.rs          → executor/event/basic_ops.rs
-│   ├── streams.rs            → executor/event/streams.rs
-│   ├── invariants.rs         → executor/event/invariants.rs
-│   ├── immutability.rs       → executor/event/immutability.rs
-│   ├── edge_cases.rs         → executor/event/edge_cases.rs
-│   ├── durability.rs         → executor/event/durability.rs
-│   ├── concurrency.rs        → executor/event/concurrency.rs
-│   └── recovery_invariants.rs→ executor/event/recovery.rs
-├── statecell/
-│   ├── basic_ops.rs          → executor/state/basic_ops.rs
-│   ├── cas_ops.rs            → executor/state/cas_ops.rs
-│   ├── transitions.rs        → executor/state/transitions.rs
-│   ├── invariants.rs         → executor/state/invariants.rs
-│   ├── edge_cases.rs         → executor/state/edge_cases.rs
-│   ├── durability.rs         → executor/state/durability.rs
-│   └── concurrency.rs        → executor/state/concurrency.rs
-├── vectorstore/
-│   ├── basic_ops.rs          → executor/vector/basic_ops.rs
-│   ├── search.rs             → executor/vector/search.rs
-│   ├── collections.rs        → executor/vector/collections.rs
-│   ├── batch.rs              → executor/vector/batch.rs
-│   ├── history.rs            → executor/vector/history.rs
-│   ├── edge_cases.rs         → executor/vector/edge_cases.rs
-│   ├── durability.rs         → executor/vector/durability.rs
-│   └── concurrency.rs        → executor/vector/concurrency.rs
-├── runindex/
-│   ├── basic_ops.rs          → executor/run/basic_ops.rs
-│   ├── lifecycle.rs          → executor/run/lifecycle.rs
-│   ├── tags.rs               → executor/run/tags.rs
-│   ├── hierarchy.rs          → executor/run/hierarchy.rs
-│   ├── queries.rs            → executor/run/queries.rs
-│   ├── retention.rs          → executor/run/retention.rs
-│   ├── delete.rs             → executor/run/delete.rs
-│   ├── invariants.rs         → executor/run/invariants.rs
-│   ├── edge_cases.rs         → executor/run/edge_cases.rs
-│   └── concurrency.rs        → executor/run/concurrency.rs
-└── main.rs                   → executor/main.rs
-```
+### Strategy
 
-### Porting Strategy
-
-**Transform pattern**: Direct substrate call → Command execution
+For each of the 101 command variants, write ONE parity test:
 
 ```rust
-// BEFORE (substrate_api_comprehensive)
+/// KV put through executor matches direct substrate call
 #[test]
-fn test_kv_put_get_roundtrip() {
+fn test_parity_kv_put() {
     let (_, substrate) = quick_setup();
+    let executor = Executor::new(substrate.db());
     let run = ApiRunId::default();
 
-    let version = substrate.kv_put(&run, "key", Value::Int(42)).unwrap();
-    let result = substrate.kv_get(&run, "key").unwrap().unwrap();
+    // Direct substrate call
+    let direct_version = substrate.kv_put(&run, "key", Value::Int(42)).unwrap();
 
-    assert_eq!(result.value, Value::Int(42));
-}
+    // Reset
+    substrate.kv_delete(&run, "key").unwrap();
 
-// AFTER (executor_comprehensive)
-#[test]
-fn test_kv_put_get_roundtrip() {
-    let executor = quick_executor();
-    let run = RunId::default();
-
-    let put_result = executor.execute(Command::KvPut {
-        run: run.clone(),
+    // Executor call
+    let exec_result = executor.execute(Command::KvPut {
+        run: run.clone().into(),
         key: "key".into(),
         value: Value::Int(42),
     }).unwrap();
 
-    let get_result = executor.execute(Command::KvGet {
-        run: run.clone(),
-        key: "key".into(),
-    }).unwrap();
-
-    match get_result {
-        Output::MaybeVersioned(Some(v)) => assert_eq!(v.value, Value::Int(42)),
-        _ => panic!("Expected MaybeVersioned with value"),
+    // Both should return Version
+    match (direct_version, exec_result) {
+        (Version::Txn(_), Output::Version(Version::Txn(_))) => (),
+        _ => panic!("Version types should match"),
     }
 }
 ```
 
-**Key differences**:
-1. `substrate.method()` → `executor.execute(Command::Variant { ... })`
-2. Direct return types → `Output` enum that must be matched
-3. Same assertions on the actual values
+### Coverage
+
+| Category | Parity Tests | Description |
+|----------|--------------|-------------|
+| KV | 15 | One per KV command variant |
+| JSON | 17 | One per JSON command variant |
+| Event | 11 | One per Event command variant |
+| State | 8 | One per State command variant |
+| Vector | 19 | One per Vector command variant |
+| Run | 24 | One per Run command variant |
+| Transaction | 5 | One per Transaction command variant |
+| Retention | 3 | One per Retention command variant |
+| Database | 4 | One per Database command variant |
+| **Total** | **106** | |
+
+---
+
+## Tests to Port (M13.1/M14 - FUTURE)
+
+**This section is for planning only.** Test porting happens AFTER M13 when strata-api is deleted.
+
+```
+tests/substrate_api_comprehensive/  →  tests/executor_comprehensive/
+├── kv/                             →  ├── kv/
+├── jsonstore/                      →  ├── json/
+├── eventlog/                       →  ├── event/
+├── statecell/                      →  ├── state/
+├── vectorstore/                    →  ├── vector/
+└── runindex/                       →  └── run/
+```
+
+**Porting transform**:
+```rust
+// BEFORE: substrate.method()
+substrate.kv_put(&run, "key", Value::Int(42)).unwrap();
+
+// AFTER: executor.execute(Command::...)
+executor.execute(Command::KvPut { run, key: "key".into(), value: Value::Int(42) }).unwrap();
+```
 
 ---
 
@@ -472,25 +456,35 @@ fn test_kv_put_stores_value() {
 
 ---
 
-## Test Counts (Estimated)
+## Test Counts (M13 Only)
+
+| Category | Tests | Description |
+|----------|-------|-------------|
+| Parity | ~106 | One per command variant |
+| Serialization (Commands) | ~20 | All command variants round-trip |
+| Serialization (Outputs) | ~15 | All output variants round-trip |
+| Serialization (Errors) | ~10 | All error variants round-trip |
+| Special values | ~15 | NaN, Infinity, bytes, i64 boundaries |
+| execute_many | ~10 | Order, error handling |
+| **M13 Total** | **~176** | |
+
+### Future (M13.1/M14)
 
 | Category | Tests | Source |
 |----------|-------|--------|
-| KV | ~80 | Ported from substrate |
-| JSON | ~60 | Ported from substrate |
-| Event | ~50 | Ported from substrate |
-| State | ~40 | Ported from substrate |
-| Vector | ~50 | Ported from substrate |
-| Run | ~60 | Ported from substrate |
-| Transaction | ~15 | New |
-| Retention | ~10 | New |
-| Serialization | ~30 | New (M13-specific) |
-| Batch (execute_many) | ~10 | New |
-| **Total** | **~405** | |
+| Full KV suite | ~80 | Ported from substrate |
+| Full JSON suite | ~60 | Ported from substrate |
+| Full Event suite | ~50 | Ported from substrate |
+| Full State suite | ~40 | Ported from substrate |
+| Full Vector suite | ~50 | Ported from substrate |
+| Full Run suite | ~60 | Ported from substrate |
+| **M13.1 Total** | **~340** | |
 
 ---
 
-## Porting Checklist
+## Porting Checklist (M13.1/M14 - FUTURE)
+
+This checklist applies when strata-api is deleted and tests are ported.
 
 For each test file in `substrate_api_comprehensive/`:
 
@@ -505,14 +499,31 @@ For each test file in `substrate_api_comprehensive/`:
 
 ## Success Criteria
 
-M13 testing is complete when:
+### M13 Go/No-Go Gates
 
-1. **All substrate tests ported** - Same behavioral coverage through Commands
-2. **Serialization tests pass** - All Commands/Outputs/Errors survive JSON
-3. **Durability tests pass** - Commands + crash + recovery works
-4. **Concurrency tests pass** - Thread-safe command execution
-5. **No regressions** - Same bugs caught as substrate tests
-6. **Tests run in < 60 seconds** - Fast feedback (in-memory mode)
+M13 testing is complete when these three gates pass:
+
+1. **Parity** - Every executor command produces same result as direct substrate call
+2. **Lossless Serialization** - All Commands/Outputs/Errors survive JSON round-trip
+3. **Determinism** - Same command + same state = same result
+
+Everything else is optimization.
+
+### Specific Criteria
+
+| Gate | Criteria | How to Test |
+|------|----------|-------------|
+| Parity | 106 parity tests pass | `cargo test parity` |
+| Serialization | All types round-trip | `cargo test serialization` |
+| Determinism | Replay produces same state | Replay test with fresh DB |
+| Tests run fast | < 30 seconds | In-memory mode |
+
+### M13.1/M14 Criteria (Future)
+
+- All substrate tests ported to executor
+- Durability tests pass through executor
+- Concurrency tests pass through executor
+- strata-api deleted
 
 ---
 
@@ -522,3 +533,4 @@ M13 testing is complete when:
 |---------|------|---------|
 | 1.0 | 2026-01-25 | Initial M13 testing plan |
 | 1.1 | 2026-01-25 | Revised: executor replaces strata-api, port all tests |
+| 1.2 | 2026-01-25 | Corrected: Two-step landing (M13 additive, M13.1 deletes strata-api) |

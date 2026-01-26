@@ -19,6 +19,15 @@ This document provides the high-level implementation plan for M13 (Command Execu
 **API Coverage**:
 > This plan covers ALL operations exposed by the Substrate API layer (see `crates/api/src/substrate/`). The executor must support every public operation to enable complete API parity.
 
+**Migration Strategy**:
+> **M13 is additive.** The existing strata-api remains functional. This is intentional:
+> - Executor and substrate coexist during M13
+> - Parity tests verify executor matches substrate behavior
+> - Internal callers can migrate incrementally
+> - No breaking changes in M13
+>
+> **strata-api deletion is deferred to M13.1 or M14** once the executor has soaked and all callers are migrated. Turning an "abstraction milestone" into a "big bang migration" is where schedules die.
+
 **Epic Details**:
 - [Epic 90: Command Types](#epic-90-command-types)
 - [Epic 91: Output & Error Types](#epic-91-output--error-types)
@@ -68,11 +77,16 @@ Commands, Outputs, and Errors MUST serialize and deserialize without loss. Round
 
 **FORBIDDEN**: Lossy serialization, type information loss, precision loss.
 
-### Rule 7: Executor Does Not Enforce New Invariants
+### Rule 7: Invariant Enforcement Boundary
 
-The Executor dispatches to primitives. Invariant enforcement happens in primitives/engine, not in the executor.
+The Executor enforces **command-layer invariants** (type safety, serialization, self-containment). The primitives/engine enforce **semantic invariants** (run scoping, isolation, versioning, constraints).
 
-**FORBIDDEN**: Executor-level validation beyond type checking, executor-level invariants.
+| Layer | Enforces |
+|-------|----------|
+| **Executor** | Commands self-contained, typed, serializable, deterministic output mapping, no panics |
+| **Primitives** | Run scoping, isolation, version correctness, retention rules, constraint violations |
+
+**FORBIDDEN**: Executor duplicating primitive validation, executor enforcing business rules.
 
 ### Rule 8: No Transport Assumptions
 
