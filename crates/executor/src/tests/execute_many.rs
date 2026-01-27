@@ -10,12 +10,10 @@ use std::sync::Arc;
 
 /// Create a test executor with an in-memory database.
 fn create_test_executor() -> Executor {
-    use strata_api::substrate::SubstrateImpl;
     use strata_engine::Database;
 
     let db = Arc::new(Database::builder().no_durability().open_temp().unwrap());
-    let substrate = Arc::new(SubstrateImpl::new(db));
-    Executor::new(substrate)
+    Executor::new(db)
 }
 
 #[test]

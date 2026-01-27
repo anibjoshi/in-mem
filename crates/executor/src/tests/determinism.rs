@@ -5,7 +5,6 @@
 
 use crate::types::*;
 use crate::{Command, Executor, Output};
-use strata_api::substrate::SubstrateImpl;
 use strata_core::Value;
 use strata_engine::Database;
 use std::sync::Arc;
@@ -13,8 +12,7 @@ use std::sync::Arc;
 /// Create a test executor.
 fn create_test_executor() -> Executor {
     let db = Arc::new(Database::builder().no_durability().open_temp().unwrap());
-    let substrate = Arc::new(SubstrateImpl::new(db));
-    Executor::new(substrate)
+    Executor::new(db)
 }
 
 // =============================================================================

@@ -18,7 +18,7 @@
 
 use std::sync::Arc;
 
-use strata_api::substrate::SubstrateImpl;
+use strata_engine::Database;
 use strata_core::Value;
 
 use crate::types::*;
@@ -40,10 +40,10 @@ pub struct Strata {
 }
 
 impl Strata {
-    /// Create a new Strata instance wrapping the given substrate.
-    pub fn new(substrate: Arc<SubstrateImpl>) -> Self {
+    /// Create a new Strata instance wrapping the given database.
+    pub fn new(db: Arc<Database>) -> Self {
         Self {
-            executor: Executor::new(substrate),
+            executor: Executor::new(db),
         }
     }
 
@@ -480,8 +480,7 @@ mod tests {
 
     fn create_strata() -> Strata {
         let db = Arc::new(Database::builder().no_durability().open_temp().unwrap());
-        let substrate = Arc::new(SubstrateImpl::new(db));
-        Strata::new(substrate)
+        Strata::new(db)
     }
 
     #[test]
