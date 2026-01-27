@@ -734,33 +734,140 @@ impl ShardedSnapshot {
         SnapshotView::get(self, key).ok().flatten().is_some()
     }
 
-    /// List all entries for a run
+    /// List all entries for a run at snapshot version
+    ///
+    /// Returns entries as they existed at the snapshot version,
+    /// filtering out expired values and tombstones.
     pub fn list_run(&self, run_id: &RunId) -> Vec<(Key, VersionedValue)> {
-        self.store.list_run(run_id)
+        self.store
+            .shards
+            .get(run_id)
+            .map(|shard| {
+                let mut results: Vec<_> = shard
+                    .data
+                    .iter()
+                    .filter_map(|(k, chain)| {
+                        chain.get_at_version(self.version).and_then(|sv| {
+                            if !sv.is_expired() && !sv.versioned().value.is_null() {
+                                Some((k.clone(), sv.versioned().clone()))
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                    .collect();
+                results.sort_by(|(a, _), (b, _)| a.cmp(b));
+                results
+            })
+            .unwrap_or_default()
     }
 
-    /// List entries matching a prefix
+    /// List entries matching a prefix at snapshot version
+    ///
+    /// Returns entries as they existed at the snapshot version,
+    /// filtering out expired values and tombstones.
     pub fn list_by_prefix(&self, prefix: &Key) -> Vec<(Key, VersionedValue)> {
-        self.store.list_by_prefix(prefix)
+        let run_id = prefix.namespace.run_id;
+        self.store
+            .shards
+            .get(&run_id)
+            .map(|shard| {
+                let mut results: Vec<_> = shard
+                    .data
+                    .iter()
+                    .filter(|(k, _)| k.starts_with(prefix))
+                    .filter_map(|(k, chain)| {
+                        chain.get_at_version(self.version).and_then(|sv| {
+                            if !sv.is_expired() && !sv.versioned().value.is_null() {
+                                Some((k.clone(), sv.versioned().clone()))
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                    .collect();
+                results.sort_by(|(a, _), (b, _)| a.cmp(b));
+                results
+            })
+            .unwrap_or_default()
     }
 
-    /// List entries of a specific type
+    /// List entries of a specific type at snapshot version
+    ///
+    /// Returns entries as they existed at the snapshot version,
+    /// filtering out expired values and tombstones.
     pub fn list_by_type(
         &self,
         run_id: &RunId,
         type_tag: strata_core::types::TypeTag,
     ) -> Vec<(Key, VersionedValue)> {
-        self.store.list_by_type(run_id, type_tag)
+        self.store
+            .shards
+            .get(run_id)
+            .map(|shard| {
+                let mut results: Vec<_> = shard
+                    .data
+                    .iter()
+                    .filter(|(k, _)| k.type_tag == type_tag)
+                    .filter_map(|(k, chain)| {
+                        chain.get_at_version(self.version).and_then(|sv| {
+                            if !sv.is_expired() && !sv.versioned().value.is_null() {
+                                Some((k.clone(), sv.versioned().clone()))
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                    .collect();
+                results.sort_by(|(a, _), (b, _)| a.cmp(b));
+                results
+            })
+            .unwrap_or_default()
     }
 
-    /// Get count of entries for a run
+    /// Get count of entries for a run at snapshot version
+    ///
+    /// Counts only entries that existed at the snapshot version
+    /// (excludes tombstones and expired values).
     pub fn run_entry_count(&self, run_id: &RunId) -> usize {
-        self.store.run_entry_count(run_id)
+        self.store
+            .shards
+            .get(run_id)
+            .map(|shard| {
+                shard
+                    .data
+                    .iter()
+                    .filter(|(_, chain)| {
+                        chain
+                            .get_at_version(self.version)
+                            .is_some_and(|sv| !sv.is_expired() && !sv.versioned().value.is_null())
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
     }
 
-    /// Get total entries across all runs
+    /// Get total entries across all runs at snapshot version
+    ///
+    /// Counts only entries that existed at the snapshot version
+    /// (excludes tombstones and expired values).
     pub fn total_entries(&self) -> usize {
-        self.store.total_entries()
+        self.store
+            .shards
+            .iter()
+            .map(|entry| {
+                entry
+                    .value()
+                    .data
+                    .iter()
+                    .filter(|(_, chain)| {
+                        chain
+                            .get_at_version(self.version)
+                            .is_some_and(|sv| !sv.is_expired() && !sv.versioned().value.is_null())
+                    })
+                    .count()
+            })
+            .sum()
     }
 
     /// Get number of runs (shards)
@@ -1646,15 +1753,18 @@ mod tests {
         let store = Arc::new(ShardedStore::new());
         let run_id = RunId::new();
 
-        // Put some data
+        // Put some data at version 1
         for i in 0..5 {
             let key = create_test_key(run_id, &format!("key{}", i));
             store.put(key, create_stored_value(Value::Int(i), 1));
         }
 
+        // Advance store version to 1 so snapshot will see the data
+        store.next_version();
         let snapshot = store.snapshot();
+        assert_eq!(snapshot.version(), 1);
 
-        // list_run works
+        // list_run works - sees data at version 1
         let results = snapshot.list_run(&run_id);
         assert_eq!(results.len(), 5);
 
