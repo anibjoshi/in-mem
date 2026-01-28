@@ -13,7 +13,7 @@ use strata_storage::sharded::ShardedStore;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 fn create_test_key(run_id: RunId, name: &str) -> Key {
     let ns = Namespace::for_run(run_id);
