@@ -5,7 +5,7 @@
 
 #![allow(dead_code)]
 
-pub use strata_core::{JsonPath, JsonValue, RunId, Value};
+pub use strata_core::{JsonPath, JsonValue, RunId, Value, Version};
 pub use strata_engine::{
     register_vector_recovery, Database, DistanceMetric, EventLog, JsonStore, KVStore, RunIndex,
     StateCell, StorageDtype, VectorConfig, VectorStore,
@@ -83,7 +83,7 @@ impl TestDb {
         let dir = tempfile::tempdir().expect("Failed to create temp dir");
         let db = Arc::new(
             Database::builder()
-                .in_memory()
+                .no_durability()
                 .open_temp()
                 .expect("Failed to create test database"),
         );
@@ -190,7 +190,7 @@ pub fn create_test_db() -> Arc<Database> {
     ensure_recovery_registered();
     Arc::new(
         Database::builder()
-            .in_memory()
+            .no_durability()
             .open_temp()
             .expect("Failed to create test database"),
     )
@@ -1162,7 +1162,6 @@ pub mod search {
 
 pub mod core_types {
     use strata_core::{EntityRef, PrimitiveType, RunId, RunName, Timestamp, Version, Versioned};
-    use std::collections::HashSet;
 
     pub fn test_run_id() -> RunId {
         RunId::new()
