@@ -1,56 +1,20 @@
+//! Integration tests for the durability layer.
+//!
+//! These tests exercise WAL, snapshot, and recovery behaviors at the
+//! Database level — things that cannot be tested in unit tests because
+//! they require a real Database lifecycle (open → write → close → reopen).
+//!
+//! Unit tests (234 in crates/durability/src/) cover encoding, decoding,
+//! corruption detection, and replay logic in isolation. These integration
+//! tests cover the end-to-end guarantees.
+
+#[path = "../common/mod.rs"]
 mod common;
 
-mod buffered_flush;
-mod crash_collection_create;
-mod crash_collection_delete;
-mod crash_mid_delete;
-mod crash_mid_upsert;
 mod crash_recovery;
-mod crash_scenarios;
-mod cross_primitive_atomicity;
-mod issue_002_replay_api_exposure;
-mod issue_004_snapshot_header_size;
-mod issue_006_wal_entry_0x23;
-mod issue_008_buffered_thread_startup;
-mod issue_012_snapshot_traits;
-mod issue_017_collection_config_recovery;
-mod issue_019_durability_handlers;
-mod issue_020_buffered_defaults;
-mod m8_snapshot_format;
-mod m8_snapshot_free_slots;
-mod m8_snapshot_next_id;
-mod m8_snapshot_recovery;
-mod m8_snapshot_wal_combo;
-mod m8_wal_entry_format;
-mod m8_wal_replay;
-mod m8_wal_replay_determinism;
-mod m8_wal_write;
+mod cross_primitive_recovery;
 mod mode_equivalence;
-mod mode_recovery;
-mod recovery;
-mod recovery_comprehensive;
-mod recovery_determinism;
-mod recovery_idempotent;
-mod recovery_may_drop_uncommitted;
-mod recovery_no_drop_committed;
-mod recovery_no_invent;
-mod recovery_prefix;
-mod replay_derived_view;
-mod replay_determinism;
-mod replay_ephemeral;
-mod replay_idempotent;
-mod replay_pure_function;
-mod replay_side_effect;
-mod run_lifecycle;
-mod snapshot_atomic_write;
-mod snapshot_crc;
-mod snapshot_discovery;
-mod snapshot_format;
-mod snapshot_semantics;
-mod storage_stabilization;
+mod recovery_invariants;
+mod snapshot_lifecycle;
 mod stress;
-mod wal_crc_validation;
-mod wal_entry_format;
-mod wal_invariants;
-mod wal_replay;
-mod wal_transaction_framing;
+mod wal_lifecycle;

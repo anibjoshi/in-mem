@@ -1,62 +1,144 @@
 //! Durability Mode Equivalence Tests
 //!
-//! Tests that behavior is consistent across durability modes.
+//! Verifies that in-memory, buffered, and strict modes produce
+//! semantically identical results for the same workload.
 
 use crate::common::*;
-use strata_core::value::Value;
 
-/// Test in-memory and strict produce same results.
 #[test]
-fn test_inmemory_strict_equivalence() {
-    // In-memory mode
-    let inmem_db = TestDb::new_in_memory();
-    let kv_inmem = inmem_db.kv();
-    let run_id = inmem_db.run_id;
+fn kv_operations_equivalent_across_modes() {
+    test_across_modes("kv_put_get", |db| {
+        let run_id = RunId::new();
+        let kv = KVStore::new(db);
 
-    kv_inmem.put(&run_id, "test", Value::Int(42)).expect("put");
-    let inmem_value = kv_inmem.get(&run_id, "test").expect("get").map(|v| v.value);
+        kv.put(&run_id, "a", Value::Int(1)).unwrap();
+        kv.put(&run_id, "b", Value::Int(2)).unwrap();
+        kv.put(&run_id, "c", Value::Int(3)).unwrap();
 
-    // Strict mode
-    let strict_db = TestDb::new_strict();
-    let kv_strict = strict_db.kv();
-    let run_id_strict = strict_db.run_id;
-
-    kv_strict.put(&run_id_strict, "test", Value::Int(42)).expect("put");
-    let strict_value = kv_strict.get(&run_id_strict, "test").expect("get").map(|v| v.value);
-
-    // Should produce same results
-    assert_eq!(inmem_value, strict_value);
+        let a = kv.get(&run_id, "a").unwrap().map(|v| v.value);
+        let b = kv.get(&run_id, "b").unwrap().map(|v| v.value);
+        let c = kv.get(&run_id, "c").unwrap().map(|v| v.value);
+        (a, b, c)
+    });
 }
 
-/// Test buffered and strict produce same results.
 #[test]
-fn test_buffered_strict_equivalence() {
-    // Buffered mode
-    let buffered_db = TestDb::new();
-    let kv_buffered = buffered_db.kv();
-    let run_id_buf = buffered_db.run_id;
+fn json_operations_equivalent_across_modes() {
+    test_across_modes("json_create_get", |db| {
+        let run_id = RunId::new();
+        let json = JsonStore::new(db);
+        let doc_id = "mode_test_doc";
 
-    kv_buffered.put(&run_id_buf, "test", Value::Int(42)).expect("put");
-    buffered_db.db.flush().expect("flush");
-    let buffered_value = kv_buffered.get(&run_id_buf, "test").expect("get").map(|v| v.value);
+        json.create(
+            &run_id,
+            doc_id,
+            json_value(serde_json::json!({"x": 1})),
+        )
+        .unwrap();
 
-    // Strict mode
-    let strict_db = TestDb::new_strict();
-    let kv_strict = strict_db.kv();
-    let run_id_strict = strict_db.run_id;
-
-    kv_strict.put(&run_id_strict, "test", Value::Int(42)).expect("put");
-    let strict_value = kv_strict.get(&run_id_strict, "test").expect("get").map(|v| v.value);
-
-    // Should produce same results
-    assert_eq!(buffered_value, strict_value);
+        let doc = json.get(&run_id, doc_id, &root()).unwrap();
+        doc.map(|v| v.value.as_inner().clone())
+    });
 }
 
-/// Test all primitives work in all modes.
 #[test]
-fn test_all_primitives_all_modes() {
-    // Test each mode
-    for test_db in [TestDb::new_in_memory(), TestDb::new(), TestDb::new_strict()] {
-        assert_all_primitives_healthy(&test_db);
+fn event_operations_equivalent_across_modes() {
+    test_across_modes("event_append_read", |db| {
+        let run_id = RunId::new();
+        let event = EventLog::new(db);
+
+        event.append(&run_id, "stream", int_payload(1)).unwrap();
+        event.append(&run_id, "stream", int_payload(2)).unwrap();
+        event.append(&run_id, "stream", int_payload(3)).unwrap();
+
+        let events = event.read_by_type(&run_id, "stream").unwrap();
+        events.len() as u64
+    });
+}
+
+#[test]
+fn statecell_cas_equivalent_across_modes() {
+    test_across_modes("statecell_cas", |db| {
+        let run_id = RunId::new();
+        let state = StateCell::new(db);
+
+        let v = state.init(&run_id, "counter", Value::Int(0)).unwrap();
+        state.cas(&run_id, "counter", v.value, Value::Int(1)).unwrap();
+
+        let val = state.read(&run_id, "counter").unwrap();
+        val.map(|v| format!("{:?}", v.value.value))
+    });
+}
+
+#[test]
+fn overwrite_semantics_equivalent_across_modes() {
+    test_across_modes("overwrite", |db| {
+        let run_id = RunId::new();
+        let kv = KVStore::new(db);
+
+        kv.put(&run_id, "key", Value::Int(1)).unwrap();
+        kv.put(&run_id, "key", Value::Int(2)).unwrap();
+        kv.put(&run_id, "key", Value::Int(3)).unwrap();
+
+        kv.get(&run_id, "key").unwrap().map(|v| v.value)
+    });
+}
+
+#[test]
+fn delete_semantics_equivalent_across_modes() {
+    test_across_modes("delete", |db| {
+        let run_id = RunId::new();
+        let kv = KVStore::new(db);
+
+        kv.put(&run_id, "ephemeral", Value::Int(1)).unwrap();
+        kv.delete(&run_id, "ephemeral").unwrap();
+
+        kv.get(&run_id, "ephemeral").unwrap().is_none()
+    });
+}
+
+#[test]
+fn buffered_mode_recovers_after_restart() {
+    let mut test_db = TestDb::new(); // buffered mode
+    let run_id = test_db.run_id;
+
+    let kv = test_db.kv();
+    for i in 0..20 {
+        kv.put(&run_id, &format!("buf_{}", i), Value::Int(i)).unwrap();
     }
+
+    let state_before = CapturedState::capture(&test_db.db, &run_id);
+
+    // Reopen (triggers flush + recovery)
+    test_db.reopen();
+
+    let state_after = CapturedState::capture(&test_db.db, &run_id);
+    assert_states_equal(
+        &state_before,
+        &state_after,
+        "Buffered mode should recover all data",
+    );
+}
+
+#[test]
+fn strict_mode_recovers_after_restart() {
+    let mut test_db = TestDb::new_strict();
+    let run_id = test_db.run_id;
+
+    let kv = test_db.kv();
+    for i in 0..20 {
+        kv.put(&run_id, &format!("strict_{}", i), Value::Int(i))
+            .unwrap();
+    }
+
+    let state_before = CapturedState::capture(&test_db.db, &run_id);
+
+    test_db.reopen();
+
+    let state_after = CapturedState::capture(&test_db.db, &run_id);
+    assert_states_equal(
+        &state_before,
+        &state_after,
+        "Strict mode should recover all data",
+    );
 }
