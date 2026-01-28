@@ -1204,29 +1204,6 @@ pub mod core_types {
         ]
     }
 
-    pub fn assert_hashable<T: std::hash::Hash + Eq>(value: &T) {
-        let mut set = HashSet::new();
-        set.insert(value);
-        assert!(set.contains(value));
-    }
-
-    pub fn assert_same_hash<T: std::hash::Hash>(a: &T, b: &T) {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::Hasher;
-
-        let hash_a = {
-            let mut hasher = DefaultHasher::new();
-            a.hash(&mut hasher);
-            hasher.finish()
-        };
-        let hash_b = {
-            let mut hasher = DefaultHasher::new();
-            b.hash(&mut hasher);
-            hasher.finish()
-        };
-        assert_eq!(hash_a, hash_b, "Expected same hash for equal values");
-    }
-
     pub fn all_primitive_types() -> Vec<PrimitiveType> {
         vec![
             PrimitiveType::Kv,

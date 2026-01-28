@@ -1,6 +1,7 @@
 mod common;
 
 mod acid_property;
+mod error_handling;
 mod cross_primitive;
 mod database_api;
 mod issue_001_vector_searchable;
