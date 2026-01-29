@@ -25,7 +25,7 @@
 use crate::database::Database;
 use crate::primitives::extensions::KVStoreExt;
 use strata_concurrency::TransactionContext;
-use strata_core::error::Result;
+use strata_core::StrataResult;
 use strata_core::types::{Key, Namespace, RunId};
 use strata_core::value::Value;
 use strata_core::Version;
@@ -82,7 +82,7 @@ impl KVStore {
     ///     println!("Found: {:?}", v);
     /// }
     /// ```
-    pub fn get(&self, run_id: &RunId, key: &str) -> Result<Option<Value>> {
+    pub fn get(&self, run_id: &RunId, key: &str) -> StrataResult<Option<Value>> {
         self.db.transaction(*run_id, |txn| {
             let storage_key = self.key_for(run_id, key);
             txn.get(&storage_key)
@@ -99,7 +99,7 @@ impl KVStore {
     /// ```ignore
     /// let version = kv.put(&run_id, "user:123", Value::String("Alice".into()))?;
     /// ```
-    pub fn put(&self, run_id: &RunId, key: &str, value: Value) -> Result<Version> {
+    pub fn put(&self, run_id: &RunId, key: &str, value: Value) -> StrataResult<Version> {
         let ((), commit_version) = self.db.transaction_with_version(*run_id, |txn| {
             let storage_key = self.key_for(run_id, key);
             txn.put(storage_key, value)
@@ -117,7 +117,7 @@ impl KVStore {
     /// ```ignore
     /// let was_deleted = kv.delete(&run_id, "user:123")?;
     /// ```
-    pub fn delete(&self, run_id: &RunId, key: &str) -> Result<bool> {
+    pub fn delete(&self, run_id: &RunId, key: &str) -> StrataResult<bool> {
         self.db.transaction(*run_id, |txn| {
             let storage_key = self.key_for(run_id, key);
             let exists = txn.get(&storage_key)?.is_some();
@@ -141,7 +141,7 @@ impl KVStore {
     /// // List all keys
     /// let all_keys = kv.list(&run_id, None)?;
     /// ```
-    pub fn list(&self, run_id: &RunId, prefix: Option<&str>) -> Result<Vec<String>> {
+    pub fn list(&self, run_id: &RunId, prefix: Option<&str>) -> StrataResult<Vec<String>> {
         self.db.transaction(*run_id, |txn| {
             let ns = self.namespace_for_run(run_id);
             let scan_prefix = Key::new_kv(ns, prefix.unwrap_or(""));
@@ -161,11 +161,11 @@ impl KVStore {
 // Search is handled by the intelligence layer (strata-intelligence).
 // This implementation returns empty results - use InvertedIndex for full-text search.
 
-impl crate::primitives::searchable::Searchable for KVStore {
+impl crate::search::Searchable for KVStore {
     fn search(
         &self,
         _req: &crate::SearchRequest,
-    ) -> strata_core::error::Result<crate::SearchResponse> {
+    ) -> strata_core::StrataResult<crate::SearchResponse> {
         // Search moved to intelligence layer - return empty results
         Ok(crate::SearchResponse::empty())
     }
@@ -178,17 +178,17 @@ impl crate::primitives::searchable::Searchable for KVStore {
 // ========== KVStoreExt Implementation ==========
 
 impl KVStoreExt for TransactionContext {
-    fn kv_get(&mut self, key: &str) -> Result<Option<Value>> {
+    fn kv_get(&mut self, key: &str) -> StrataResult<Option<Value>> {
         let storage_key = Key::new_kv(Namespace::for_run(self.run_id), key);
         self.get(&storage_key)
     }
 
-    fn kv_put(&mut self, key: &str, value: Value) -> Result<()> {
+    fn kv_put(&mut self, key: &str, value: Value) -> StrataResult<()> {
         let storage_key = Key::new_kv(Namespace::for_run(self.run_id), key);
         self.put(storage_key, value)
     }
 
-    fn kv_delete(&mut self, key: &str) -> Result<()> {
+    fn kv_delete(&mut self, key: &str) -> StrataResult<()> {
         let storage_key = Key::new_kv(Namespace::for_run(self.run_id), key);
         self.delete(storage_key)?;
         Ok(())

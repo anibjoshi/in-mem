@@ -357,7 +357,7 @@ impl ShardedStore {
     /// Adds a tombstone at the specified version. Old versions are preserved
     /// for MVCC snapshot isolation.
     #[inline]
-    pub fn delete_with_version(&self, key: &Key, version: u64) -> Result<Option<VersionedValue>> {
+    pub fn delete_with_version(&self, key: &Key, version: u64) -> StrataResult<Option<VersionedValue>> {
         use strata_core::value::Value;
         use strata_core::Version;
 
@@ -422,7 +422,7 @@ impl ShardedStore {
         writes: &[(Key, strata_core::value::Value)],
         deletes: &[Key],
         version: u64,
-    ) -> strata_core::error::Result<()> {
+    ) -> strata_core::StrataResult<()> {
         use std::sync::atomic::Ordering;
 
         // Capture timestamp once for entire batch
@@ -890,7 +890,7 @@ impl std::fmt::Debug for ShardedSnapshot {
 // Storage Trait Implementation
 // ============================================================================
 
-use strata_core::error::Result;
+use strata_core::StrataResult;
 use strata_core::traits::Storage;
 use strata_core::value::Value;
 use std::time::Duration;
@@ -899,7 +899,7 @@ impl Storage for ShardedStore {
     /// Get current value for key (latest version)
     ///
     /// Returns None if key doesn't exist, is expired, or is a tombstone.
-    fn get(&self, key: &Key) -> Result<Option<VersionedValue>> {
+    fn get(&self, key: &Key) -> StrataResult<Option<VersionedValue>> {
         let run_id = key.namespace.run_id;
         Ok(self.shards.get(&run_id).and_then(|shard| {
             shard.data.get(key).and_then(|chain| {
@@ -918,7 +918,7 @@ impl Storage for ShardedStore {
     /// Get value at or before specified version (for snapshot isolation)
     ///
     /// Returns the value if version <= max_version, not expired, and not a tombstone.
-    fn get_versioned(&self, key: &Key, max_version: u64) -> Result<Option<VersionedValue>> {
+    fn get_versioned(&self, key: &Key, max_version: u64) -> StrataResult<Option<VersionedValue>> {
         let run_id = key.namespace.run_id;
         Ok(self.shards.get(&run_id).and_then(|shard| {
             shard.data.get(key).and_then(|chain| {
@@ -942,7 +942,7 @@ impl Storage for ShardedStore {
         key: &Key,
         limit: Option<usize>,
         before_version: Option<u64>,
-    ) -> Result<Vec<VersionedValue>> {
+    ) -> StrataResult<Vec<VersionedValue>> {
         let run_id = key.namespace.run_id;
 
         // Get the shard and extract history within the same scope to avoid lifetime issues
@@ -965,7 +965,7 @@ impl Storage for ShardedStore {
     /// Put key-value pair with optional TTL
     ///
     /// Allocates a new version and returns it.
-    fn put(&self, key: Key, value: Value, ttl: Option<Duration>) -> Result<u64> {
+    fn put(&self, key: Key, value: Value, ttl: Option<Duration>) -> StrataResult<u64> {
         let version = self.next_version();
         let stored = StoredValue::new(value, Version::txn(version), ttl);
 
@@ -978,14 +978,14 @@ impl Storage for ShardedStore {
     /// Delete key
     ///
     /// Returns the latest version's value if it existed.
-    fn delete(&self, key: &Key) -> Result<Option<VersionedValue>> {
+    fn delete(&self, key: &Key) -> StrataResult<Option<VersionedValue>> {
         Ok(ShardedStore::delete(self, key))
     }
 
     /// Scan keys with given prefix at or before max_version
     ///
     /// Results are sorted by key order.
-    fn scan_prefix(&self, prefix: &Key, max_version: u64) -> Result<Vec<(Key, VersionedValue)>> {
+    fn scan_prefix(&self, prefix: &Key, max_version: u64) -> StrataResult<Vec<(Key, VersionedValue)>> {
         let run_id = prefix.namespace.run_id;
         Ok(self
             .shards
@@ -1018,7 +1018,7 @@ impl Storage for ShardedStore {
     /// Scan all keys for a given run_id at or before max_version
     ///
     /// Returns all entries for the run, filtered by version.
-    fn scan_by_run(&self, run_id: RunId, max_version: u64) -> Result<Vec<(Key, VersionedValue)>> {
+    fn scan_by_run(&self, run_id: RunId, max_version: u64) -> StrataResult<Vec<(Key, VersionedValue)>> {
         Ok(self
             .shards
             .get(&run_id)
@@ -1058,7 +1058,7 @@ impl Storage for ShardedStore {
         value: Value,
         version: u64,
         ttl: Option<Duration>,
-    ) -> Result<()> {
+    ) -> StrataResult<()> {
         let stored = StoredValue::new(value, Version::txn(version), ttl);
 
         // Use the inherent put method which handles version chain
@@ -1073,7 +1073,7 @@ impl Storage for ShardedStore {
     /// Delete a key with a specific version (creates tombstone)
     ///
     /// Used by transaction commit to apply deletes.
-    fn delete_with_version(&self, key: &Key, version: u64) -> Result<Option<VersionedValue>> {
+    fn delete_with_version(&self, key: &Key, version: u64) -> StrataResult<Option<VersionedValue>> {
         let result = ShardedStore::delete_with_version(self, key, version);
 
         // Update global version to be at least this version
@@ -1094,7 +1094,7 @@ impl SnapshotView for ShardedSnapshot {
     ///
     /// Delegates to `store.get_versioned(key, version)` which walks the
     /// version chain to find the correct value at the snapshot version.
-    fn get(&self, key: &Key) -> Result<Option<VersionedValue>> {
+    fn get(&self, key: &Key) -> StrataResult<Option<VersionedValue>> {
         // Delegate to Storage::get_versioned for MVCC lookup
         Storage::get_versioned(&*self.store, key, self.version)
     }
@@ -1102,7 +1102,7 @@ impl SnapshotView for ShardedSnapshot {
     /// Scan keys with prefix from snapshot
     ///
     /// Returns all matching keys at or before snapshot version.
-    fn scan_prefix(&self, prefix: &Key) -> Result<Vec<(Key, VersionedValue)>> {
+    fn scan_prefix(&self, prefix: &Key) -> StrataResult<Vec<(Key, VersionedValue)>> {
         let run_id = prefix.namespace.run_id;
         Ok(self
             .store

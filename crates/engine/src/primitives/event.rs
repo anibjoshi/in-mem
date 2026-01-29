@@ -38,7 +38,7 @@ use crate::primitives::extensions::EventLogExt;
 use sha2::{Digest, Sha256};
 use strata_concurrency::TransactionContext;
 use strata_core::contract::{Timestamp, Version, Versioned};
-use strata_core::error::Result;
+use strata_core::StrataResult;
 use strata_core::StrataError;
 use strata_core::types::{Key, Namespace, RunId};
 use strata_core::value::Value;
@@ -301,7 +301,7 @@ impl EventLog {
         run_id: &RunId,
         event_type: &str,
         payload: Value,
-    ) -> Result<Version> {
+    ) -> StrataResult<Version> {
         // Validate inputs before entering transaction
         validate_event_type(event_type)
             .map_err(|e| StrataError::invalid_input(e.to_string()))?;
@@ -378,11 +378,11 @@ impl EventLog {
             })?;
 
         // Update inverted index (zero overhead when disabled)
-        let idx = self.db.extension::<crate::primitives::index::InvertedIndex>();
+        let idx = self.db.extension::<crate::search::InvertedIndex>();
         if idx.is_enabled() {
             let text = format!("{} {}", event_type, serde_json::to_string(&payload).unwrap_or_default());
             if let Version::Sequence(seq) = result {
-                let entity_ref = crate::search_types::EntityRef::Event {
+                let entity_ref = crate::search::EntityRef::Event {
                     run_id: *run_id,
                     sequence: seq,
                 };
@@ -398,7 +398,7 @@ impl EventLog {
     /// Read a single event by sequence number.
     ///
     /// Returns Versioned<Event> if found.
-    pub fn read(&self, run_id: &RunId, sequence: u64) -> Result<Option<Versioned<Event>>> {
+    pub fn read(&self, run_id: &RunId, sequence: u64) -> StrataResult<Option<Versioned<Event>>> {
         self.db.transaction(*run_id, |txn| {
             let ns = self.namespace_for_run(run_id);
             let event_key = Key::new_event(ns, sequence);
@@ -419,7 +419,7 @@ impl EventLog {
     }
 
     /// Get the current length of the log.
-    pub fn len(&self, run_id: &RunId) -> Result<u64> {
+    pub fn len(&self, run_id: &RunId) -> StrataResult<u64> {
         self.db.transaction(*run_id, |txn| {
             let ns = self.namespace_for_run(run_id);
             let meta_key = Key::new_event_meta(ns);
@@ -438,7 +438,7 @@ impl EventLog {
     /// Read events filtered by type
     ///
     /// Returns Vec<Versioned<Event>> for events matching the type.
-    pub fn read_by_type(&self, run_id: &RunId, event_type: &str) -> Result<Vec<Versioned<Event>>> {
+    pub fn read_by_type(&self, run_id: &RunId, event_type: &str) -> StrataResult<Vec<Versioned<Event>>> {
         self.db.transaction(*run_id, |txn| {
             let ns = self.namespace_for_run(run_id);
             let meta_key = Key::new_event_meta(ns.clone());
@@ -473,11 +473,11 @@ impl EventLog {
 
 // ========== Searchable Trait Implementation ==========
 
-impl crate::primitives::searchable::Searchable for EventLog {
+impl crate::search::Searchable for EventLog {
     fn search(
         &self,
         _req: &crate::SearchRequest,
-    ) -> strata_core::error::Result<crate::SearchResponse> {
+    ) -> strata_core::StrataResult<crate::SearchResponse> {
         // Search is handled by the intelligence layer, not the primitive
         Ok(crate::SearchResponse::empty())
     }
@@ -490,7 +490,7 @@ impl crate::primitives::searchable::Searchable for EventLog {
 // ========== EventLogExt Implementation ==========
 
 impl EventLogExt for TransactionContext {
-    fn event_append(&mut self, event_type: &str, payload: Value) -> Result<u64> {
+    fn event_append(&mut self, event_type: &str, payload: Value) -> StrataResult<u64> {
         // Validate inputs
         validate_event_type(event_type)
             .map_err(|e| StrataError::invalid_input(e.to_string()))?;
@@ -555,7 +555,7 @@ impl EventLogExt for TransactionContext {
         Ok(sequence)
     }
 
-    fn event_read(&mut self, sequence: u64) -> Result<Option<Value>> {
+    fn event_read(&mut self, sequence: u64) -> StrataResult<Option<Value>> {
         let ns = Namespace::for_run(self.run_id);
         let event_key = Key::new_event(ns, sequence);
         self.get(&event_key)

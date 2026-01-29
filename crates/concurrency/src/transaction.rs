@@ -8,7 +8,7 @@
 
 use crate::validation::{validate_transaction, ValidationResult};
 use crate::wal_writer::TransactionWALWriter;
-use strata_core::error::Result;
+use strata_core::StrataResult;
 use strata_core::primitives::json::{get_at_path, JsonPatch, JsonPath, JsonValue};
 use strata_core::traits::{SnapshotView, Storage};
 use strata_core::types::{Key, RunId};
@@ -267,7 +267,7 @@ pub trait JsonStoreExt {
     /// - `Ok(Some(value))` if path exists
     /// - `Ok(None)` if document exists but path doesn't
     /// - `Err` if document doesn't exist or transaction is invalid
-    fn json_get(&mut self, key: &Key, path: &JsonPath) -> Result<Option<JsonValue>>;
+    fn json_get(&mut self, key: &Key, path: &JsonPath) -> StrataResult<Option<JsonValue>>;
 
     /// Set a value at a JSON path within a document
     ///
@@ -279,7 +279,7 @@ pub trait JsonStoreExt {
     /// # Returns
     /// - `Ok(())` on success
     /// - `Err` if document doesn't exist or transaction is invalid
-    fn json_set(&mut self, key: &Key, path: &JsonPath, value: JsonValue) -> Result<()>;
+    fn json_set(&mut self, key: &Key, path: &JsonPath, value: JsonValue) -> StrataResult<()>;
 
     /// Delete a value at a JSON path within a document
     ///
@@ -290,7 +290,7 @@ pub trait JsonStoreExt {
     /// # Returns
     /// - `Ok(())` on success (even if path didn't exist)
     /// - `Err` if document doesn't exist or transaction is invalid
-    fn json_delete(&mut self, key: &Key, path: &JsonPath) -> Result<()>;
+    fn json_delete(&mut self, key: &Key, path: &JsonPath) -> StrataResult<()>;
 
     /// Get the entire JSON document
     ///
@@ -300,13 +300,13 @@ pub trait JsonStoreExt {
     /// # Returns
     /// - `Ok(Some(value))` if document exists
     /// - `Ok(None)` if document doesn't exist
-    fn json_get_document(&mut self, key: &Key) -> Result<Option<JsonValue>>;
+    fn json_get_document(&mut self, key: &Key) -> StrataResult<Option<JsonValue>>;
 
     /// Check if a JSON document exists
     ///
     /// # Arguments
     /// * `key` - Key of the JSON document
-    fn json_exists(&mut self, key: &Key) -> Result<bool>;
+    fn json_exists(&mut self, key: &Key) -> StrataResult<bool>;
 }
 
 /// Transaction context for OCC with snapshot isolation
@@ -513,7 +513,7 @@ impl TransactionContext {
     ///     // Process value
     /// }
     /// ```
-    pub fn get(&mut self, key: &Key) -> Result<Option<Value>> {
+    pub fn get(&mut self, key: &Key) -> StrataResult<Option<Value>> {
         self.ensure_active()?;
 
         // 1. Check write_set first (read-your-writes)
@@ -535,7 +535,7 @@ impl TransactionContext {
     /// Read from snapshot and track in read_set
     ///
     /// This is the core read path that tracks reads for conflict detection.
-    fn read_from_snapshot(&mut self, key: &Key) -> Result<Option<Value>> {
+    fn read_from_snapshot(&mut self, key: &Key) -> StrataResult<Option<Value>> {
         let snapshot = self.snapshot.as_ref().ok_or_else(|| {
             StrataError::invalid_input("Transaction has no snapshot for reads".to_string())
         })?;
@@ -563,7 +563,7 @@ impl TransactionContext {
     ///
     /// # Errors
     /// Returns `StrataError::invalid_input` if transaction is not active.
-    pub fn exists(&mut self, key: &Key) -> Result<bool> {
+    pub fn exists(&mut self, key: &Key) -> StrataResult<bool> {
         Ok(self.get(key)?.is_some())
     }
 
@@ -588,7 +588,7 @@ impl TransactionContext {
     ///     // Process each user
     /// }
     /// ```
-    pub fn scan_prefix(&mut self, prefix: &Key) -> Result<Vec<(Key, Value)>> {
+    pub fn scan_prefix(&mut self, prefix: &Key) -> StrataResult<Vec<(Key, Value)>> {
         self.ensure_active()?;
 
         let snapshot = self.snapshot.as_ref().ok_or_else(|| {
@@ -657,7 +657,7 @@ impl TransactionContext {
     /// // Value is NOT visible to other transactions yet
     /// // Will be visible after successful commit
     /// ```
-    pub fn put(&mut self, key: Key, value: Value) -> Result<()> {
+    pub fn put(&mut self, key: Key, value: Value) -> StrataResult<()> {
         self.ensure_active()?;
 
         // Remove from delete_set if previously deleted in this txn
@@ -689,7 +689,7 @@ impl TransactionContext {
     /// // Will be deleted after successful commit
     /// // Reading this key within this txn returns None (read-your-deletes)
     /// ```
-    pub fn delete(&mut self, key: Key) -> Result<()> {
+    pub fn delete(&mut self, key: Key) -> StrataResult<()> {
         self.ensure_active()?;
 
         // Remove from write_set if previously written in this txn
@@ -724,7 +724,7 @@ impl TransactionContext {
     /// // Update key only if at version 5
     /// txn.cas(other_key, 5, Value::Bytes(b"updated".to_vec()))?;
     /// ```
-    pub fn cas(&mut self, key: Key, expected_version: u64, new_value: Value) -> Result<()> {
+    pub fn cas(&mut self, key: Key, expected_version: u64, new_value: Value) -> StrataResult<()> {
         self.ensure_active()?;
 
         self.cas_set.push(CASOperation {
@@ -826,7 +826,7 @@ impl TransactionContext {
     ///
     /// # Errors
     /// Returns `StrataError::invalid_input` if transaction is not active.
-    pub fn clear_operations(&mut self) -> Result<()> {
+    pub fn clear_operations(&mut self) -> StrataResult<()> {
         self.ensure_active()?;
 
         self.read_set.clear();
@@ -920,7 +920,7 @@ impl TransactionContext {
     ///
     /// # Errors
     /// Returns `StrataError::invalid_input` if transaction is not in `Active` state.
-    pub fn ensure_active(&self) -> Result<()> {
+    pub fn ensure_active(&self) -> StrataResult<()> {
         if self.is_active() {
             Ok(())
         } else {
@@ -941,7 +941,7 @@ impl TransactionContext {
     ///
     /// # State Transition
     /// `Active` → `Validating`
-    pub fn mark_validating(&mut self) -> Result<()> {
+    pub fn mark_validating(&mut self) -> StrataResult<()> {
         self.ensure_active()?;
         self.status = TransactionStatus::Validating;
         Ok(())
@@ -957,7 +957,7 @@ impl TransactionContext {
     ///
     /// # State Transition
     /// `Validating` → `Committed`
-    pub fn mark_committed(&mut self) -> Result<()> {
+    pub fn mark_committed(&mut self) -> StrataResult<()> {
         match &self.status {
             TransactionStatus::Validating => {
                 self.status = TransactionStatus::Committed;
@@ -988,7 +988,7 @@ impl TransactionContext {
     /// # State Transitions
     /// - `Active` → `Aborted`
     /// - `Validating` → `Aborted`
-    pub fn mark_aborted(&mut self, reason: String) -> Result<()> {
+    pub fn mark_aborted(&mut self, reason: String) -> StrataResult<()> {
         match &self.status {
             TransactionStatus::Committed => Err(StrataError::invalid_input(format!(
                 "Cannot abort committed transaction {}",
@@ -1104,7 +1104,7 @@ impl TransactionContext {
     /// # Errors
     /// - StrataError::invalid_input if transaction is not in Committed state
     /// - Error from storage operations if they fail
-    pub fn apply_writes<S: Storage>(&self, store: &S, commit_version: u64) -> Result<ApplyResult> {
+    pub fn apply_writes<S: Storage>(&self, store: &S, commit_version: u64) -> StrataResult<ApplyResult> {
         if !self.is_committed() {
             return Err(StrataError::invalid_input(format!(
                 "Cannot apply writes: transaction {} is {:?}, must be Committed",
@@ -1166,7 +1166,7 @@ impl TransactionContext {
         &self,
         wal_writer: &mut TransactionWALWriter,
         commit_version: u64,
-    ) -> Result<()> {
+    ) -> StrataResult<()> {
         if !self.is_committed() {
             return Err(StrataError::invalid_input(format!(
                 "Cannot write to WAL: transaction {} is {:?}, must be Committed",
@@ -1324,7 +1324,7 @@ impl TransactionContext {
 // ============================================================================
 
 impl JsonStoreExt for TransactionContext {
-    fn json_get(&mut self, key: &Key, path: &JsonPath) -> Result<Option<JsonValue>> {
+    fn json_get(&mut self, key: &Key, path: &JsonPath) -> StrataResult<Option<JsonValue>> {
         self.ensure_active()?;
 
         // Check write set first (read-your-writes)
@@ -1398,7 +1398,7 @@ impl JsonStoreExt for TransactionContext {
         Ok(get_at_path(&doc_value, path).cloned())
     }
 
-    fn json_set(&mut self, key: &Key, path: &JsonPath, value: JsonValue) -> Result<()> {
+    fn json_set(&mut self, key: &Key, path: &JsonPath, value: JsonValue) -> StrataResult<()> {
         self.ensure_active()?;
 
         // Ensure we have tracked the snapshot version for this document
@@ -1423,7 +1423,7 @@ impl JsonStoreExt for TransactionContext {
         Ok(())
     }
 
-    fn json_delete(&mut self, key: &Key, path: &JsonPath) -> Result<()> {
+    fn json_delete(&mut self, key: &Key, path: &JsonPath) -> StrataResult<()> {
         self.ensure_active()?;
 
         // Ensure we have tracked the snapshot version for this document
@@ -1445,13 +1445,13 @@ impl JsonStoreExt for TransactionContext {
         Ok(())
     }
 
-    fn json_get_document(&mut self, key: &Key) -> Result<Option<JsonValue>> {
+    fn json_get_document(&mut self, key: &Key) -> StrataResult<Option<JsonValue>> {
         // Get the root path
         let root = JsonPath::root();
         self.json_get(key, &root)
     }
 
-    fn json_exists(&mut self, key: &Key) -> Result<bool> {
+    fn json_exists(&mut self, key: &Key) -> StrataResult<bool> {
         self.ensure_active()?;
 
         // Check write buffer first (read-your-writes)

@@ -17,7 +17,7 @@
 //! 7. Initialize TransactionManager with final version
 
 use crate::TransactionManager;
-use strata_core::error::Result;
+use strata_core::StrataResult;
 use strata_durability::recovery::replay_wal;
 use strata_durability::wal::{DurabilityMode, WAL};
 use strata_storage::ShardedStore;
@@ -78,7 +78,7 @@ impl RecoveryCoordinator {
     /// - **Version preservation**: Replay preserves exact version numbers from WAL
     /// - **Incomplete = discarded**: Transactions without CommitTxn are discarded
     /// - **Single-threaded**: Replay processes entries in WAL order
-    pub fn recover(&self) -> Result<RecoveryResult> {
+    pub fn recover(&self) -> StrataResult<RecoveryResult> {
         // Step 1: Open WAL
         let wal = WAL::open(&self.wal_path, DurabilityMode::Strict)?;
 

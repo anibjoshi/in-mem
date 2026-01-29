@@ -27,35 +27,32 @@ pub mod coordinator;
 pub mod database;
 pub mod durability;
 pub mod instrumentation;
-pub mod recovery_participant;
-pub mod replay; // Run Lifecycle & Replay
+pub mod recovery;
 pub mod transaction;
 pub mod transaction_ops; // TransactionOps Trait Definition
 
 pub use coordinator::{TransactionCoordinator, TransactionMetrics};
 pub use database::{Database, DatabaseBuilder, RetryConfig};
-pub use recovery_participant::{
+pub use recovery::{
     recover_all_participants, register_recovery_participant, RecoveryFn, RecoveryParticipant,
+    diff_views, DiffEntry, ReadOnlyView, ReplayError, RunDiff, RunError,
+    ReplayRunIndex,
 };
 pub use durability::{
     BufferedDurability, CommitData, Durability, DurabilityMode, InMemoryDurability,
     StrictDurability,
 };
 pub use instrumentation::PerfTrace;
-pub use replay::{
-    diff_views, DiffEntry, ReadOnlyView, ReplayError, RunDiff, RunError,
-    RunIndex as ReplayRunIndex,
-};
 // Note: Use strata_core::PrimitiveType for DiffEntry.primitive field
 pub use transaction::{Transaction, TransactionPool, MAX_POOL_SIZE};
 pub use strata_concurrency::TransactionContext;
 pub use transaction_ops::TransactionOps;
 
 pub mod primitives;
-pub mod search_types;
+pub mod search;
 
 // Re-export search types at crate root for convenience
-pub use search_types::{SearchBudget, SearchHit, SearchMode, SearchRequest, SearchResponse, SearchStats};
+pub use search::{SearchBudget, SearchHit, SearchMode, SearchRequest, SearchResponse, SearchStats};
 
 // Re-export submodules for `strata_engine::vector::*` and `strata_engine::extensions::*` access
 pub use primitives::vector;

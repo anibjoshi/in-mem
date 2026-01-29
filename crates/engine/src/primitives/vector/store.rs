@@ -1351,7 +1351,7 @@ impl VectorStore {
 
 // ========== Searchable Trait Implementation ==========
 
-impl crate::primitives::searchable::Searchable for VectorStore {
+impl crate::search::Searchable for VectorStore {
     /// Vector search via search interface
     ///
     /// NOTE: Per architecture documentation:
@@ -1367,8 +1367,8 @@ impl crate::primitives::searchable::Searchable for VectorStore {
     fn search(
         &self,
         req: &crate::SearchRequest,
-    ) -> strata_core::error::Result<crate::SearchResponse> {
-        use crate::search_types::{SearchMode, SearchResponse, SearchStats};
+    ) -> strata_core::StrataResult<crate::SearchResponse> {
+        use crate::search::{SearchMode, SearchResponse, SearchStats};
         use std::time::Instant;
 
         let start = Instant::now();
@@ -1500,7 +1500,7 @@ fn now_micros() -> u64 {
 // and apply them at commit time, but this requires significant infrastructure.
 
 impl VectorStoreExt for TransactionContext {
-    fn vector_get(&mut self, collection: &str, key: &str) -> strata_core::Result<Option<Vec<f32>>> {
+    fn vector_get(&mut self, collection: &str, key: &str) -> strata_core::StrataResult<Option<Vec<f32>>> {
         // VectorStore embeddings are stored in VectorHeap (in-memory backend),
         // which is not accessible from TransactionContext.
         //
@@ -1523,7 +1523,7 @@ impl VectorStoreExt for TransactionContext {
         collection: &str,
         key: &str,
         embedding: &[f32],
-    ) -> strata_core::Result<Version> {
+    ) -> strata_core::StrataResult<Version> {
         // VectorStore inserts require:
         // 1. Adding embedding to VectorHeap (in-memory)
         // 2. Getting a VectorId from the backend's allocator

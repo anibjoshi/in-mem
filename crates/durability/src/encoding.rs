@@ -23,7 +23,7 @@
 
 use crate::wal::WALEntry;
 use crc32fast::Hasher;
-use strata_core::error::Result;
+use strata_core::StrataResult;
 use strata_core::StrataError;
 use std::io::{Cursor, Read, Write};
 
@@ -80,7 +80,7 @@ pub const TYPE_VECTOR_DELETE: u8 = 0x73;
 /// let bytes = encode_entry(&entry)?;
 /// // Write bytes to file
 /// ```
-pub fn encode_entry(entry: &WALEntry) -> Result<Vec<u8>> {
+pub fn encode_entry(entry: &WALEntry) -> StrataResult<Vec<u8>> {
     // Determine type tag
     let type_tag = match entry {
         WALEntry::BeginTxn { .. } => TYPE_BEGIN_TXN,
@@ -169,7 +169,7 @@ pub fn encode_entry(entry: &WALEntry) -> Result<Vec<u8>> {
 /// let (entry, consumed) = decode_entry(&bytes, file_offset)?;
 /// // Process entry...
 /// ```
-pub fn decode_entry(buf: &[u8], offset: u64) -> Result<(WALEntry, usize)> {
+pub fn decode_entry(buf: &[u8], offset: u64) -> StrataResult<(WALEntry, usize)> {
     let mut cursor = Cursor::new(buf);
 
     // Read length

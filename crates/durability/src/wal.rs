@@ -37,11 +37,10 @@
 
 use crate::encoding::{decode_entry, encode_entry};
 use strata_core::{
-    error::Result,
     primitives::json::JsonPath,
     types::{Key, RunId},
     value::Value,
-    StrataError, Timestamp,
+    StrataError, StrataResult, Timestamp,
 };
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
@@ -571,7 +570,7 @@ impl WAL {
     /// // Open with strict mode
     /// let wal = WAL::open("data/wal/segment.wal", DurabilityMode::Strict)?;
     /// ```
-    pub fn open<P: AsRef<Path>>(path: P, durability_mode: DurabilityMode) -> Result<Self> {
+    pub fn open<P: AsRef<Path>>(path: P, durability_mode: DurabilityMode) -> StrataResult<Self> {
         let path = path.as_ref().to_path_buf();
 
         // Create parent directory if needed
@@ -626,7 +625,7 @@ impl WAL {
     ///
     /// This method is thread-safe. Multiple threads can call append concurrently.
     /// Internal locking ensures entries are written atomically.
-    pub fn append(&self, entry: &WALEntry) -> Result<u64> {
+    pub fn append(&self, entry: &WALEntry) -> StrataResult<u64> {
         let offset = self.current_offset.load(Ordering::SeqCst);
 
         // Encode entry
@@ -692,7 +691,7 @@ impl WAL {
     /// # Thread Safety
     ///
     /// This method is thread-safe.
-    pub fn flush(&self) -> Result<()> {
+    pub fn flush(&self) -> StrataResult<()> {
         let mut writer = self.writer.lock();
         writer
             .flush()
@@ -703,7 +702,7 @@ impl WAL {
     ///
     /// Ensures all buffered data is written to disk.
     /// This is the most durable option but also the slowest.
-    pub fn fsync(&self) -> Result<()> {
+    pub fn fsync(&self) -> StrataResult<()> {
         let mut writer = self.writer.lock();
 
         // Flush buffer
@@ -734,7 +733,7 @@ impl WAL {
     ///
     /// * `Ok(Vec<WALEntry>)` - Decoded entries
     /// * `Err` - If file operations fail or mid-file corruption detected
-    pub fn read_entries(&self, start_offset: u64) -> Result<Vec<WALEntry>> {
+    pub fn read_entries(&self, start_offset: u64) -> StrataResult<Vec<WALEntry>> {
         // Flush any buffered writes before reading
         {
             let mut writer = self.writer.lock();
@@ -823,7 +822,7 @@ impl WAL {
     /// Read all entries from beginning of file
     ///
     /// Convenience method equivalent to `read_entries(0)`.
-    pub fn read_all(&self) -> Result<Vec<WALEntry>> {
+    pub fn read_all(&self) -> StrataResult<Vec<WALEntry>> {
         self.read_entries(0)
     }
 
@@ -841,7 +840,7 @@ impl WAL {
     ///
     /// * `Ok(WalReadResult)` - Detailed read result with entries and corruption info
     /// * `Err` - If file operations fail (not corruption)
-    pub fn read_entries_detailed(&self, start_offset: u64) -> Result<WalReadResult> {
+    pub fn read_entries_detailed(&self, start_offset: u64) -> StrataResult<WalReadResult> {
         // Flush any buffered writes before reading
         {
             let mut writer = self.writer.lock();
@@ -963,7 +962,7 @@ impl WAL {
     /// wal.truncate_to(10000)?;
     /// assert_eq!(wal.size(), 10000);
     /// ```
-    pub fn truncate_to(&mut self, offset: u64) -> Result<()> {
+    pub fn truncate_to(&mut self, offset: u64) -> StrataResult<()> {
         // Flush any pending writes first
         self.flush()?;
 
@@ -1010,7 +1009,7 @@ impl WAL {
     /// * `Ok(Some((offset, snapshot_id, version)))` - Offset after checkpoint, snapshot ID, and version
     /// * `Ok(None)` - No checkpoints found in WAL
     /// * `Err` - If reading WAL fails
-    pub fn find_last_checkpoint(&self) -> Result<Option<(u64, uuid::Uuid, u64)>> {
+    pub fn find_last_checkpoint(&self) -> StrataResult<Option<(u64, uuid::Uuid, u64)>> {
         // Flush any buffered writes before reading
         {
             let mut writer = self.writer.lock();

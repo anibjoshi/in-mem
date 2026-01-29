@@ -33,7 +33,7 @@
 use crate::primitives::extensions::JsonStoreExt;
 use strata_concurrency::TransactionContext;
 use strata_core::contract::{Timestamp, Version, Versioned};
-use strata_core::error::Result;
+use strata_core::StrataResult;
 use strata_core::primitives::json::{delete_at_path, get_at_path, set_at_path, JsonLimitError, JsonPath, JsonValue};
 use strata_core::StrataError;
 use strata_core::types::{Key, Namespace, RunId};
@@ -195,7 +195,7 @@ impl JsonStore {
     /// Serialize document for storage
     ///
     /// Uses MessagePack for efficient binary serialization.
-    pub(crate) fn serialize_doc(doc: &JsonDoc) -> Result<Value> {
+    pub(crate) fn serialize_doc(doc: &JsonDoc) -> StrataResult<Value> {
         let bytes = rmp_serde::to_vec(doc).map_err(|e| StrataError::serialization(e.to_string()))?;
         Ok(Value::Bytes(bytes))
     }
@@ -203,7 +203,7 @@ impl JsonStore {
     /// Deserialize document from storage
     ///
     /// Expects Value::Bytes containing MessagePack-encoded JsonDoc.
-    pub(crate) fn deserialize_doc(value: &Value) -> Result<JsonDoc> {
+    pub(crate) fn deserialize_doc(value: &Value) -> StrataResult<JsonDoc> {
         match value {
             Value::Bytes(bytes) => {
                 rmp_serde::from_slice(bytes).map_err(|e| StrataError::serialization(e.to_string()))
@@ -238,7 +238,7 @@ impl JsonStore {
     /// let version = json.create(&run_id, &doc_id, JsonValue::object())?;
     /// assert_eq!(version, Version::counter(1));
     /// ```
-    pub fn create(&self, run_id: &RunId, doc_id: &str, value: JsonValue) -> Result<Version> {
+    pub fn create(&self, run_id: &RunId, doc_id: &str, value: JsonValue) -> StrataResult<Version> {
         // Validate document limits (Issue #440)
         value.validate().map_err(limit_error_to_error)?;
 
@@ -282,7 +282,7 @@ impl JsonStore {
         run_id: &RunId,
         doc_id: &str,
         path: &JsonPath,
-    ) -> Result<Option<Versioned<JsonValue>>> {
+    ) -> StrataResult<Option<Versioned<JsonValue>>> {
         // Validate path limits (Issue #440)
         path.validate().map_err(limit_error_to_error)?;
 
@@ -307,7 +307,7 @@ impl JsonStore {
     }
 
     /// Check if document exists.
-    pub fn exists(&self, run_id: &RunId, doc_id: &str) -> Result<bool> {
+    pub fn exists(&self, run_id: &RunId, doc_id: &str) -> StrataResult<bool> {
         let key = self.key_for(run_id, doc_id);
         self.db.transaction(*run_id, |txn| {
             Ok(txn.get(&key)?.is_some())
@@ -341,7 +341,7 @@ impl JsonStore {
         doc_id: &str,
         path: &JsonPath,
         value: JsonValue,
-    ) -> Result<Version> {
+    ) -> StrataResult<Version> {
         // Validate path and value limits (Issue #440)
         path.validate().map_err(limit_error_to_error)?;
         value.validate().map_err(limit_error_to_error)?;
@@ -395,7 +395,7 @@ impl JsonStore {
         run_id: &RunId,
         doc_id: &str,
         path: &JsonPath,
-    ) -> Result<Version> {
+    ) -> StrataResult<Version> {
         // Validate path limits (Issue #440)
         path.validate().map_err(limit_error_to_error)?;
 
@@ -441,7 +441,7 @@ impl JsonStore {
     /// let existed = json.destroy(&run_id, &doc_id)?;
     /// assert!(existed);
     /// ```
-    pub fn destroy(&self, run_id: &RunId, doc_id: &str) -> Result<bool> {
+    pub fn destroy(&self, run_id: &RunId, doc_id: &str) -> StrataResult<bool> {
         let key = self.key_for(run_id, doc_id);
 
         self.db.transaction(*run_id, |txn| {
@@ -497,7 +497,7 @@ impl JsonStore {
         prefix: Option<&str>,
         cursor: Option<&str>,
         limit: usize,
-    ) -> Result<JsonListResult> {
+    ) -> StrataResult<JsonListResult> {
         let ns = self.namespace_for_run(run_id);
         let scan_prefix = Key::new_json_prefix(ns);
 
@@ -555,11 +555,11 @@ impl JsonStore {
 
 // ========== Searchable Trait Implementation ==========
 
-impl crate::primitives::searchable::Searchable for JsonStore {
+impl crate::search::Searchable for JsonStore {
     fn search(
         &self,
         _req: &crate::SearchRequest,
-    ) -> strata_core::error::Result<crate::SearchResponse> {
+    ) -> strata_core::StrataResult<crate::SearchResponse> {
         // Search is handled by the intelligence layer, not the primitive
         Ok(crate::SearchResponse::empty())
     }
@@ -578,7 +578,7 @@ impl crate::primitives::searchable::Searchable for JsonStore {
 
 
 impl JsonStoreExt for TransactionContext {
-    fn json_get(&mut self, doc_id: &str, path: &JsonPath) -> Result<Option<JsonValue>> {
+    fn json_get(&mut self, doc_id: &str, path: &JsonPath) -> StrataResult<Option<JsonValue>> {
         // Validate path limits (Issue #440)
         path.validate().map_err(limit_error_to_error)?;
 
@@ -594,7 +594,7 @@ impl JsonStoreExt for TransactionContext {
         }
     }
 
-    fn json_set(&mut self, doc_id: &str, path: &JsonPath, value: JsonValue) -> Result<Version> {
+    fn json_set(&mut self, doc_id: &str, path: &JsonPath, value: JsonValue) -> StrataResult<Version> {
         // Validate path and value limits (Issue #440)
         path.validate().map_err(limit_error_to_error)?;
         value.validate().map_err(limit_error_to_error)?;
@@ -619,7 +619,7 @@ impl JsonStoreExt for TransactionContext {
         Ok(Version::counter(doc.version))
     }
 
-    fn json_create(&mut self, doc_id: &str, value: JsonValue) -> Result<Version> {
+    fn json_create(&mut self, doc_id: &str, value: JsonValue) -> StrataResult<Version> {
         // Validate document limits (Issue #440)
         value.validate().map_err(limit_error_to_error)?;
 

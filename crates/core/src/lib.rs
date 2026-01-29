@@ -26,8 +26,7 @@ pub mod value;
 
 // Re-export commonly used types and traits
 pub use error::{
-    ConstraintReason, DetailValue, ErrorCode, ErrorDetails, Result, StrataError,
-    StrataResult,
+    ConstraintReason, DetailValue, ErrorCode, ErrorDetails, StrataError, StrataResult,
 };
 pub use run_types::{RunEventOffsets, RunMetadata, RunStatus};
 pub use traits::{SnapshotView, Storage};

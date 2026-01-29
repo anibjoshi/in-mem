@@ -19,7 +19,7 @@
 
 use super::Durability;
 use strata_concurrency::TransactionContext;
-use strata_core::error::Result;
+use strata_core::StrataResult;
 
 /// InMemory durability - no persistence
 ///
@@ -65,7 +65,7 @@ impl Durability for InMemoryDurability {
     /// * `_txn` - Transaction context (ignored)
     /// * `_commit_version` - Commit version (ignored)
     #[inline]
-    fn persist(&self, _txn: &TransactionContext, _commit_version: u64) -> Result<()> {
+    fn persist(&self, _txn: &TransactionContext, _commit_version: u64) -> StrataResult<()> {
         // Hot path - no WAL, no fsync, no logging
         // This must be as fast as possible
         Ok(())
@@ -75,7 +75,7 @@ impl Durability for InMemoryDurability {
     ///
     /// InMemory mode has no buffered data to persist.
     #[inline]
-    fn shutdown(&self) -> Result<()> {
+    fn shutdown(&self) -> StrataResult<()> {
         Ok(())
     }
 

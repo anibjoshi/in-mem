@@ -26,21 +26,21 @@
 //! 4. `recover()` replays WAL entries into `VectorBackendState` (stored in Database extensions)
 //! 5. The Database is ready with all vector embeddings restored
 
-use strata_core::error::Result;
+use strata_core::StrataResult;
 use strata_core::StrataError;
-use crate::recovery_participant::{register_recovery_participant, RecoveryParticipant};
+use crate::recovery::{register_recovery_participant, RecoveryParticipant};
 use crate::database::Database;
 use tracing::info;
 
 /// Recovery function for VectorStore
 ///
 /// Called by Database during startup to restore vector state from WAL.
-fn recover_vector_state(db: &Database) -> Result<()> {
+fn recover_vector_state(db: &Database) -> StrataResult<()> {
     recover_from_db(db)
 }
 
 /// Internal recovery implementation that works with &Database
-fn recover_from_db(db: &Database) -> Result<()> {
+fn recover_from_db(db: &Database) -> StrataResult<()> {
     use super::{
         CollectionId, DistanceMetric, IndexBackendFactory, VectorBackendState, VectorConfig,
         VectorId,
@@ -123,7 +123,7 @@ fn recover_from_db(db: &Database) -> Result<()> {
     let mut stats = super::RecoveryStats::default();
 
     // Helper to replay a single entry
-    let replay_entry = |entry: &WALEntry, stats: &mut super::RecoveryStats| -> Result<()> {
+    let replay_entry = |entry: &WALEntry, stats: &mut super::RecoveryStats| -> StrataResult<()> {
         match entry {
             WALEntry::VectorCollectionCreate {
                 run_id,

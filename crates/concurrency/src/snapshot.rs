@@ -23,7 +23,7 @@
 //! future implementations like `LazySnapshotView` that read from live
 //! storage with version bounds, avoiding the clone overhead.
 
-use strata_core::error::Result;
+use strata_core::StrataResult;
 use strata_core::traits::SnapshotView;
 use strata_core::types::Key;
 use strata_core::VersionedValue;
@@ -125,12 +125,12 @@ impl ClonedSnapshotView {
 }
 
 impl SnapshotView for ClonedSnapshotView {
-    fn get(&self, key: &Key) -> Result<Option<VersionedValue>> {
+    fn get(&self, key: &Key) -> StrataResult<Option<VersionedValue>> {
         // Simple lookup - data is already filtered to snapshot version
         Ok(self.data.get(key).cloned())
     }
 
-    fn scan_prefix(&self, prefix: &Key) -> Result<Vec<(Key, VersionedValue)>> {
+    fn scan_prefix(&self, prefix: &Key) -> StrataResult<Vec<(Key, VersionedValue)>> {
         // Use Key::starts_with for prefix matching
         // BTreeMap iteration is ordered, so results are sorted
         let results: Vec<(Key, VersionedValue)> = self

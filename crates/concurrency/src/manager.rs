@@ -32,7 +32,7 @@ use crate::wal_writer::TransactionWALWriter;
 use crate::{CommitError, TransactionContext, TransactionStatus};
 use dashmap::DashMap;
 use parking_lot::Mutex;
-use strata_core::error::Result;
+use strata_core::StrataResult;
 use strata_core::traits::Storage;
 use strata_core::types::RunId;
 use strata_durability::wal::WAL;
@@ -256,7 +256,7 @@ impl TransactionManager {
     /// # Arguments
     /// * `txn` - Transaction to abort
     /// * `reason` - Human-readable reason for abort
-    pub fn abort(&self, txn: &mut TransactionContext, reason: String) -> Result<()> {
+    pub fn abort(&self, txn: &mut TransactionContext, reason: String) -> StrataResult<()> {
         txn.mark_aborted(reason)
     }
 

@@ -18,7 +18,7 @@
 use crate::primitives::extensions::StateCellExt;
 use strata_concurrency::TransactionContext;
 use strata_core::contract::{Version, Versioned};
-use strata_core::error::Result;
+use strata_core::StrataResult;
 use strata_core::types::{Key, Namespace, RunId};
 use strata_core::value::Value;
 use strata_core::Timestamp;
@@ -105,7 +105,7 @@ impl StateCell {
     /// The version uses `Version::Counter` type.
     ///
     /// # StateCell Versioned Returns
-    pub fn init(&self, run_id: &RunId, name: &str, value: Value) -> Result<Versioned<Version>> {
+    pub fn init(&self, run_id: &RunId, name: &str, value: Value) -> StrataResult<Versioned<Version>> {
         self.db.transaction(*run_id, |txn| {
             let key = self.key_for(run_id, name);
 
@@ -127,7 +127,7 @@ impl StateCell {
     /// Read current state.
     ///
     /// Returns `Versioned<State>` with `Version::Counter` type.
-    pub fn read(&self, run_id: &RunId, name: &str) -> Result<Option<Versioned<State>>> {
+    pub fn read(&self, run_id: &RunId, name: &str) -> StrataResult<Option<Versioned<State>>> {
         let key = self.key_for(run_id, name);
 
         self.db.transaction(*run_id, |txn| {
@@ -158,7 +158,7 @@ impl StateCell {
         name: &str,
         expected_version: Version,
         new_value: Value,
-    ) -> Result<Versioned<Version>> {
+    ) -> StrataResult<Versioned<Version>> {
         self.db.transaction(*run_id, |txn| {
             let key = self.key_for(run_id, name);
 
@@ -198,7 +198,7 @@ impl StateCell {
     /// Creates the cell if it doesn't exist.
     ///
     /// # StateCell Versioned Returns
-    pub fn set(&self, run_id: &RunId, name: &str, value: Value) -> Result<Versioned<Version>> {
+    pub fn set(&self, run_id: &RunId, name: &str, value: Value) -> StrataResult<Versioned<Version>> {
         let value_for_index = value.clone();
         let result = self.db.transaction(*run_id, |txn| {
             let key = self.key_for(run_id, name);
@@ -224,10 +224,10 @@ impl StateCell {
         })?;
 
         // Update inverted index (zero overhead when disabled)
-        let index = self.db.extension::<crate::primitives::index::InvertedIndex>();
+        let index = self.db.extension::<crate::search::InvertedIndex>();
         if index.is_enabled() {
             let text = format!("{} {}", name, serde_json::to_string(&value_for_index).unwrap_or_default());
-            let entity_ref = crate::search_types::EntityRef::State {
+            let entity_ref = crate::search::EntityRef::State {
                 run_id: *run_id,
                 name: name.to_string(),
             };
@@ -241,11 +241,11 @@ impl StateCell {
 
 // ========== Searchable Trait Implementation ==========
 
-impl crate::primitives::searchable::Searchable for StateCell {
+impl crate::search::Searchable for StateCell {
     fn search(
         &self,
         _req: &crate::SearchRequest,
-    ) -> strata_core::error::Result<crate::SearchResponse> {
+    ) -> strata_core::StrataResult<crate::SearchResponse> {
         // StateCell does not support search in MVP
         Ok(crate::SearchResponse::empty())
     }
@@ -258,7 +258,7 @@ impl crate::primitives::searchable::Searchable for StateCell {
 // ========== StateCellExt Implementation ==========
 
 impl StateCellExt for TransactionContext {
-    fn state_read(&mut self, name: &str) -> Result<Option<Value>> {
+    fn state_read(&mut self, name: &str) -> StrataResult<Option<Value>> {
         let ns = Namespace::for_run(self.run_id);
         let key = Key::new_state(ns, name);
 
@@ -272,7 +272,7 @@ impl StateCellExt for TransactionContext {
         }
     }
 
-    fn state_cas(&mut self, name: &str, expected_version: Version, new_value: Value) -> Result<Version> {
+    fn state_cas(&mut self, name: &str, expected_version: Version, new_value: Value) -> StrataResult<Version> {
         let ns = Namespace::for_run(self.run_id);
         let key = Key::new_state(ns, name);
 
@@ -305,7 +305,7 @@ impl StateCellExt for TransactionContext {
         Ok(new_version)
     }
 
-    fn state_set(&mut self, name: &str, value: Value) -> Result<Version> {
+    fn state_set(&mut self, name: &str, value: Value) -> StrataResult<Version> {
         let ns = Namespace::for_run(self.run_id);
         let key = Key::new_state(ns, name);
 

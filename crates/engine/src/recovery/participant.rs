@@ -29,7 +29,7 @@
 //! register_recovery_participant(RecoveryParticipant::new("vector", recover_vector_state));
 //! ```
 
-use strata_core::error::Result;
+use strata_core::StrataResult;
 use parking_lot::RwLock;
 use tracing::info;
 
@@ -43,7 +43,7 @@ use tracing::info;
 ///
 /// Recovery functions are stateless - they use the Database's extension
 /// mechanism to access shared state.
-pub type RecoveryFn = fn(&super::Database) -> Result<()>;
+pub type RecoveryFn = fn(&crate::database::Database) -> StrataResult<()>;
 
 /// Registry entry for a recovery participant
 #[derive(Clone)]
@@ -102,7 +102,7 @@ pub fn register_recovery_participant(participant: RecoveryParticipant) {
 ///
 /// Returns the first error encountered. If a participant fails,
 /// subsequent participants are not called.
-pub fn recover_all_participants(db: &super::Database) -> Result<()> {
+pub fn recover_all_participants(db: &crate::database::Database) -> StrataResult<()> {
     let registry = RECOVERY_REGISTRY.read();
 
     for participant in registry.iter() {
@@ -139,7 +139,7 @@ mod tests {
     static TEST_LOCK: once_cell::sync::Lazy<Mutex<()>> = once_cell::sync::Lazy::new(|| Mutex::new(()));
 
     // Mock recovery function that succeeds
-    fn mock_recovery_success(_db: &super::super::Database) -> Result<()> {
+    fn mock_recovery_success(_db: &crate::database::Database) -> StrataResult<()> {
         Ok(())
     }
 
@@ -217,12 +217,12 @@ mod tests {
         clear_recovery_registry();
 
         let dir = tempdir().unwrap();
-        let db = super::super::Database::open(dir.path()).unwrap();
+        let db = crate::database::Database::open(dir.path()).unwrap();
 
         let result = recover_all_participants(&db);
         assert!(result.is_ok(), "Empty registry should succeed");
 
-        db.close().unwrap();
+        db.shutdown().unwrap();
     }
 
     #[test]
@@ -234,7 +234,7 @@ mod tests {
 
         static CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-        fn counting_recovery(_db: &super::super::Database) -> Result<()> {
+        fn counting_recovery(_db: &crate::database::Database) -> StrataResult<()> {
             CALL_COUNT.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
@@ -242,7 +242,7 @@ mod tests {
         CALL_COUNT.store(0, Ordering::SeqCst);
 
         let dir = tempdir().unwrap();
-        let db = super::super::Database::open(dir.path()).unwrap();
+        let db = crate::database::Database::open(dir.path()).unwrap();
 
         register_recovery_participant(RecoveryParticipant::new("counter", counting_recovery));
 
@@ -250,7 +250,7 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(CALL_COUNT.load(Ordering::SeqCst), 1, "Recovery should be called exactly once");
 
-        db.close().unwrap();
+        db.shutdown().unwrap();
     }
 
     #[test]
@@ -263,17 +263,17 @@ mod tests {
         static ORDER: once_cell::sync::Lazy<Mutex<Vec<&'static str>>> =
             once_cell::sync::Lazy::new(|| Mutex::new(Vec::new()));
 
-        fn first_recovery(_db: &super::super::Database) -> Result<()> {
+        fn first_recovery(_db: &crate::database::Database) -> StrataResult<()> {
             ORDER.lock().push("first");
             Ok(())
         }
 
-        fn second_recovery(_db: &super::super::Database) -> Result<()> {
+        fn second_recovery(_db: &crate::database::Database) -> StrataResult<()> {
             ORDER.lock().push("second");
             Ok(())
         }
 
-        fn third_recovery(_db: &super::super::Database) -> Result<()> {
+        fn third_recovery(_db: &crate::database::Database) -> StrataResult<()> {
             ORDER.lock().push("third");
             Ok(())
         }
@@ -281,7 +281,7 @@ mod tests {
         ORDER.lock().clear();
 
         let dir = tempdir().unwrap();
-        let db = super::super::Database::open(dir.path()).unwrap();
+        let db = crate::database::Database::open(dir.path()).unwrap();
 
         register_recovery_participant(RecoveryParticipant::new("first", first_recovery));
         register_recovery_participant(RecoveryParticipant::new("second", second_recovery));
@@ -293,7 +293,7 @@ mod tests {
         let order = ORDER.lock();
         assert_eq!(order.as_slice(), &["first", "second", "third"], "Should call in registration order");
 
-        db.close().unwrap();
+        db.shutdown().unwrap();
     }
 
     #[test]
@@ -306,17 +306,17 @@ mod tests {
         static CALLED: once_cell::sync::Lazy<Mutex<Vec<&'static str>>> =
             once_cell::sync::Lazy::new(|| Mutex::new(Vec::new()));
 
-        fn success_recovery(_db: &super::super::Database) -> Result<()> {
+        fn success_recovery(_db: &crate::database::Database) -> StrataResult<()> {
             CALLED.lock().push("success");
             Ok(())
         }
 
-        fn failing_recovery(_db: &super::super::Database) -> Result<()> {
+        fn failing_recovery(_db: &crate::database::Database) -> StrataResult<()> {
             CALLED.lock().push("failing");
             Err(strata_core::StrataError::corruption("test failure"))
         }
 
-        fn should_not_run(_db: &super::super::Database) -> Result<()> {
+        fn should_not_run(_db: &crate::database::Database) -> StrataResult<()> {
             CALLED.lock().push("should_not_run");
             Ok(())
         }
@@ -324,7 +324,7 @@ mod tests {
         CALLED.lock().clear();
 
         let dir = tempdir().unwrap();
-        let db = super::super::Database::open(dir.path()).unwrap();
+        let db = crate::database::Database::open(dir.path()).unwrap();
 
         register_recovery_participant(RecoveryParticipant::new("success", success_recovery));
         register_recovery_participant(RecoveryParticipant::new("failing", failing_recovery));
@@ -339,7 +339,7 @@ mod tests {
         assert!(called.contains(&"failing"));
         assert!(!called.contains(&"should_not_run"), "Should not call participant after failure");
 
-        db.close().unwrap();
+        db.shutdown().unwrap();
     }
 
     #[test]

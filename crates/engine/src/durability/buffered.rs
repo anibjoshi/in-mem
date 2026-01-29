@@ -25,7 +25,7 @@
 use super::Durability;
 use strata_concurrency::TransactionContext;
 use strata_concurrency::TransactionWALWriter;
-use strata_core::error::Result;
+use strata_core::StrataResult;
 use strata_durability::wal::WAL;
 use parking_lot::{Condvar, Mutex};
 use tracing::{error, warn};
@@ -245,7 +245,7 @@ impl BufferedDurability {
     /// Synchronous flush - fsync the WAL
     ///
     /// This is called by the background thread and during shutdown.
-    pub fn flush_sync(&self) -> Result<()> {
+    pub fn flush_sync(&self) -> StrataResult<()> {
         let wal = self.wal.lock();
         wal.fsync()?;
 
@@ -276,7 +276,7 @@ impl Durability for BufferedDurability {
     /// # Performance
     ///
     /// Target: <30µs (WAL append only, no syscall for fsync)
-    fn persist(&self, txn: &TransactionContext, commit_version: u64) -> Result<()> {
+    fn persist(&self, txn: &TransactionContext, commit_version: u64) -> StrataResult<()> {
         // Acquire WAL lock and write transaction
         {
             let mut wal = self.wal.lock();
@@ -327,7 +327,7 @@ impl Durability for BufferedDurability {
     /// 1. Signals the background thread to stop
     /// 2. Waits for the thread to finish (joins)
     /// 3. Performs a final synchronous flush
-    fn shutdown(&self) -> Result<()> {
+    fn shutdown(&self) -> StrataResult<()> {
         // Signal shutdown
         self.shutdown_flag.store(true, Ordering::SeqCst);
         self.signal_flush();
