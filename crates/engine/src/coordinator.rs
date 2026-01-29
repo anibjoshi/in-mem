@@ -10,7 +10,11 @@
 //! - Commit rate calculation
 
 use strata_concurrency::{RecoveryResult, TransactionContext, TransactionManager};
+use strata_core::StrataError;
+use strata_core::StrataResult;
+use strata_core::traits::Storage;
 use strata_core::types::RunId;
+use strata_durability::wal::WAL;
 use strata_storage::ShardedStore;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -111,6 +115,46 @@ impl TransactionCoordinator {
     /// All keys in a transaction get the same commit version.
     pub fn allocate_commit_version(&self) -> u64 {
         self.manager.allocate_version()
+    }
+
+    /// Commit a transaction through the concurrency layer
+    ///
+    /// Delegates the full commit protocol to TransactionManager:
+    /// - Per-run commit locking (TOCTOU prevention)
+    /// - Validation (first-committer-wins)
+    /// - Version allocation
+    /// - WAL writing (when WAL is provided)
+    /// - Storage application
+    ///
+    /// This method also handles:
+    /// - Recording commit/abort metrics
+    /// - Converting CommitError to StrataError
+    ///
+    /// # Arguments
+    /// * `txn` - Transaction to commit (must be in Active state)
+    /// * `store` - Storage to validate against and apply writes to
+    /// * `wal` - Optional WAL for durability. Pass `None` for ephemeral databases
+    ///           or when durability is not required.
+    ///
+    /// # Returns
+    /// * `Ok(commit_version)` - Transaction committed successfully
+    /// * `Err(StrataError)` - Validation conflict, WAL error, or invalid state
+    pub fn commit<S: Storage>(
+        &self,
+        txn: &mut TransactionContext,
+        store: &S,
+        wal: Option<&WAL>,
+    ) -> StrataResult<u64> {
+        match self.manager.commit(txn, store, wal) {
+            Ok(version) => {
+                self.record_commit();
+                Ok(version)
+            }
+            Err(e) => {
+                self.record_abort();
+                Err(StrataError::from(e))
+            }
+        }
     }
 
     /// Record transaction start
