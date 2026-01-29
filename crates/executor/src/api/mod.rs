@@ -107,27 +107,34 @@ mod tests {
 
         let value = db.kv_get("key1").unwrap();
         assert!(value.is_some());
-        assert_eq!(value.unwrap().value, Value::String("hello".into()));
+        assert_eq!(value.unwrap(), Value::String("hello".into()));
     }
 
     #[test]
-    fn test_kv_exists_delete() {
+    fn test_kv_delete() {
         let db = create_strata();
 
         db.kv_put("key1", Value::Int(42)).unwrap();
-        assert!(db.kv_exists("key1").unwrap());
+        assert!(db.kv_get("key1").unwrap().is_some());
 
-        db.kv_delete("key1").unwrap();
-        assert!(!db.kv_exists("key1").unwrap());
+        let existed = db.kv_delete("key1").unwrap();
+        assert!(existed);
+        assert!(db.kv_get("key1").unwrap().is_none());
     }
 
     #[test]
-    fn test_kv_incr() {
+    fn test_kv_list() {
         let db = create_strata();
 
-        db.kv_put("counter", Value::Int(10)).unwrap();
-        let val = db.kv_incr("counter", 5).unwrap();
-        assert_eq!(val, 15);
+        db.kv_put("user:1", Value::Int(1)).unwrap();
+        db.kv_put("user:2", Value::Int(2)).unwrap();
+        db.kv_put("task:1", Value::Int(3)).unwrap();
+
+        let user_keys = db.kv_list(Some("user:")).unwrap();
+        assert_eq!(user_keys.len(), 2);
+
+        let all_keys = db.kv_list(None).unwrap();
+        assert_eq!(all_keys.len(), 3);
     }
 
     #[test]

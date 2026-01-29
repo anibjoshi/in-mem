@@ -98,22 +98,22 @@ fn test_execute_many_preserves_order() {
 
     // Verify order is preserved
     match &get_results[0] {
-        Ok(Output::MaybeVersioned(Some(v))) => {
-            assert_eq!(v.value, Value::Int(3));
+        Ok(Output::Maybe(Some(v))) => {
+            assert_eq!(v, &Value::Int(3));
         }
         _ => panic!("Expected Int(3) for key3"),
     }
 
     match &get_results[1] {
-        Ok(Output::MaybeVersioned(Some(v))) => {
-            assert_eq!(v.value, Value::Int(1));
+        Ok(Output::Maybe(Some(v))) => {
+            assert_eq!(v, &Value::Int(1));
         }
         _ => panic!("Expected Int(1) for key1"),
     }
 
     match &get_results[2] {
-        Ok(Output::MaybeVersioned(Some(v))) => {
-            assert_eq!(v.value, Value::Int(2));
+        Ok(Output::Maybe(Some(v))) => {
+            assert_eq!(v, &Value::Int(2));
         }
         _ => panic!("Expected Int(2) for key2"),
     }
@@ -123,20 +123,19 @@ fn test_execute_many_preserves_order() {
 fn test_execute_many_continues_after_error() {
     let executor = create_test_executor();
 
-    // Mix of valid and invalid commands
+    // Mix of valid and invalid commands - use an invalid key format to trigger error
     let results = executor.execute_many(vec![
         Command::Ping, // Should succeed
-        Command::KvGetAt {
-            run: Some(RunId::from("nonexistent-run-12345")),
-            key: "key".to_string(),
-            version: 1,
-        }, // Should fail (invalid run)
+        Command::KvGet {
+            run: Some(RunId::from("default")),
+            key: "".to_string(), // Empty key should fail validation
+        },
         Command::Ping, // Should succeed even after previous failure
     ]);
 
     assert_eq!(results.len(), 3);
     assert!(results[0].is_ok(), "First Ping should succeed");
-    assert!(results[1].is_err(), "Invalid run should fail");
+    assert!(results[1].is_err(), "Empty key should fail");
     assert!(results[2].is_ok(), "Second Ping should succeed despite previous error");
 }
 
@@ -151,18 +150,17 @@ fn test_execute_many_mixed_operations() {
             key: "counter".to_string(),
             value: Value::Int(10),
         },
-        // Check it exists
-        Command::KvExists {
+        // Get it
+        Command::KvGet {
             run: Some(RunId::from("default")),
             key: "counter".to_string(),
         },
-        // Increment it
-        Command::KvIncr {
+        // Delete it
+        Command::KvDelete {
             run: Some(RunId::from("default")),
             key: "counter".to_string(),
-            delta: 5,
         },
-        // Get the new value
+        // Get again (should be None)
         Command::KvGet {
             run: Some(RunId::from("default")),
             key: "counter".to_string(),
@@ -172,24 +170,22 @@ fn test_execute_many_mixed_operations() {
     assert_eq!(results.len(), 4);
     assert!(results[0].is_ok()); // Put
 
-    // Exists should return true
+    // Get should return the value
     match &results[1] {
-        Ok(Output::Bool(exists)) => assert!(*exists),
+        Ok(Output::Maybe(Some(v))) => assert_eq!(v, &Value::Int(10)),
+        _ => panic!("Expected Maybe(Some(Int(10)))"),
+    }
+
+    // Delete should return true (existed)
+    match &results[2] {
+        Ok(Output::Bool(deleted)) => assert!(*deleted),
         _ => panic!("Expected Bool(true)"),
     }
 
-    // Incr should return 15
-    match &results[2] {
-        Ok(Output::Int(val)) => assert_eq!(*val, 15),
-        _ => panic!("Expected Int(15)"),
-    }
-
-    // Get should return 15
+    // Get after delete should return None
     match &results[3] {
-        Ok(Output::MaybeVersioned(Some(v))) => {
-            assert_eq!(v.value, Value::Int(15));
-        }
-        _ => panic!("Expected Int(15)"),
+        Ok(Output::Maybe(None)) => {}
+        _ => panic!("Expected Maybe(None) after delete"),
     }
 }
 

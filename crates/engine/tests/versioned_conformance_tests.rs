@@ -175,11 +175,9 @@ mod invariant_2_versioned {
 
         kv.put(&run_id, "key", Value::Int(42)).unwrap();
 
-        let versioned = kv.get(&run_id, "key").unwrap().unwrap();
-        // Has value
-        assert!(matches!(versioned.value, Value::Int(42)));
-        // Has version info via the Versioned wrapper
-        assert!(versioned.timestamp.as_micros() > 0);
+        let value = kv.get(&run_id, "key").unwrap().unwrap();
+        // Has value (MVP API returns Value directly, not Versioned<Value>)
+        assert!(matches!(value, Value::Int(42)));
     }
 
     #[test]
@@ -509,7 +507,7 @@ mod invariant_4_lifecycle {
         // Evolve (update)
         kv.put(&run_id, "key", Value::String("v2".into())).unwrap();
         let v = kv.get(&run_id, "key").unwrap().unwrap();
-        assert!(matches!(v.value, Value::String(s) if s == "v2"));
+        assert!(matches!(v, Value::String(s) if s == "v2"));
 
         // Destroy (delete)
         let deleted = kv.delete(&run_id, "key").unwrap();
@@ -672,8 +670,8 @@ mod invariant_5_run_scoped {
         let v1 = kv.get(&run1, "key").unwrap().unwrap();
         let v2 = kv.get(&run2, "key").unwrap().unwrap();
 
-        assert!(matches!(v1.value, Value::String(s) if s == "value-1"));
-        assert!(matches!(v2.value, Value::String(s) if s == "value-2"));
+        assert!(matches!(v1, Value::String(s) if s == "value-1"));
+        assert!(matches!(v2, Value::String(s) if s == "value-2"));
     }
 
     #[test]
@@ -793,11 +791,12 @@ mod invariant_6_introspectable {
         let (db, run_id) = setup();
         let kv = KVStore::new(db);
 
-        assert!(!kv.exists(&run_id, "key").unwrap());
+        // Check existence via get()
+        assert!(kv.get(&run_id, "key").unwrap().is_none());
 
         kv.put(&run_id, "key", Value::Int(1)).unwrap();
 
-        assert!(kv.exists(&run_id, "key").unwrap());
+        assert!(kv.get(&run_id, "key").unwrap().is_some());
     }
 
     #[test]
@@ -893,9 +892,9 @@ mod invariant_7_read_write {
         let v3 = kv.get(&run_id, "key").unwrap().unwrap();
 
         // All reads return same value (no modification)
-        assert!(matches!(v1.value, Value::Int(42)));
-        assert!(matches!(v2.value, Value::Int(42)));
-        assert!(matches!(v3.value, Value::Int(42)));
+        assert!(matches!(v1, Value::Int(42)));
+        assert!(matches!(v2, Value::Int(42)));
+        assert!(matches!(v3, Value::Int(42)));
     }
 
     #[test]

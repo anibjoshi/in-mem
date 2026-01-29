@@ -47,8 +47,8 @@ fn test_kv_isolation() {
     kv.put(&run2, "key", Value::Int(2)).unwrap();
 
     // Each run sees ONLY its own data
-    assert_eq!(kv.get(&run1, "key").unwrap().map(|v| v.value), Some(Value::Int(1)));
-    assert_eq!(kv.get(&run2, "key").unwrap().map(|v| v.value), Some(Value::Int(2)));
+    assert_eq!(kv.get(&run1, "key").unwrap(), Some(Value::Int(1)));
+    assert_eq!(kv.get(&run2, "key").unwrap(), Some(Value::Int(2)));
 
     // List shows only own keys
     let run1_keys = kv.list(&run1, None).unwrap();
@@ -181,8 +181,8 @@ fn test_cross_run_query_isolation() {
     assert_eq!(event_log.len(&run2).unwrap(), 5);
 
     // Verify values are isolated
-    assert_eq!(kv.get(&run1, "key0").unwrap().map(|v| v.value), Some(Value::Int(0)));
-    assert_eq!(kv.get(&run2, "key0").unwrap().map(|v| v.value), Some(Value::Int(100)));
+    assert_eq!(kv.get(&run1, "key0").unwrap(), Some(Value::Int(0)));
+    assert_eq!(kv.get(&run2, "key0").unwrap(), Some(Value::Int(100)));
 
     // Run1 cannot see run2's keys that don't exist in run1
     // (run2 only has key0-key4, run1 has key0-key9)
@@ -237,7 +237,7 @@ fn test_run_delete_isolation() {
     assert!(!state_cell.exists(&run1, "cell").unwrap());
 
     // run2 data is UNTOUCHED
-    assert_eq!(kv.get(&run2, "key").unwrap().map(|v| v.value), Some(Value::Int(2)));
+    assert_eq!(kv.get(&run2, "key").unwrap(), Some(Value::Int(2)));
     assert_eq!(event_log.len(&run2).unwrap(), 1);
     assert!(state_cell.exists(&run2, "cell").unwrap());
 }
@@ -259,8 +259,8 @@ fn test_many_runs_isolation() {
 
     // Verify each run sees only its data
     for (i, run_id) in runs.iter().enumerate() {
-        let versioned = kv.get(run_id, "value").unwrap().unwrap();
-        assert_eq!(versioned.value, Value::Int(i as i64));
+        let value = kv.get(run_id, "value").unwrap().unwrap();
+        assert_eq!(value, Value::Int(i as i64));
 
         let keys = kv.list(run_id, None).unwrap();
         assert_eq!(keys.len(), 2);

@@ -54,7 +54,7 @@ fn test_kv_survives_recovery() {
 
     // Verify before crash
     assert_eq!(
-        kv.get(&run_id, "key1").unwrap().map(|v| v.value),
+        kv.get(&run_id, "key1").unwrap(),
         Some(Value::String("value1".into()))
     );
 
@@ -68,12 +68,12 @@ fn test_kv_survives_recovery() {
 
     // Data survived
     assert_eq!(
-        kv.get(&run_id, "key1").unwrap().map(|v| v.value),
+        kv.get(&run_id, "key1").unwrap(),
         Some(Value::String("value1".into()))
     );
-    assert_eq!(kv.get(&run_id, "key2").unwrap().map(|v| v.value), Some(Value::Int(42)));
+    assert_eq!(kv.get(&run_id, "key2").unwrap(), Some(Value::Int(42)));
     assert_eq!(
-        kv.get(&run_id, "nested/path/key").unwrap().map(|v| v.value),
+        kv.get(&run_id, "nested/path/key").unwrap(),
         Some(Value::Bool(true))
     );
 
@@ -81,7 +81,7 @@ fn test_kv_survives_recovery() {
     kv.put(&run_id, "key3", Value::String("after_recovery".into()))
         .unwrap();
     assert_eq!(
-        kv.get(&run_id, "key3").unwrap().map(|v| v.value),
+        kv.get(&run_id, "key3").unwrap(),
         Some(Value::String("after_recovery".into()))
     );
 }
@@ -434,7 +434,7 @@ fn test_run_delete_survives_recovery() {
 
     // run2 data preserved
     assert!(run_index.get_run("run2").unwrap().is_some());
-    assert_eq!(kv.get(&run2, "key").unwrap().map(|v| v.value), Some(Value::Int(2)));
+    assert_eq!(kv.get(&run2, "key").unwrap(), Some(Value::Int(2)));
 }
 
 /// Test cross-primitive transaction survives recovery
@@ -472,7 +472,7 @@ fn test_cross_primitive_transaction_survives_recovery() {
 
     // All operations survived
     assert_eq!(
-        kv.get(&run_id, "txn_key").unwrap().map(|v| v.value),
+        kv.get(&run_id, "txn_key").unwrap(),
         Some(Value::String("txn_value".into()))
     );
     assert_eq!(event_log.len(&run_id).unwrap(), 1);
@@ -500,7 +500,7 @@ fn test_multiple_recovery_cycles() {
         let kv = KVStore::new(db.clone());
 
         // Verify cycle 1 data
-        assert_eq!(kv.get(&run_id, "cycle1").unwrap().map(|v| v.value), Some(Value::Int(1)));
+        assert_eq!(kv.get(&run_id, "cycle1").unwrap(), Some(Value::Int(1)));
 
         // Add cycle 2 data
         kv.put(&run_id, "cycle2", Value::Int(2)).unwrap();
@@ -512,8 +512,8 @@ fn test_multiple_recovery_cycles() {
         let kv = KVStore::new(db.clone());
 
         // Verify all previous data
-        assert_eq!(kv.get(&run_id, "cycle1").unwrap().map(|v| v.value), Some(Value::Int(1)));
-        assert_eq!(kv.get(&run_id, "cycle2").unwrap().map(|v| v.value), Some(Value::Int(2)));
+        assert_eq!(kv.get(&run_id, "cycle1").unwrap(), Some(Value::Int(1)));
+        assert_eq!(kv.get(&run_id, "cycle2").unwrap(), Some(Value::Int(2)));
 
         // Add cycle 3 data
         kv.put(&run_id, "cycle3", Value::Int(3)).unwrap();
@@ -524,9 +524,9 @@ fn test_multiple_recovery_cycles() {
         let db = Arc::new(Database::open(&path).unwrap());
         let kv = KVStore::new(db.clone());
 
-        assert_eq!(kv.get(&run_id, "cycle1").unwrap().map(|v| v.value), Some(Value::Int(1)));
-        assert_eq!(kv.get(&run_id, "cycle2").unwrap().map(|v| v.value), Some(Value::Int(2)));
-        assert_eq!(kv.get(&run_id, "cycle3").unwrap().map(|v| v.value), Some(Value::Int(3)));
+        assert_eq!(kv.get(&run_id, "cycle1").unwrap(), Some(Value::Int(1)));
+        assert_eq!(kv.get(&run_id, "cycle2").unwrap(), Some(Value::Int(2)));
+        assert_eq!(kv.get(&run_id, "cycle3").unwrap(), Some(Value::Int(3)));
     }
 }
 
@@ -579,7 +579,7 @@ fn test_all_primitives_recover_together() {
 
         // KV
         assert_eq!(
-            kv.get(&run_id, "full_key").unwrap().map(|v| v.value),
+            kv.get(&run_id, "full_key").unwrap(),
             Some(Value::String("full_value".into()))
         );
 
