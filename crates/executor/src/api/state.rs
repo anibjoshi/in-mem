@@ -1,4 +1,6 @@
-//! State cell operations.
+//! State cell operations (4 MVP).
+//!
+//! MVP: set, read, cas, init
 
 use super::Strata;
 use crate::{Command, Error, Output, Result, Value};
@@ -6,10 +8,10 @@ use crate::types::*;
 
 impl Strata {
     // =========================================================================
-    // State Operations (8)
+    // State Operations (4 MVP)
     // =========================================================================
 
-    /// Set a state cell value.
+    /// Set a state cell value (unconditional write).
     pub fn state_set(&self, cell: &str, value: impl Into<Value>) -> Result<u64> {
         match self.executor.execute(Command::StateSet {
             run: self.run_id(),
@@ -23,7 +25,7 @@ impl Strata {
         }
     }
 
-    /// Get a state cell value.
+    /// Read a state cell value.
     pub fn state_read(&self, cell: &str) -> Result<Option<VersionedValue>> {
         match self.executor.execute(Command::StateRead {
             run: self.run_id(),
@@ -56,52 +58,6 @@ impl Strata {
         }
     }
 
-    /// Delete a state cell.
-    pub fn state_delete(&self, cell: &str) -> Result<bool> {
-        match self.executor.execute(Command::StateDelete {
-            run: self.run_id(),
-            cell: cell.to_string(),
-        })? {
-            Output::Bool(deleted) => Ok(deleted),
-            _ => Err(Error::Internal {
-                reason: "Unexpected output for StateDelete".into(),
-            }),
-        }
-    }
-
-    /// Check if a state cell exists.
-    pub fn state_exists(&self, cell: &str) -> Result<bool> {
-        match self.executor.execute(Command::StateExists {
-            run: self.run_id(),
-            cell: cell.to_string(),
-        })? {
-            Output::Bool(exists) => Ok(exists),
-            _ => Err(Error::Internal {
-                reason: "Unexpected output for StateExists".into(),
-            }),
-        }
-    }
-
-    /// Get version history for a state cell.
-    pub fn state_history(
-        &self,
-        cell: &str,
-        limit: Option<u64>,
-        before: Option<u64>,
-    ) -> Result<Vec<VersionedValue>> {
-        match self.executor.execute(Command::StateHistory {
-            run: self.run_id(),
-            cell: cell.to_string(),
-            limit,
-            before,
-        })? {
-            Output::VersionedValues(vals) => Ok(vals),
-            _ => Err(Error::Internal {
-                reason: "Unexpected output for StateHistory".into(),
-            }),
-        }
-    }
-
     /// Initialize a state cell (only if it doesn't exist).
     pub fn state_init(&self, cell: &str, value: impl Into<Value>) -> Result<u64> {
         match self.executor.execute(Command::StateInit {
@@ -112,18 +68,6 @@ impl Strata {
             Output::Version(v) => Ok(v),
             _ => Err(Error::Internal {
                 reason: "Unexpected output for StateInit".into(),
-            }),
-        }
-    }
-
-    /// List all state cell names.
-    pub fn state_list(&self) -> Result<Vec<String>> {
-        match self.executor.execute(Command::StateList {
-            run: self.run_id(),
-        })? {
-            Output::Strings(names) => Ok(names),
-            _ => Err(Error::Internal {
-                reason: "Unexpected output for StateList".into(),
             }),
         }
     }

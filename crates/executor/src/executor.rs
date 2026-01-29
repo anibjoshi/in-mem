@@ -195,7 +195,7 @@ impl Executor {
                 crate::handlers::event::event_verify_chain(&self.primitives, run)
             }
 
-            // State commands
+            // State commands (4 MVP)
             Command::StateSet { run, cell, value } => {
                 let run = run.expect("resolved by resolve_default_run");
                 crate::handlers::state::state_set(&self.primitives, run, cell, value)
@@ -213,30 +213,9 @@ impl Executor {
                 let run = run.expect("resolved by resolve_default_run");
                 crate::handlers::state::state_cas(&self.primitives, run, cell, expected_counter, value)
             }
-            Command::StateDelete { run, cell } => {
-                let run = run.expect("resolved by resolve_default_run");
-                crate::handlers::state::state_delete(&self.primitives, run, cell)
-            }
-            Command::StateExists { run, cell } => {
-                let run = run.expect("resolved by resolve_default_run");
-                crate::handlers::state::state_exists(&self.primitives, run, cell)
-            }
-            Command::StateHistory {
-                run,
-                cell,
-                limit,
-                before,
-            } => {
-                let run = run.expect("resolved by resolve_default_run");
-                crate::handlers::state::state_history(&self.primitives, run, cell, limit, before)
-            }
             Command::StateInit { run, cell, value } => {
                 let run = run.expect("resolved by resolve_default_run");
                 crate::handlers::state::state_init(&self.primitives, run, cell, value)
-            }
-            Command::StateList { run } => {
-                let run = run.expect("resolved by resolve_default_run");
-                crate::handlers::state::state_list(&self.primitives, run)
             }
 
             // Vector commands

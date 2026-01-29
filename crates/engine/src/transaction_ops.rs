@@ -84,7 +84,7 @@ pub trait TransactionOps {
     fn event_len(&self) -> Result<u64, StrataError>;
 
     // =========================================================================
-    // State Operations (Phase 3)
+    // State Operations (4 MVP)
     // =========================================================================
 
     /// Read a state cell
@@ -100,12 +100,6 @@ pub trait TransactionOps {
         expected_version: Version,
         value: Value,
     ) -> Result<Version, StrataError>;
-
-    /// Delete a state cell
-    fn state_delete(&mut self, name: &str) -> Result<bool, StrataError>;
-
-    /// Check if a state cell exists
-    fn state_exists(&self, name: &str) -> Result<bool, StrataError>;
 
     // =========================================================================
     // Json Operations (Phase 4)
@@ -269,14 +263,6 @@ mod tests {
             Err(StrataError::Internal { message: "state_cas not implemented in mock".to_string() })
         }
 
-        fn state_delete(&mut self, _name: &str) -> Result<bool, StrataError> {
-            Err(StrataError::Internal { message: "state_delete not implemented in mock".to_string() })
-        }
-
-        fn state_exists(&self, _name: &str) -> Result<bool, StrataError> {
-            Err(StrataError::Internal { message: "state_exists not implemented in mock".to_string() })
-        }
-
         // Json operations
         fn json_create(&mut self, _doc_id: &str, _value: JsonValue) -> Result<Version, StrataError> {
             Err(StrataError::Internal { message: "json_create not implemented in mock".to_string() })
@@ -435,9 +421,6 @@ mod tests {
 
         // State operations should return unimplemented error
         let result = ops.state_read("test");
-        assert!(result.is_err());
-
-        let result = ops.state_exists("test");
         assert!(result.is_err());
 
         // Json operations should return unimplemented error

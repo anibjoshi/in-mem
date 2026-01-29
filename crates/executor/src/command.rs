@@ -26,7 +26,7 @@ use crate::types::*;
 /// | KV | 4 | Key-value operations |
 /// | JSON | 17 | JSON document operations |
 /// | Event | 11 | Event log operations |
-/// | State | 8 | State cell operations |
+/// | State | 4 | State cell operations (MVP) |
 /// | Vector | 19 | Vector store operations |
 /// | Run | 5 | Run lifecycle operations (MVP) |
 /// | Transaction | 5 | Transaction control |
@@ -234,11 +234,10 @@ pub enum Command {
         run: Option<RunId>,
     },
 
-    // ==================== State (8) ====================
-    // Note: state_transition, state_transition_or_init, state_get_or_init
-    // are excluded as they require closures
+    // ==================== State (4 MVP) ====================
+    // MVP: set, read, cas, init
 
-    /// Set a state cell value.
+    /// Set a state cell value (unconditional write).
     /// Returns: `Output::Version`
     StateSet {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -247,7 +246,7 @@ pub enum Command {
         value: Value,
     },
 
-    /// Get a state cell value.
+    /// Read a state cell value.
     /// Returns: `Output::MaybeVersioned`
     StateRead {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -265,32 +264,6 @@ pub enum Command {
         value: Value,
     },
 
-    /// Delete a state cell.
-    /// Returns: `Output::Bool`
-    StateDelete {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        run: Option<RunId>,
-        cell: String,
-    },
-
-    /// Check if a state cell exists.
-    /// Returns: `Output::Bool`
-    StateExists {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        run: Option<RunId>,
-        cell: String,
-    },
-
-    /// Get version history for a state cell.
-    /// Returns: `Output::VersionedValues`
-    StateHistory {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        run: Option<RunId>,
-        cell: String,
-        limit: Option<u64>,
-        before: Option<u64>,
-    },
-
     /// Initialize a state cell (only if it doesn't exist).
     /// Returns: `Output::Version`
     StateInit {
@@ -298,13 +271,6 @@ pub enum Command {
         run: Option<RunId>,
         cell: String,
         value: Value,
-    },
-
-    /// List all state cell names.
-    /// Returns: `Output::Strings`
-    StateList {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        run: Option<RunId>,
     },
 
     // ==================== Vector (19) ====================
@@ -615,15 +581,11 @@ impl Command {
             | Command::EventStreams { run, .. }
             | Command::EventHead { run, .. }
             | Command::EventVerifyChain { run, .. }
-            // State
+            // State (4 MVP)
             | Command::StateSet { run, .. }
             | Command::StateRead { run, .. }
             | Command::StateCas { run, .. }
-            | Command::StateDelete { run, .. }
-            | Command::StateExists { run, .. }
-            | Command::StateHistory { run, .. }
             | Command::StateInit { run, .. }
-            | Command::StateList { run, .. }
             // Vector
             | Command::VectorUpsert { run, .. }
             | Command::VectorGet { run, .. }
