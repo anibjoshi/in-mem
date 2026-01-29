@@ -16,8 +16,8 @@
 //! HybridSearch is STATELESS. It holds only references to Database and primitives.
 
 use crate::fuser::{Fuser, SimpleFuser};
-use strata_core::error::Result;
-use strata_engine::search_types::{SearchBudget, SearchRequest, SearchResponse, SearchStats};
+use strata_core::StrataResult;
+use strata_engine::search::{SearchBudget, SearchRequest, SearchResponse, SearchStats};
 use strata_core::PrimitiveType;
 use strata_engine::Database;
 use strata_engine::{EventLog, JsonStore, KVStore, RunIndex, StateCell, VectorStore};
@@ -125,7 +125,7 @@ impl HybridSearch {
     /// Per Rule 4: Each primitive's search() uses its own snapshot.
     /// For true cross-primitive consistency, primitives would need
     /// search_with_snapshot() methods. This is acceptable for M6.
-    pub fn search(&self, req: &SearchRequest) -> Result<SearchResponse> {
+    pub fn search(&self, req: &SearchRequest) -> StrataResult<SearchResponse> {
         let start = Instant::now();
 
         // 1. Select primitives
@@ -228,7 +228,7 @@ impl HybridSearch {
         &self,
         primitive: PrimitiveType,
         req: &SearchRequest,
-    ) -> Result<SearchResponse> {
+    ) -> StrataResult<SearchResponse> {
         use strata_engine::Searchable;
 
         match primitive {

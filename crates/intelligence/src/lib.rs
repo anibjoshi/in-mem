@@ -75,7 +75,7 @@ impl DatabaseSearchExt for Arc<Database> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use strata_engine::search_types::SearchRequest;
+    use strata_engine::search::SearchRequest;
     use strata_core::types::RunId;
 
     #[test]

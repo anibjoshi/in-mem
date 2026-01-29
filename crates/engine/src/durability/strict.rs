@@ -19,7 +19,7 @@
 
 use super::Durability;
 use strata_concurrency::{TransactionContext, TransactionWALWriter};
-use strata_core::error::Result;
+use strata_core::StrataResult;
 use parking_lot::Mutex;
 use strata_durability::wal::WAL;
 use std::sync::Arc;
@@ -84,7 +84,7 @@ impl Durability for StrictDurability {
     /// # Errors
     ///
     /// Returns error if WAL write or fsync fails.
-    fn persist(&self, txn: &TransactionContext, commit_version: u64) -> Result<()> {
+    fn persist(&self, txn: &TransactionContext, commit_version: u64) -> StrataResult<()> {
         // Acquire WAL lock (parking_lot::Mutex doesn't poison)
         let mut wal = self.wal.lock();
 
@@ -131,7 +131,7 @@ impl Durability for StrictDurability {
     /// For Strict mode, this is mostly a no-op since every commit
     /// already fsyncs. We still call fsync one more time to ensure
     /// any buffered filesystem data is persisted.
-    fn shutdown(&self) -> Result<()> {
+    fn shutdown(&self) -> StrataResult<()> {
         // parking_lot::Mutex doesn't poison, so no error handling needed
         let wal = self.wal.lock();
         // Final fsync to ensure any buffered data is persisted

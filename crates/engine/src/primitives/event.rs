@@ -38,7 +38,7 @@ use crate::primitives::extensions::EventLogExt;
 use sha2::{Digest, Sha256};
 use strata_concurrency::TransactionContext;
 use strata_core::contract::{Timestamp, Version, Versioned};
-use strata_core::error::Result;
+use strata_core::StrataResult;
 use strata_core::StrataError;
 use strata_core::types::{Key, Namespace, RunId};
 use strata_core::value::Value;
@@ -51,8 +51,7 @@ use std::sync::Arc;
 pub use strata_core::primitives::Event;
 
 /// Hash version constants
-const HASH_VERSION_LEGACY: u8 = 0; // DefaultHasher (deprecated, for migration)
-const HASH_VERSION_SHA256: u8 = 1; // SHA-256 (current)
+const HASH_VERSION_SHA256: u8 = 1; // SHA-256
 
 /// Per-stream metadata for O(1) access to stream statistics
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,11 +112,11 @@ impl Default for EventLogMeta {
     }
 }
 
-/// Compute event hash using SHA-256 (version 1)
+/// Compute event hash using SHA-256
 ///
 /// Deterministic across platforms and Rust versions.
 /// Format: SHA256(sequence || event_type_len || event_type || timestamp || payload_len || payload || prev_hash)
-fn compute_event_hash_v1(
+fn compute_event_hash(
     sequence: u64,
     event_type: &str,
     payload: &Value,
@@ -145,51 +144,6 @@ fn compute_event_hash_v1(
     hasher.update(prev_hash);
 
     hasher.finalize().into()
-}
-
-/// Compute event hash using legacy DefaultHasher (version 0)
-///
-/// DEPRECATED: Only used for verifying events created before SHA-256 migration.
-/// New events should always use compute_event_hash_v1.
-#[allow(dead_code)]
-fn compute_event_hash_v0(
-    sequence: u64,
-    event_type: &str,
-    payload: &Value,
-    timestamp: u64,
-    prev_hash: &[u8; 32],
-) -> [u8; 32] {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let mut hasher = DefaultHasher::new();
-    sequence.hash(&mut hasher);
-    event_type.hash(&mut hasher);
-    serde_json::to_string(payload)
-        .unwrap_or_default()
-        .hash(&mut hasher);
-    timestamp.hash(&mut hasher);
-    prev_hash.hash(&mut hasher);
-
-    let h = hasher.finish();
-    let mut result = [0u8; 32];
-    result[0..8].copy_from_slice(&h.to_le_bytes());
-    result
-}
-
-/// Compute event hash using the specified version
-fn compute_event_hash(
-    hash_version: u8,
-    sequence: u64,
-    event_type: &str,
-    payload: &Value,
-    timestamp: u64,
-    prev_hash: &[u8; 32],
-) -> [u8; 32] {
-    match hash_version {
-        HASH_VERSION_LEGACY => compute_event_hash_v0(sequence, event_type, payload, timestamp, prev_hash),
-        _ => compute_event_hash_v1(sequence, event_type, payload, timestamp, prev_hash),
-    }
 }
 
 /// Validation error for EventLog operations
@@ -347,7 +301,7 @@ impl EventLog {
         run_id: &RunId,
         event_type: &str,
         payload: Value,
-    ) -> Result<Version> {
+    ) -> StrataResult<Version> {
         // Validate inputs before entering transaction
         validate_event_type(event_type)
             .map_err(|e| StrataError::invalid_input(e.to_string()))?;
@@ -383,7 +337,6 @@ impl EventLog {
                     .as_micros() as u64;
 
                 let hash = compute_event_hash(
-                    meta.hash_version,
                     sequence,
                     &event_type_owned,
                     &payload,
@@ -425,11 +378,11 @@ impl EventLog {
             })?;
 
         // Update inverted index (zero overhead when disabled)
-        let idx = self.db.extension::<crate::primitives::index::InvertedIndex>();
+        let idx = self.db.extension::<crate::search::InvertedIndex>();
         if idx.is_enabled() {
             let text = format!("{} {}", event_type, serde_json::to_string(&payload).unwrap_or_default());
             if let Version::Sequence(seq) = result {
-                let entity_ref = crate::search_types::EntityRef::Event {
+                let entity_ref = crate::search::EntityRef::Event {
                     run_id: *run_id,
                     sequence: seq,
                 };
@@ -445,7 +398,7 @@ impl EventLog {
     /// Read a single event by sequence number.
     ///
     /// Returns Versioned<Event> if found.
-    pub fn read(&self, run_id: &RunId, sequence: u64) -> Result<Option<Versioned<Event>>> {
+    pub fn read(&self, run_id: &RunId, sequence: u64) -> StrataResult<Option<Versioned<Event>>> {
         self.db.transaction(*run_id, |txn| {
             let ns = self.namespace_for_run(run_id);
             let event_key = Key::new_event(ns, sequence);
@@ -466,7 +419,7 @@ impl EventLog {
     }
 
     /// Get the current length of the log.
-    pub fn len(&self, run_id: &RunId) -> Result<u64> {
+    pub fn len(&self, run_id: &RunId) -> StrataResult<u64> {
         self.db.transaction(*run_id, |txn| {
             let ns = self.namespace_for_run(run_id);
             let meta_key = Key::new_event_meta(ns);
@@ -485,7 +438,7 @@ impl EventLog {
     /// Read events filtered by type
     ///
     /// Returns Vec<Versioned<Event>> for events matching the type.
-    pub fn read_by_type(&self, run_id: &RunId, event_type: &str) -> Result<Vec<Versioned<Event>>> {
+    pub fn read_by_type(&self, run_id: &RunId, event_type: &str) -> StrataResult<Vec<Versioned<Event>>> {
         self.db.transaction(*run_id, |txn| {
             let ns = self.namespace_for_run(run_id);
             let meta_key = Key::new_event_meta(ns.clone());
@@ -520,11 +473,11 @@ impl EventLog {
 
 // ========== Searchable Trait Implementation ==========
 
-impl crate::primitives::searchable::Searchable for EventLog {
+impl crate::search::Searchable for EventLog {
     fn search(
         &self,
         _req: &crate::SearchRequest,
-    ) -> strata_core::error::Result<crate::SearchResponse> {
+    ) -> strata_core::StrataResult<crate::SearchResponse> {
         // Search is handled by the intelligence layer, not the primitive
         Ok(crate::SearchResponse::empty())
     }
@@ -537,7 +490,7 @@ impl crate::primitives::searchable::Searchable for EventLog {
 // ========== EventLogExt Implementation ==========
 
 impl EventLogExt for TransactionContext {
-    fn event_append(&mut self, event_type: &str, payload: Value) -> Result<u64> {
+    fn event_append(&mut self, event_type: &str, payload: Value) -> StrataResult<u64> {
         // Validate inputs
         validate_event_type(event_type)
             .map_err(|e| StrataError::invalid_input(e.to_string()))?;
@@ -561,7 +514,6 @@ impl EventLogExt for TransactionContext {
             .as_micros() as u64;
 
         let hash = compute_event_hash(
-            meta.hash_version,
             sequence,
             event_type,
             &payload,
@@ -603,7 +555,7 @@ impl EventLogExt for TransactionContext {
         Ok(sequence)
     }
 
-    fn event_read(&mut self, sequence: u64) -> Result<Option<Value>> {
+    fn event_read(&mut self, sequence: u64) -> StrataResult<Option<Value>> {
         let ns = Namespace::for_run(self.run_id);
         let event_key = Key::new_event(ns, sequence);
         self.get(&event_key)
@@ -900,14 +852,14 @@ mod tests {
     #[test]
     fn test_sha256_hash_determinism() {
         // Same inputs should produce same hash
-        let hash1 = compute_event_hash_v1(
+        let hash1 = compute_event_hash(
             42,
             "test_event",
             &int_payload(100),
             1234567890,
             &[0u8; 32],
         );
-        let hash2 = compute_event_hash_v1(
+        let hash2 = compute_event_hash(
             42,
             "test_event",
             &int_payload(100),
@@ -919,28 +871,28 @@ mod tests {
 
     #[test]
     fn test_sha256_hash_differs_for_different_inputs() {
-        let base = compute_event_hash_v1(42, "test", &empty_payload(), 1234567890, &[0u8; 32]);
+        let base = compute_event_hash(42, "test", &empty_payload(), 1234567890, &[0u8; 32]);
 
         // Different sequence
-        let diff_seq = compute_event_hash_v1(43, "test", &empty_payload(), 1234567890, &[0u8; 32]);
+        let diff_seq = compute_event_hash(43, "test", &empty_payload(), 1234567890, &[0u8; 32]);
         assert_ne!(base, diff_seq);
 
         // Different event type
-        let diff_type = compute_event_hash_v1(42, "other", &empty_payload(), 1234567890, &[0u8; 32]);
+        let diff_type = compute_event_hash(42, "other", &empty_payload(), 1234567890, &[0u8; 32]);
         assert_ne!(base, diff_type);
 
         // Different timestamp
-        let diff_ts = compute_event_hash_v1(42, "test", &empty_payload(), 1234567891, &[0u8; 32]);
+        let diff_ts = compute_event_hash(42, "test", &empty_payload(), 1234567891, &[0u8; 32]);
         assert_ne!(base, diff_ts);
 
         // Different prev_hash
-        let diff_prev = compute_event_hash_v1(42, "test", &empty_payload(), 1234567890, &[1u8; 32]);
+        let diff_prev = compute_event_hash(42, "test", &empty_payload(), 1234567890, &[1u8; 32]);
         assert_ne!(base, diff_prev);
     }
 
     #[test]
     fn test_sha256_uses_full_32_bytes() {
-        let hash = compute_event_hash_v1(42, "test", &empty_payload(), 1234567890, &[0u8; 32]);
+        let hash = compute_event_hash(42, "test", &empty_payload(), 1234567890, &[0u8; 32]);
 
         // SHA-256 should use all 32 bytes, not just the first 8 like DefaultHasher
         // Check that bytes beyond the first 8 are non-zero (statistically likely)

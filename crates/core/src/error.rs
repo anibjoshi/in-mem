@@ -391,13 +391,6 @@ impl std::fmt::Display for ConstraintReason {
     }
 }
 
-/// Result type alias for Strata operations
-///
-/// This is an alias for `StrataResult<T>` for backward compatibility.
-/// Prefer using `StrataResult<T>` directly in new code.
-pub type Result<T> = std::result::Result<T, StrataError>;
-
-
 // =============================================================================
 // StrataError - Unified Error Type
 // =============================================================================

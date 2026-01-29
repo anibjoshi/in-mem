@@ -21,7 +21,7 @@
 //! bypass normal version allocation.
 
 use crate::wal::{WALEntry, WAL};
-use strata_core::error::Result;
+use strata_core::StrataResult;
 use strata_core::primitives::json::{delete_at_path, set_at_path, JsonValue};
 use strata_core::traits::Storage;
 use strata_core::types::{Key, Namespace, RunId};
@@ -106,13 +106,13 @@ impl RecoveryJsonDoc {
     }
 
     /// Serialize to msgpack bytes
-    fn to_bytes(&self) -> Result<Vec<u8>> {
+    fn to_bytes(&self) -> StrataResult<Vec<u8>> {
         rmp_serde::to_vec(self)
             .map_err(|e| strata_core::StrataError::serialization(e.to_string()))
     }
 
     /// Deserialize from msgpack bytes
-    fn from_bytes(bytes: &[u8]) -> Result<Self> {
+    fn from_bytes(bytes: &[u8]) -> StrataResult<Self> {
         rmp_serde::from_slice(bytes)
             .map_err(|e| strata_core::StrataError::serialization(e.to_string()))
     }
@@ -394,7 +394,7 @@ pub fn validate_transactions(entries: &[WALEntry]) -> ValidationResult {
 /// let stats = replay_wal(&wal, &storage)?;
 /// println!("Applied {} transactions, {} writes", stats.txns_applied, stats.writes_applied);
 /// ```
-pub fn replay_wal<S: Storage + ?Sized>(wal: &WAL, storage: &S) -> Result<ReplayStats> {
+pub fn replay_wal<S: Storage + ?Sized>(wal: &WAL, storage: &S) -> StrataResult<ReplayStats> {
     replay_wal_with_options(wal, storage, ReplayOptions::default())
 }
 
@@ -442,7 +442,7 @@ pub fn replay_wal_with_options<S: Storage + ?Sized>(
     wal: &WAL,
     storage: &S,
     options: ReplayOptions,
-) -> Result<ReplayStats> {
+) -> StrataResult<ReplayStats> {
     // Read all entries from WAL
     let entries = wal.read_all()?;
 
@@ -666,7 +666,7 @@ fn apply_transaction<S: Storage + ?Sized>(
     storage: &S,
     txn: &Transaction,
     stats: &mut ReplayStats,
-) -> Result<()> {
+) -> StrataResult<()> {
     for entry in &txn.entries {
         match entry {
             WALEntry::Write {

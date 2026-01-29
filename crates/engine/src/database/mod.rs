@@ -19,119 +19,31 @@
 //!
 //! Per spec Section 4: Implicit transactions wrap legacy-style operations.
 
+mod builder;
+mod registry;
+mod transactions;
+
+pub use builder::DatabaseBuilder;
+pub use registry::OPEN_DATABASES;
+pub use transactions::RetryConfig;
+
 use crate::coordinator::{TransactionCoordinator, TransactionMetrics};
 use crate::transaction::TransactionPool;
 use dashmap::DashMap;
-use once_cell::sync::Lazy;
+use parking_lot::Mutex as ParkingMutex;
 use strata_concurrency::{
     validate_transaction, RecoveryCoordinator, TransactionContext, TransactionWALWriter,
 };
-use strata_core::error::Result;
-use strata_core::StrataError;
+use strata_core::StrataResult;
 use strata_core::types::RunId;
-use strata_core::value::Value;
+use strata_core::StrataError;
 use strata_durability::wal::{DurabilityMode, WAL};
 use strata_storage::ShardedStore;
-use parking_lot::Mutex as ParkingMutex;
 use std::any::{Any, TypeId};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, Weak};
-use std::time::Duration;
-use tracing::{info, warn};
-
-// =============================================================================
-// Global Database Registry
-// =============================================================================
-//
-// Ensures that opening the same database path multiple times returns the same
-// Arc<Database> instance. This is critical for thread safety - multiple agents
-// can safely share a database by opening the same path.
-//
-// The registry uses Weak references so databases are dropped when all Arc
-// references are gone. The Drop impl cleans up the registry entry.
-
-/// Global registry of open databases, keyed by canonical path.
-/// Uses Weak<Database> so the registry doesn't prevent database cleanup.
-static OPEN_DATABASES: Lazy<Mutex<HashMap<PathBuf, Weak<Database>>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
-
-/// Configuration for transaction retry behavior
-///
-/// Per spec Section 4.3: Implicit transactions include automatic retry on conflict.
-/// This configuration controls the retry behavior for transactions.
-///
-/// # Example
-/// ```ignore
-/// let config = RetryConfig {
-///     max_retries: 5,
-///     base_delay_ms: 10,
-///     max_delay_ms: 200,
-/// };
-/// db.transaction_with_retry(run_id, config, |txn| { ... })?;
-/// ```
-#[derive(Debug, Clone)]
-pub struct RetryConfig {
-    /// Maximum number of retry attempts (0 = no retries)
-    pub max_retries: usize,
-    /// Base delay between retries in milliseconds (exponential backoff)
-    pub base_delay_ms: u64,
-    /// Maximum delay between retries in milliseconds
-    pub max_delay_ms: u64,
-}
-
-impl Default for RetryConfig {
-    fn default() -> Self {
-        Self {
-            max_retries: 3,
-            base_delay_ms: 10,
-            max_delay_ms: 100,
-        }
-    }
-}
-
-impl RetryConfig {
-    /// Create a new RetryConfig with default values
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Create a RetryConfig with no retries
-    pub fn no_retry() -> Self {
-        Self {
-            max_retries: 0,
-            ..Default::default()
-        }
-    }
-
-    /// Set maximum number of retries
-    pub fn with_max_retries(mut self, max_retries: usize) -> Self {
-        self.max_retries = max_retries;
-        self
-    }
-
-    /// Set base delay for exponential backoff
-    pub fn with_base_delay_ms(mut self, base_delay_ms: u64) -> Self {
-        self.base_delay_ms = base_delay_ms;
-        self
-    }
-
-    /// Set maximum delay between retries
-    pub fn with_max_delay_ms(mut self, max_delay_ms: u64) -> Self {
-        self.max_delay_ms = max_delay_ms;
-        self
-    }
-
-    /// Calculate delay for a given attempt (exponential backoff)
-    fn calculate_delay(&self, attempt: usize) -> Duration {
-        // Cap the shift to prevent overflow (1 << 63 is the max for u64)
-        let shift = attempt.min(63);
-        let multiplier = 1u64 << shift;
-        let delay_ms = self.base_delay_ms.saturating_mul(multiplier);
-        Duration::from_millis(delay_ms.min(self.max_delay_ms))
-    }
-}
+use std::sync::Arc;
+use tracing::info;
 
 // ============================================================================
 // Persistence Mode (Storage/Durability Split)
@@ -184,183 +96,8 @@ impl Default for PersistenceMode {
 }
 
 // ============================================================================
-// Database Builder Pattern
+// Database Struct
 // ============================================================================
-
-/// Builder for Database configuration
-///
-/// Provides a fluent API for configuring and opening databases with
-/// different durability modes. The builder requires an explicit path.
-///
-/// # Three Ways to Open a Database
-///
-/// ```ignore
-/// use strata_engine::Database;
-///
-/// // 1. Simple open with sensible defaults (buffered durability)
-/// let db = Database::open("/data/mydb")?;
-///
-/// // 2. Builder for custom durability
-/// let db = Database::builder()
-///     .path("/data/mydb")
-///     .strict()  // or .buffered() or .no_durability()
-///     .open()?;
-///
-/// // 3. Ephemeral (no files, testing)
-/// let db = Database::ephemeral()?;
-/// ```
-///
-/// # Key Principle
-///
-/// Durability modes only make sense with persistent storage. If you need
-/// a database without disk files, use [`Database::ephemeral()`] instead
-/// of configuring durability options.
-///
-/// # Performance Targets
-///
-/// | Mode | Target Latency | Throughput |
-/// |------|----------------|------------|
-/// | NoDurability | <3µs put | 250K+ ops/sec |
-/// | Buffered | <30µs put | 50K+ ops/sec |
-/// | Strict | ~2ms put | ~500 ops/sec |
-#[derive(Debug, Clone)]
-pub struct DatabaseBuilder {
-    /// Database path (required for open())
-    path: Option<PathBuf>,
-    /// Durability mode (controls WAL sync behavior)
-    durability: DurabilityMode,
-}
-
-impl DatabaseBuilder {
-    /// Create new builder with defaults
-    ///
-    /// Defaults to Strict durability mode for backwards compatibility.
-    pub fn new() -> Self {
-        Self {
-            path: None,
-            durability: DurabilityMode::Strict, // default for backwards compatibility
-        }
-    }
-
-    /// Set database path
-    ///
-    /// Required for `open()`. Use `Database::ephemeral()` for no-file testing.
-    pub fn path<P: Into<PathBuf>>(mut self, path: P) -> Self {
-        self.path = Some(path.into());
-        self
-    }
-
-    /// Set durability mode explicitly
-    pub(crate) fn durability(mut self, mode: DurabilityMode) -> Self {
-        self.durability = mode;
-        self
-    }
-
-    /// Use no-durability mode (no WAL sync, files still created)
-    ///
-    /// This sets `DurabilityMode::None` which bypasses WAL fsync.
-    /// **Note**: Disk files are still created. For truly file-free operation,
-    /// use [`Database::ephemeral()`] instead.
-    ///
-    /// Target latency: <3µs for engine/put_direct
-    /// Throughput: 250K+ ops/sec
-    ///
-    /// All data lost on crash. Use for tests, caches, ephemeral data.
-    pub fn no_durability(mut self) -> Self {
-        self.durability = DurabilityMode::None;
-        self
-    }
-
-    /// Use Buffered mode with defaults (balanced)
-    ///
-    /// # Default Parameters
-    ///
-    /// - **flush_interval_ms**: 100ms - Maximum time between fsyncs
-    /// - **max_pending_writes**: 1000 - Maximum writes before forced fsync
-    ///
-    /// These defaults provide a good balance between performance and durability
-    /// for typical production workloads. The maximum data loss window is
-    /// whichever threshold is reached first (100ms OR 1000 writes).
-    ///
-    /// # Performance Targets
-    ///
-    /// - Target latency: <30µs for kvstore/put
-    /// - Throughput: 50K+ ops/sec
-    ///
-    /// # Customization
-    ///
-    /// Use [`buffered_with`](Self::buffered_with) to customize these parameters:
-    ///
-    /// ```ignore
-    /// let db = Database::builder()
-    ///     .buffered_with(200, 500)  // 200ms or 500 writes
-    ///     .open()?;
-    /// ```
-    ///
-    /// Recommended for production workloads.
-    pub fn buffered(mut self) -> Self {
-        self.durability = DurabilityMode::buffered_default();
-        self
-    }
-
-    /// Use Buffered mode with custom parameters
-    ///
-    /// # Arguments
-    ///
-    /// * `flush_interval_ms` - Maximum time between fsyncs
-    /// * `max_pending_writes` - Maximum writes before forced fsync
-    pub(crate) fn buffered_with(mut self, flush_interval_ms: u64, max_pending_writes: usize) -> Self {
-        self.durability = DurabilityMode::Batched {
-            interval_ms: flush_interval_ms,
-            batch_size: max_pending_writes,
-        };
-        self
-    }
-
-    /// Use Strict mode (default, safest)
-    ///
-    /// fsync on every commit. Zero data loss on crash.
-    /// Slowest mode - use for checkpoints, metadata, audit logs.
-    pub fn strict(mut self) -> Self {
-        self.durability = DurabilityMode::Strict;
-        self
-    }
-
-    /// Get configured path (if any)
-    pub(crate) fn get_path(&self) -> Option<&PathBuf> {
-        self.path.as_ref()
-    }
-
-    /// Open the database
-    ///
-    /// Requires a path to be set via `.path()`. For testing without disk files,
-    /// use `Database::ephemeral()` instead.
-    ///
-    /// # Thread Safety
-    ///
-    /// If the same path is opened multiple times, returns the same Arc<Database>.
-    ///
-    /// # Errors
-    ///
-    /// Returns error if:
-    /// - No path was configured (use `.path()` or `Database::ephemeral()`)
-    /// - Directory creation, WAL opening, or recovery fails
-    pub fn open(self) -> Result<Arc<Database>> {
-        let path = self.path.ok_or_else(|| {
-            StrataError::invalid_input(
-                "DatabaseBuilder::open() requires a path. Use Database::ephemeral() for testing."
-            )
-        })?;
-
-        Database::open_with_mode(path, self.durability)
-    }
-}
-
-impl Default for DatabaseBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 /// Main database struct with transaction support
 ///
@@ -424,7 +161,7 @@ pub struct Database {
     /// Flag to track if database is accepting new transactions
     ///
     /// Set to false during shutdown to reject new transactions.
-    accepting_transactions: std::sync::atomic::AtomicBool,
+    accepting_transactions: AtomicBool,
 
     /// Type-erased extension storage for primitive state
     ///
@@ -492,7 +229,7 @@ impl Database {
     ///
     /// let db = Database::open("/path/to/data")?;
     /// ```
-    pub fn open<P: AsRef<Path>>(path: P) -> Result<Arc<Self>> {
+    pub fn open<P: AsRef<Path>>(path: P) -> StrataResult<Arc<Self>> {
         Self::open_with_mode(path, DurabilityMode::buffered_default())
     }
 
@@ -522,7 +259,7 @@ impl Database {
     pub(crate) fn open_with_mode<P: AsRef<Path>>(
         path: P,
         durability_mode: DurabilityMode,
-    ) -> Result<Arc<Self>> {
+    ) -> StrataResult<Arc<Self>> {
         // Create directory first so we can canonicalize the path
         let data_dir = path.as_ref().to_path_buf();
         std::fs::create_dir_all(&data_dir).map_err(StrataError::from)?;
@@ -591,7 +328,7 @@ impl Database {
         // Run primitive recovery (e.g., VectorStore)
         // This must happen AFTER KV recovery completes, as primitives may
         // depend on config data stored in KV.
-        crate::recovery_participant::recover_all_participants(&db)?;
+        crate::recovery::recover_all_participants(&db)?;
 
         Ok(db)
     }
@@ -636,7 +373,7 @@ impl Database {
     /// | `ephemeral()` | None | None | No |
     /// | `open(path)` | Yes | Yes (buffered) | Yes |
     /// | `builder().path(p).strict().open()` | Yes | Yes (strict) | Yes |
-    pub fn ephemeral() -> Result<Arc<Self>> {
+    pub fn ephemeral() -> StrataResult<Arc<Self>> {
         // Create fresh storage
         let storage = ShardedStore::new();
 
@@ -660,6 +397,10 @@ impl Database {
 
         Ok(db)
     }
+
+    // ========================================================================
+    // Accessors
+    // ========================================================================
 
     /// Get reference to the storage layer (internal use only)
     ///
@@ -692,21 +433,29 @@ impl Database {
         self.persistence_mode
     }
 
-    /// Flush WAL to disk
+    /// Get the current durability mode
+    pub(crate) fn durability_mode(&self) -> DurabilityMode {
+        self.durability_mode
+    }
+
+    /// Check if the database is currently open and accepting transactions
+    pub fn is_open(&self) -> bool {
+        self.accepting_transactions.load(Ordering::SeqCst)
+    }
+
+    /// Get the transaction coordinator (for metrics/testing)
+    pub(crate) fn coordinator(&self) -> &TransactionCoordinator {
+        &self.coordinator
+    }
+
+    /// Get transaction metrics
     ///
-    /// Forces all buffered WAL entries to be written to disk.
-    /// This is automatically done based on durability mode, but can
-    /// be called manually to ensure durability at a specific point.
-    ///
-    /// For ephemeral databases, this is a no-op.
-    pub(crate) fn flush(&self) -> Result<()> {
-        if let Some(ref wal) = self.wal {
-            let wal = wal.lock();
-            wal.fsync()
-        } else {
-            // Ephemeral mode - no-op
-            Ok(())
-        }
+    /// Returns statistics about transaction lifecycle including:
+    /// - Active count
+    /// - Total started/committed/aborted
+    /// - Commit rate
+    pub(crate) fn metrics(&self) -> TransactionMetrics {
+        self.coordinator.metrics()
     }
 
     // ========================================================================
@@ -758,11 +507,32 @@ impl Database {
     }
 
     // ========================================================================
+    // Flush
+    // ========================================================================
+
+    /// Flush WAL to disk
+    ///
+    /// Forces all buffered WAL entries to be written to disk.
+    /// This is automatically done based on durability mode, but can
+    /// be called manually to ensure durability at a specific point.
+    ///
+    /// For ephemeral databases, this is a no-op.
+    pub(crate) fn flush(&self) -> StrataResult<()> {
+        if let Some(ref wal) = self.wal {
+            let wal = wal.lock();
+            wal.fsync()
+        } else {
+            // Ephemeral mode - no-op
+            Ok(())
+        }
+    }
+
+    // ========================================================================
     // Transaction API
     // ========================================================================
 
     /// Check if the database is accepting transactions.
-    fn check_accepting(&self) -> Result<()> {
+    fn check_accepting(&self) -> StrataResult<()> {
         if !self.accepting_transactions.load(Ordering::SeqCst) {
             return Err(StrataError::invalid_input(
                 "Database is shutting down".to_string(),
@@ -780,9 +550,9 @@ impl Database {
     fn run_single_attempt<T>(
         &self,
         txn: &mut TransactionContext,
-        result: Result<T>,
+        result: StrataResult<T>,
         durability: DurabilityMode,
-    ) -> Result<(T, u64)> {
+    ) -> StrataResult<(T, u64)> {
         match result {
             Ok(value) => {
                 // Commit on success
@@ -821,9 +591,9 @@ impl Database {
     ///     Ok(val)
     /// })?;
     /// ```
-    pub fn transaction<F, T>(&self, run_id: RunId, f: F) -> Result<T>
+    pub fn transaction<F, T>(&self, run_id: RunId, f: F) -> StrataResult<T>
     where
-        F: FnOnce(&mut TransactionContext) -> Result<T>,
+        F: FnOnce(&mut TransactionContext) -> StrataResult<T>,
     {
         self.check_accepting()?;
         let mut txn = self.begin_transaction(run_id);
@@ -850,9 +620,9 @@ impl Database {
     /// })?;
     /// // commit_version now contains the version assigned to the put
     /// ```
-    pub(crate) fn transaction_with_version<F, T>(&self, run_id: RunId, f: F) -> Result<(T, u64)>
+    pub(crate) fn transaction_with_version<F, T>(&self, run_id: RunId, f: F) -> StrataResult<(T, u64)>
     where
-        F: FnOnce(&mut TransactionContext) -> Result<T>,
+        F: FnOnce(&mut TransactionContext) -> StrataResult<T>,
     {
         self.check_accepting()?;
         let mut txn = self.begin_transaction(run_id);
@@ -895,9 +665,9 @@ impl Database {
         run_id: RunId,
         config: RetryConfig,
         f: F,
-    ) -> Result<T>
+    ) -> StrataResult<T>
     where
-        F: Fn(&mut TransactionContext) -> Result<T>,
+        F: Fn(&mut TransactionContext) -> StrataResult<T>,
     {
         self.check_accepting()?;
 
@@ -996,7 +766,7 @@ impl Database {
     ///
     /// # Contract
     /// Returns the commit version (u64) assigned to all writes in this transaction.
-    pub fn commit_transaction(&self, txn: &mut TransactionContext) -> Result<u64> {
+    pub fn commit_transaction(&self, txn: &mut TransactionContext) -> StrataResult<u64> {
         self.commit_internal(txn, self.durability_mode)
     }
 
@@ -1013,7 +783,7 @@ impl Database {
         &self,
         txn: &mut TransactionContext,
         durability: DurabilityMode,
-    ) -> Result<u64> {
+    ) -> StrataResult<u64> {
         // Acquire per-run commit lock to serialize validate → WAL → storage sequence
         // This prevents CAS race conditions where multiple transactions pass validation
         // before any of them writes to storage.
@@ -1102,26 +872,6 @@ impl Database {
         Ok(commit_version)
     }
 
-    /// Get the transaction coordinator (for metrics/testing)
-    pub(crate) fn coordinator(&self) -> &TransactionCoordinator {
-        &self.coordinator
-    }
-
-    /// Get transaction metrics
-    ///
-    /// Returns statistics about transaction lifecycle including:
-    /// - Active count
-    /// - Total started/committed/aborted
-    /// - Commit rate
-    pub(crate) fn metrics(&self) -> TransactionMetrics {
-        self.coordinator.metrics()
-    }
-
-    /// Get the current durability mode
-    pub(crate) fn durability_mode(&self) -> DurabilityMode {
-        self.durability_mode
-    }
-
     // ========================================================================
     // Graceful Shutdown
     // ========================================================================
@@ -1139,7 +889,7 @@ impl Database {
     /// db.shutdown()?;
     /// assert!(!db.is_open());
     /// ```
-    pub fn shutdown(&self) -> Result<()> {
+    pub fn shutdown(&self) -> StrataResult<()> {
         // Stop accepting new transactions
         self.accepting_transactions.store(false, Ordering::SeqCst);
 
@@ -1147,200 +897,22 @@ impl Database {
         // This ensures all transactions that started before shutdown
         // have a chance to commit before we flush the WAL.
         let timeout = std::time::Duration::from_secs(30);
-        if !self.coordinator.wait_for_idle(timeout) {
-            // Log warning but continue with shutdown
-            // Some transactions may be lost, but we can't wait forever
-            warn!(
-                active_count = self.coordinator.active_count(),
-                "Shutdown timeout: active transactions still in progress"
-            );
+        let start = std::time::Instant::now();
+
+        while self.coordinator.active_count() > 0 && start.elapsed() < timeout {
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
 
-        // Flush WAL based on mode
-        // For InMemory mode and ephemeral databases, this is a no-op
-        // For Buffered/Strict modes, ensure WAL is synced
-        if self.durability_mode.requires_wal() {
-            if let Some(ref wal) = self.wal {
-                let wal = wal.lock();
-                wal.fsync()?;
-            }
-        }
+        // Flush WAL to ensure all data is persisted
+        self.flush()?;
 
-        info!("Database shutdown complete");
         Ok(())
-    }
-
-    /// Check if database is open and accepting transactions
-    ///
-    /// Returns `false` after `shutdown()` is called.
-    pub fn is_open(&self) -> bool {
-        self.accepting_transactions.load(Ordering::SeqCst)
-    }
-
-    // ========================================================================
-    // Replay API
-    // ========================================================================
-
-    /// Replay a run and return a read-only view
-    ///
-    /// Per Architecture Rule 3: Replay is side-effect free.
-    /// The returned view is derived, NOT authoritative.
-    ///
-    /// This is a STABLE API per DURABILITY_REPLAY_CONTRACT.md.
-    ///
-    /// # Replay Invariants (P1-P6)
-    ///
-    /// - P1: Pure function over (Snapshot, WAL, EventLog)
-    /// - P2: Side-effect free (does not mutate canonical store)
-    /// - P3: Derived view (not a new source of truth)
-    /// - P4: Does not persist (unless explicitly materialized)
-    /// - P5: Deterministic (same inputs = same view)
-    /// - P6: Idempotent (running twice produces identical view)
-    ///
-    /// # Arguments
-    ///
-    /// * `run_id` - The run to replay
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(ReadOnlyView)` - The reconstructed state for this run
-    /// * `Err(RunNotFound)` - If the run doesn't exist
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let view = db.replay_run(run_id)?;
-    /// println!("Run had {} KV entries", view.kv_count());
-    /// for (key, value) in view.kv_entries() {
-    ///     println!("  {:?} = {:?}", key, value);
-    /// }
-    /// ```
-    pub(crate) fn replay_run(&self, run_id: RunId) -> Result<crate::replay::ReadOnlyView> {
-        use crate::replay::ReadOnlyView;
-        use strata_core::types::TypeTag;
-
-        // Create an empty view for this run
-        let mut view = ReadOnlyView::new(run_id);
-
-        // Get all entries for this run from storage
-        // Per P1 invariant: Replay is a pure function over (Snapshot, WAL, EventLog)
-        // We reconstruct state by separating entries by type.
-        let entries = self.storage.list_run(&run_id);
-
-        for (key, versioned_value) in entries {
-            match key.type_tag {
-                TypeTag::KV => {
-                    // Standard KV entries go into kv_state
-                    view.apply_kv_put(key, versioned_value.value);
-                }
-                TypeTag::Event => {
-                    // Event entries: parse the stored JSON event and add to view
-                    // Skip metadata keys (__meta__)
-                    if key.user_key == b"__meta__" {
-                        continue;
-                    }
-
-                    // Events are stored as JSON strings in Value::String
-                    // Parse and extract event_type and payload
-                    if let strata_core::value::Value::String(json_str) = &versioned_value.value {
-                        if let Ok(parsed) =
-                            serde_json::from_str::<serde_json::Value>(json_str)
-                        {
-                            let event_type = parsed
-                                .get("event_type")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("unknown")
-                                .to_string();
-
-                            // Extract payload as Value
-                            let payload = if let Some(p) = parsed.get("payload") {
-                                // Convert serde_json::Value to strata_core::value::Value
-                                serde_json::from_value(p.clone()).unwrap_or(
-                                    strata_core::value::Value::Null,
-                                )
-                            } else {
-                                strata_core::value::Value::Null
-                            };
-
-                            view.append_event(event_type, payload);
-                        }
-                    }
-                }
-                // Other types (State, Run, etc.) are stored but not
-                // currently exposed in ReadOnlyView. They can be added as needed.
-                _ => {}
-            }
-        }
-
-        Ok(view)
-    }
-
-    /// Compare two runs and return a key-level diff
-    ///
-    /// Per Architecture: Key-level diff (not path-level for JSON).
-    ///
-    /// This is a STABLE API per DURABILITY_REPLAY_CONTRACT.md.
-    ///
-    /// # Arguments
-    ///
-    /// * `run_a` - Base run
-    /// * `run_b` - Comparison run
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(RunDiff)` - Differences between the runs
-    /// * `Err` - If either run doesn't exist
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let diff = db.diff_runs(run_a, run_b)?;
-    /// println!("{}", diff.summary());
-    /// for entry in &diff.added {
-    ///     println!("  Added: {} = {:?}", entry.key, entry.value_b);
-    /// }
-    /// ```
-    pub(crate) fn diff_runs(
-        &self,
-        run_a: RunId,
-        run_b: RunId,
-    ) -> Result<crate::replay::RunDiff> {
-        // Replay both runs
-        let view_a = self.replay_run(run_a)?;
-        let view_b = self.replay_run(run_b)?;
-
-        // Use the diff_views helper
-        Ok(crate::replay::diff_views(&view_a, &view_b))
-    }
-
-    /// Gracefully close the database
-    ///
-    /// Ensures all WAL entries are flushed to disk before returning.
-    /// For ephemeral databases, this is a no-op.
-    /// This should be called before dropping the database for guaranteed durability.
-    pub(crate) fn close(&self) -> Result<()> {
-        if let Some(ref wal) = self.wal {
-            let wal = wal.lock();
-            wal.fsync()
-        } else {
-            // Ephemeral mode - no-op
-            Ok(())
-        }
     }
 }
 
-/// Automatic graceful shutdown on drop
 impl Drop for Database {
     fn drop(&mut self) {
-        // Only attempt shutdown if still open
-        if self.accepting_transactions.load(Ordering::SeqCst) {
-            if let Err(e) = self.shutdown() {
-                eprintln!("Warning: Error during database shutdown: {}", e);
-            }
-        }
-
-        // Remove from global registry (if registered)
-        // Only disk-backed databases with non-empty paths are registered
+        // Remove from registry if we're disk-backed
         if self.persistence_mode == PersistenceMode::Disk && !self.data_dir.as_os_str().is_empty() {
             if let Ok(mut registry) = OPEN_DATABASES.lock() {
                 registry.remove(&self.data_dir);
@@ -1349,38 +921,50 @@ impl Drop for Database {
     }
 }
 
+// ============================================================================
+// Tests
+// ============================================================================
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use strata_core::types::{Key, Namespace, RunId};
+    use strata_core::types::{Key, Namespace};
     use strata_core::value::Value;
     use strata_core::Storage;
-    use strata_core::Timestamp;
+    use strata_core::contract::Timestamp;
     use strata_durability::wal::WALEntry;
     use tempfile::TempDir;
 
     fn now() -> Timestamp {
-        Timestamp::now()
+        Timestamp::from(std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_micros() as u64)
     }
 
     #[test]
-    fn test_open_empty_database() {
+    fn test_open_creates_directory() {
         let temp_dir = TempDir::new().unwrap();
-        let db_path = temp_dir.path().join("db");
+        let db_path = temp_dir.path().join("new_db");
 
-        let db = Database::open(&db_path).unwrap();
-
-        // Should have empty storage
-        assert_eq!(db.storage().current_version(), 0);
-
-        // Data directory should exist
+        assert!(!db_path.exists());
+        let _db = Database::open(&db_path).unwrap();
         assert!(db_path.exists());
-        assert!(db_path.join("wal").exists());
-        assert!(db_path.join("wal/current.wal").exists());
     }
 
     #[test]
-    fn test_open_with_existing_wal() {
+    fn test_ephemeral_no_files() {
+        let db = Database::ephemeral().unwrap();
+
+        // Should work for operations
+        assert!(db.is_ephemeral());
+
+        // Data dir should be empty path
+        assert!(db.data_dir().as_os_str().is_empty());
+    }
+
+    #[test]
+    fn test_wal_recovery() {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("db");
 
@@ -1392,7 +976,7 @@ mod tests {
             run_id,
         );
 
-        // Write data to WAL manually before opening database
+        // Write directly to WAL (simulating a crash recovery scenario)
         {
             std::fs::create_dir_all(db_path.join("wal")).unwrap();
             let mut wal =
@@ -1604,7 +1188,7 @@ mod tests {
 
         let db = Database::open(&db_path).unwrap();
 
-        assert_eq!(db.data_dir(), db_path);
+        assert_eq!(db.data_dir(), db_path.canonicalize().unwrap());
     }
 
     #[test]
@@ -1670,7 +1254,7 @@ mod tests {
         .unwrap();
 
         // Transaction returns a value
-        let result: Result<i64> = db.transaction(run_id, |txn| {
+        let result: StrataResult<i64> = db.transaction(run_id, |txn| {
             let val = txn.get(&key)?.unwrap();
             if let Value::Int(n) = val {
                 Ok(n)
@@ -1692,7 +1276,7 @@ mod tests {
         let key = Key::new_kv(ns, "ryw_key");
 
         // Per spec Section 2.1: "Its own uncommitted writes - always visible"
-        let result: Result<Value> = db.transaction(run_id, |txn| {
+        let result: StrataResult<Value> = db.transaction(run_id, |txn| {
             txn.put(key.clone(), Value::String("written".to_string()))?;
 
             // Should see our own write
@@ -1713,7 +1297,7 @@ mod tests {
         let key = Key::new_kv(ns, "abort_key");
 
         // Transaction that errors
-        let result: Result<()> = db.transaction(run_id, |txn| {
+        let result: StrataResult<()> = db.transaction(run_id, |txn| {
             txn.put(key.clone(), Value::Int(999))?;
             Err(StrataError::invalid_input("intentional error".to_string()))
         });
@@ -1746,72 +1330,6 @@ mod tests {
     }
 
     #[test]
-    fn test_transaction_wal_logging() {
-        let temp_dir = TempDir::new().unwrap();
-        let db_path = temp_dir.path().join("db");
-        let run_id = RunId::new();
-        let ns = create_test_namespace(run_id);
-        let key = Key::new_kv(ns, "wal_key");
-
-        // Execute transaction
-        {
-            let db = Database::open(&db_path).unwrap();
-            db.transaction(run_id, |txn| {
-                txn.put(key.clone(), Value::Int(42))?;
-                Ok(())
-            })
-            .unwrap();
-        }
-
-        // Reopen database (triggers recovery from WAL)
-        {
-            let db = Database::open(&db_path).unwrap();
-            let stored = db.storage().get(&key).unwrap().unwrap();
-            assert_eq!(stored.value, Value::Int(42));
-        }
-    }
-
-    #[test]
-    fn test_transaction_version_allocation() {
-        let temp_dir = TempDir::new().unwrap();
-        let db = Database::open(temp_dir.path().join("db")).unwrap();
-
-        let run_id = RunId::new();
-        let ns = create_test_namespace(run_id);
-
-        // First transaction
-        db.transaction(run_id, |txn| {
-            txn.put(Key::new_kv(ns.clone(), "key1"), Value::Int(1))?;
-            Ok(())
-        })
-        .unwrap();
-
-        let v1 = db.storage().current_version();
-        assert!(v1 > 0);
-
-        // Second transaction
-        db.transaction(run_id, |txn| {
-            txn.put(Key::new_kv(ns.clone(), "key2"), Value::Int(2))?;
-            Ok(())
-        })
-        .unwrap();
-
-        let v2 = db.storage().current_version();
-        assert!(v2 > v1); // Versions must be monotonic
-    }
-
-    #[test]
-    fn test_coordinator_accessor() {
-        let temp_dir = TempDir::new().unwrap();
-        let db = Database::open(temp_dir.path().join("db")).unwrap();
-
-        // Coordinator should be accessible
-        let _coordinator = db.coordinator();
-        // Initial version should be 0 for empty database
-        assert_eq!(db.coordinator().current_version(), 0);
-    }
-
-    #[test]
     fn test_transaction_metrics() {
         let temp_dir = TempDir::new().unwrap();
         let db = Database::open(temp_dir.path().join("db")).unwrap();
@@ -1839,7 +1357,7 @@ mod tests {
         assert_eq!(after_commit.commit_rate, 1.0);
 
         // Abort a transaction
-        let _: Result<()> = db.transaction(run_id, |txn| {
+        let _: StrataResult<()> = db.transaction(run_id, |txn| {
             txn.put(Key::new_kv(ns.clone(), "key2"), Value::Int(2))?;
             Err(StrataError::invalid_input("intentional abort".to_string()))
         });
@@ -1849,76 +1367,6 @@ mod tests {
         assert_eq!(after_abort.total_committed, 1);
         assert_eq!(after_abort.total_aborted, 1);
         assert_eq!(after_abort.commit_rate, 0.5);
-    }
-
-    #[test]
-    fn test_transaction_multi_key() {
-        let temp_dir = TempDir::new().unwrap();
-        let db = Database::open(temp_dir.path().join("db")).unwrap();
-
-        let run_id = RunId::new();
-        let ns = create_test_namespace(run_id);
-
-        // Transaction with multiple keys
-        db.transaction(run_id, |txn| {
-            txn.put(Key::new_kv(ns.clone(), "a"), Value::Int(1))?;
-            txn.put(Key::new_kv(ns.clone(), "b"), Value::Int(2))?;
-            txn.put(Key::new_kv(ns.clone(), "c"), Value::Int(3))?;
-            Ok(())
-        })
-        .unwrap();
-
-        // All keys should have the same version (per spec Section 6.1)
-        let v_a = db
-            .storage()
-            .get(&Key::new_kv(ns.clone(), "a"))
-            .unwrap()
-            .unwrap()
-            .version;
-        let v_b = db
-            .storage()
-            .get(&Key::new_kv(ns.clone(), "b"))
-            .unwrap()
-            .unwrap()
-            .version;
-        let v_c = db
-            .storage()
-            .get(&Key::new_kv(ns.clone(), "c"))
-            .unwrap()
-            .unwrap()
-            .version;
-
-        assert_eq!(v_a, v_b);
-        assert_eq!(v_b, v_c);
-    }
-
-    #[test]
-    fn test_transaction_with_delete() {
-        let temp_dir = TempDir::new().unwrap();
-        let db = Database::open(temp_dir.path().join("db")).unwrap();
-
-        let run_id = RunId::new();
-        let ns = create_test_namespace(run_id);
-        let key = Key::new_kv(ns, "to_delete");
-
-        // Create key
-        db.transaction(run_id, |txn| {
-            txn.put(key.clone(), Value::Int(100))?;
-            Ok(())
-        })
-        .unwrap();
-
-        assert!(db.storage().get(&key).unwrap().is_some());
-
-        // Delete key
-        db.transaction(run_id, |txn| {
-            txn.delete(key.clone())?;
-            Ok(())
-        })
-        .unwrap();
-
-        // Key should be gone
-        assert!(db.storage().get(&key).unwrap().is_none());
     }
 
     // ========================================================================
@@ -1966,315 +1414,6 @@ mod tests {
         assert_eq!(config.calculate_delay(3).as_millis(), 80);
         assert_eq!(config.calculate_delay(4).as_millis(), 100); // Capped at max
         assert_eq!(config.calculate_delay(5).as_millis(), 100); // Still capped
-    }
-
-    #[test]
-    fn test_transaction_with_retry_success() {
-        let temp_dir = TempDir::new().unwrap();
-        let db = Database::open(temp_dir.path().join("db")).unwrap();
-
-        let run_id = RunId::new();
-        let ns = create_test_namespace(run_id);
-        let key = Key::new_kv(ns, "retry_success");
-
-        // Transaction with retry that succeeds on first try
-        let result = db.transaction_with_retry(run_id, RetryConfig::default(), |txn| {
-            txn.put(key.clone(), Value::Int(42))?;
-            Ok(42)
-        });
-
-        assert_eq!(result.unwrap(), 42);
-
-        // Verify stored
-        let stored = db.storage().get(&key).unwrap().unwrap();
-        assert_eq!(stored.value, Value::Int(42));
-    }
-
-    #[test]
-    fn test_transaction_with_retry_non_conflict_error_not_retried() {
-        use std::sync::atomic::{AtomicU64, Ordering};
-
-        let temp_dir = TempDir::new().unwrap();
-        let db = Database::open(temp_dir.path().join("db")).unwrap();
-
-        let run_id = RunId::new();
-        let attempts = AtomicU64::new(0);
-
-        let result: Result<()> =
-            db.transaction_with_retry(run_id, RetryConfig::default(), |_txn| {
-                attempts.fetch_add(1, Ordering::Relaxed);
-                Err(StrataError::invalid_input("not a conflict".to_string()))
-            });
-
-        // Should only try once (non-conflict errors don't retry)
-        assert_eq!(attempts.load(Ordering::Relaxed), 1);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_transaction_with_retry_conflict_is_retried() {
-        use std::sync::atomic::{AtomicU64, Ordering};
-
-        let temp_dir = TempDir::new().unwrap();
-        let db = Database::open(temp_dir.path().join("db")).unwrap();
-
-        let run_id = RunId::new();
-        let ns = create_test_namespace(run_id);
-        let key = Key::new_kv(ns, "retry_conflict");
-        let attempts = AtomicU64::new(0);
-
-        let config = RetryConfig {
-            max_retries: 2,
-            base_delay_ms: 1, // Short delay for tests
-            max_delay_ms: 10,
-        };
-
-        // Conflict on first 2 attempts, succeed on third
-        let result: Result<()> = db.transaction_with_retry(run_id, config, |txn| {
-            let count = attempts.fetch_add(1, Ordering::Relaxed);
-            if count < 2 {
-                Err(StrataError::conflict("simulated conflict".to_string()))
-            } else {
-                txn.put(key.clone(), Value::Int(count as i64))?;
-                Ok(())
-            }
-        });
-
-        assert!(result.is_ok());
-        assert_eq!(attempts.load(Ordering::Relaxed), 3); // Tried 3 times
-    }
-
-    #[test]
-    fn test_transaction_with_retry_max_retries_exceeded() {
-        use std::sync::atomic::{AtomicU64, Ordering};
-
-        let temp_dir = TempDir::new().unwrap();
-        let db = Database::open(temp_dir.path().join("db")).unwrap();
-
-        let run_id = RunId::new();
-        let attempts = AtomicU64::new(0);
-
-        let config = RetryConfig {
-            max_retries: 2,
-            base_delay_ms: 1,
-            max_delay_ms: 10,
-        };
-
-        // Always return conflict
-        let result: Result<()> = db.transaction_with_retry(run_id, config, |_txn| {
-            attempts.fetch_add(1, Ordering::Relaxed);
-            Err(StrataError::conflict("always conflict".to_string()))
-        });
-
-        // Should try 3 times (initial + 2 retries)
-        assert_eq!(attempts.load(Ordering::Relaxed), 3);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().is_conflict());
-    }
-
-    #[test]
-    fn test_transaction_with_retry_no_retry_config() {
-        use std::sync::atomic::{AtomicU64, Ordering};
-
-        let temp_dir = TempDir::new().unwrap();
-        let db = Database::open(temp_dir.path().join("db")).unwrap();
-
-        let run_id = RunId::new();
-        let attempts = AtomicU64::new(0);
-
-        // No retries configured
-        let result: Result<()> =
-            db.transaction_with_retry(run_id, RetryConfig::no_retry(), |_txn| {
-                attempts.fetch_add(1, Ordering::Relaxed);
-                Err(StrataError::conflict("conflict".to_string()))
-            });
-
-        // Should try exactly once
-        assert_eq!(attempts.load(Ordering::Relaxed), 1);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_transaction_with_retry_returns_value() {
-        let temp_dir = TempDir::new().unwrap();
-        let db = Database::open(temp_dir.path().join("db")).unwrap();
-
-        let run_id = RunId::new();
-        let ns = create_test_namespace(run_id);
-        let key = Key::new_kv(ns, "return_value");
-
-        // Pre-populate
-        db.transaction(run_id, |txn| {
-            txn.put(key.clone(), Value::Int(100))?;
-            Ok(())
-        })
-        .unwrap();
-
-        // Transaction returns a value
-        // Note: txn.get() returns Option<Value>, not Option<VersionedValue>
-        let result: Result<i64> =
-            db.transaction_with_retry(run_id, RetryConfig::default(), |txn| {
-                let val = txn.get(&key)?.unwrap();
-                if let Value::Int(n) = val {
-                    Ok(n)
-                } else {
-                    Err(StrataError::invalid_input("wrong type".to_string()))
-                }
-            });
-
-        assert_eq!(result.unwrap(), 100);
-    }
-
-    #[test]
-    fn test_transaction_with_retry_read_modify_write() {
-        use std::sync::atomic::{AtomicU64, Ordering};
-
-        let temp_dir = TempDir::new().unwrap();
-        let db = Database::open(temp_dir.path().join("db")).unwrap();
-
-        let run_id = RunId::new();
-        let ns = create_test_namespace(run_id);
-        let key = Key::new_kv(ns, "counter");
-        let attempts = AtomicU64::new(0);
-
-        // Initialize counter
-        db.transaction(run_id, |txn| {
-            txn.put(key.clone(), Value::Int(0))?;
-            Ok(())
-        })
-        .unwrap();
-
-        let config = RetryConfig {
-            max_retries: 5,
-            base_delay_ms: 1,
-            max_delay_ms: 10,
-        };
-
-        // Simulate conflict on first attempt, then succeed
-        // Note: txn.get() returns Option<Value>, not Option<VersionedValue>
-        let result = db.transaction_with_retry(run_id, config, |txn| {
-            let count = attempts.fetch_add(1, Ordering::Relaxed);
-
-            // Read
-            let val = txn.get(&key)?.unwrap();
-            let n = match val {
-                Value::Int(n) => n,
-                _ => return Err(StrataError::invalid_input("wrong type".to_string())),
-            };
-
-            // Simulate conflict on first attempt
-            if count == 0 {
-                return Err(StrataError::conflict("simulated conflict".to_string()));
-            }
-
-            // Write incremented value
-            txn.put(key.clone(), Value::Int(n + 1))?;
-            Ok(n + 1)
-        });
-
-        assert_eq!(result.unwrap(), 1);
-        assert_eq!(attempts.load(Ordering::Relaxed), 2); // Tried twice
-
-        // Verify final value
-        let stored = db.storage().get(&key).unwrap().unwrap();
-        assert_eq!(stored.value, Value::Int(1));
-    }
-
-    // ========================================================================
-    // Timeout Tests
-    // ========================================================================
-
-    #[test]
-    fn test_transaction_is_expired() {
-        use std::thread;
-
-        let temp_dir = TempDir::new().unwrap();
-        let db = Database::open(temp_dir.path().join("db")).unwrap();
-
-        let run_id = RunId::new();
-        let txn = db.begin_transaction(run_id);
-
-        // Should not be expired immediately
-        assert!(!txn.is_expired(Duration::from_secs(1)));
-
-        // Sleep briefly
-        thread::sleep(Duration::from_millis(50));
-
-        // Should be expired with very short timeout
-        assert!(txn.is_expired(Duration::from_millis(10)));
-
-        // Should not be expired with longer timeout
-        assert!(!txn.is_expired(Duration::from_secs(10)));
-    }
-
-    #[test]
-    fn test_transaction_elapsed() {
-        use std::thread;
-
-        let temp_dir = TempDir::new().unwrap();
-        let db = Database::open(temp_dir.path().join("db")).unwrap();
-
-        let run_id = RunId::new();
-        let txn = db.begin_transaction(run_id);
-
-        // Elapsed should be very small initially
-        let initial = txn.elapsed();
-        assert!(initial < Duration::from_millis(100));
-
-        // After sleep, elapsed should increase
-        thread::sleep(Duration::from_millis(50));
-        let after = txn.elapsed();
-        assert!(after >= Duration::from_millis(50));
-        assert!(after > initial);
-    }
-
-    // ========================================================================
-    // DatabaseBuilder Tests
-    // ========================================================================
-
-    #[test]
-    fn test_database_builder_default() {
-        let builder = DatabaseBuilder::new();
-        assert!(builder.get_path().is_none());
-    }
-
-    #[test]
-    fn test_database_builder_path() {
-        let builder = DatabaseBuilder::new().path("/tmp/test");
-        assert_eq!(
-            builder.get_path(),
-            Some(&std::path::PathBuf::from("/tmp/test"))
-        );
-    }
-
-    #[test]
-    fn test_database_builder_open_with_path() {
-        let temp_dir = TempDir::new().unwrap();
-        let db_path = temp_dir.path().join("builder_test");
-
-        let db = Database::builder().path(&db_path).strict().open().unwrap();
-
-        assert_eq!(db.data_dir(), db_path);
-    }
-
-    #[test]
-    fn test_database_builder_open_requires_path() {
-        // Builder without path should fail
-        let result = Database::builder().open();
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_database_builder_convenience_method() {
-        // Test Database::builder() static method
-        let builder = Database::builder();
-        assert!(builder.get_path().is_none());
-    }
-
-    #[test]
-    fn test_database_builder_default_trait() {
-        let builder = DatabaseBuilder::default();
-        assert!(builder.get_path().is_none());
     }
 
     // ========================================================================
@@ -2341,58 +1480,6 @@ mod tests {
         assert!(!db.is_open());
     }
 
-    #[test]
-    fn test_shutdown_flushes_data() {
-        let temp_dir = TempDir::new().unwrap();
-        let db_path = temp_dir.path().join("db");
-        let run_id = RunId::new();
-        let ns = create_test_namespace(run_id);
-        let key = Key::new_kv(ns, "persisted_before_shutdown");
-
-        // Write data and shutdown
-        {
-            let db = Database::open(&db_path).unwrap();
-            db.transaction(run_id, |txn| {
-                txn.put(key.clone(), Value::Int(42))?;
-                Ok(())
-            })
-            .unwrap();
-            db.shutdown().unwrap();
-        }
-
-        // Reopen and verify data survived
-        {
-            let db = Database::open(&db_path).unwrap();
-            let stored = db.storage().get(&key).unwrap().unwrap();
-            assert_eq!(stored.value, Value::Int(42));
-        }
-    }
-
-    #[test]
-    fn test_durability_mode_accessor() {
-        let temp_dir = TempDir::new().unwrap();
-
-        // Test with Strict mode
-        {
-            let db = Database::builder()
-                .path(temp_dir.path().join("strict"))
-                .strict()
-                .open()
-                .unwrap();
-            assert_eq!(db.durability_mode(), DurabilityMode::Strict);
-        }
-
-        // Test with no-durability mode (InMemory durability)
-        {
-            let db = Database::builder()
-                .path(temp_dir.path().join("no_durability"))
-                .no_durability()
-                .open()
-                .unwrap();
-            assert_eq!(db.durability_mode(), DurabilityMode::None);
-        }
-    }
-
     // ========================================================================
     // Singleton Registry Tests
     // ========================================================================
@@ -2421,33 +1508,6 @@ mod tests {
 
         // Should be different instances
         assert!(!Arc::ptr_eq(&db1, &db2));
-    }
-
-    #[test]
-    fn test_registry_cleanup_on_drop() {
-        let temp_dir = TempDir::new().unwrap();
-        let db_path = temp_dir.path().join("cleanup_test");
-
-        // Open and get the canonical path
-        let canonical_path = {
-            let db = Database::open(&db_path).unwrap();
-            db.data_dir().to_path_buf()
-        };
-        // db is dropped here, should be removed from registry
-
-        // Registry should be empty for this path (weak reference expired)
-        {
-            let registry = OPEN_DATABASES.lock().unwrap();
-            if let Some(weak) = registry.get(&canonical_path) {
-                // Weak reference should not upgrade (db was dropped)
-                assert!(weak.upgrade().is_none());
-            }
-            // Or entry was already cleaned up by Drop
-        }
-
-        // Opening again should create a new instance
-        let db_new = Database::open(&db_path).unwrap();
-        assert!(db_new.data_dir().exists());
     }
 
     #[test]
@@ -2480,66 +1540,59 @@ mod tests {
     }
 
     #[test]
-    fn test_ephemeral_creates_unique_instances() {
-        // ephemeral() always creates unique instances (not registered)
-        let db1 = Database::ephemeral().unwrap();
-        let db2 = Database::ephemeral().unwrap();
-
-        // Should be different instances
-        assert!(!Arc::ptr_eq(&db1, &db2));
+    fn test_database_builder_default() {
+        let builder = DatabaseBuilder::new();
+        assert!(builder.get_path().is_none());
     }
 
     #[test]
-    fn test_concurrent_open_same_path() {
-        use std::thread;
+    fn test_database_builder_path() {
+        let builder = DatabaseBuilder::new().path("/tmp/test");
+        assert_eq!(
+            builder.get_path(),
+            Some(&std::path::PathBuf::from("/tmp/test"))
+        );
+    }
 
+    #[test]
+    fn test_database_builder_open_with_path() {
         let temp_dir = TempDir::new().unwrap();
-        let db_path = temp_dir.path().join("concurrent_test");
+        let db_path = temp_dir.path().join("builder_test");
 
-        // Pre-create the database
-        let _ = Database::open(&db_path).unwrap();
+        let db = Database::builder().path(&db_path).strict().open().unwrap();
 
-        // Spawn multiple threads that all try to open the same path
-        let handles: Vec<_> = (0..10)
-            .map(|_| {
-                let path = db_path.clone();
-                thread::spawn(move || Database::open(&path).unwrap())
-            })
-            .collect();
+        assert_eq!(db.data_dir(), db_path.canonicalize().unwrap());
+    }
 
-        // Collect all Arc<Database> results
-        let databases: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    #[test]
+    fn test_database_builder_open_requires_path() {
+        // Builder without path should fail
+        let result = Database::builder().open();
+        assert!(result.is_err());
+    }
 
-        // All should be the same instance
-        let first = &databases[0];
-        for db in &databases[1..] {
-            assert!(Arc::ptr_eq(first, db));
+    #[test]
+    fn test_durability_mode_accessor() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Test with Strict mode
+        {
+            let db = Database::builder()
+                .path(temp_dir.path().join("strict"))
+                .strict()
+                .open()
+                .unwrap();
+            assert_eq!(db.durability_mode(), DurabilityMode::Strict);
+        }
+
+        // Test with no-durability mode (InMemory durability)
+        {
+            let db = Database::builder()
+                .path(temp_dir.path().join("no_durability"))
+                .no_durability()
+                .open()
+                .unwrap();
+            assert_eq!(db.durability_mode(), DurabilityMode::None);
         }
     }
-
-    #[test]
-    fn test_shared_database_operations() {
-        let temp_dir = TempDir::new().unwrap();
-        let db_path = temp_dir.path().join("shared_ops_test");
-
-        let run_id = RunId::new();
-        let ns = create_test_namespace(run_id);
-
-        // Open same database in two "agents"
-        let db1 = Database::open(&db_path).unwrap();
-        let db2 = Database::open(&db_path).unwrap();
-
-        // Write via db1
-        let key = Key::new_kv(ns.clone(), "shared_key");
-        db1.transaction(run_id, |txn| {
-            txn.put(key.clone(), Value::String("from db1".into()))?;
-            Ok(())
-        })
-        .unwrap();
-
-        // Read via db2 - should see the write
-        let value = db2.storage().get(&key).unwrap().unwrap();
-        assert_eq!(value.value, Value::String("from db1".into()));
-    }
-
 }

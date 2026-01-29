@@ -38,7 +38,7 @@
 
 use strata_core::contract::Version;
 use strata_core::primitives::json::{JsonPath, JsonValue};
-use strata_core::{Result, Value};
+use strata_core::{StrataResult, Value};
 
 // Forward declarations - traits are defined here, implementations
 // are added in their respective primitive modules.
@@ -48,13 +48,13 @@ use strata_core::{Result, Value};
 /// Implemented in `kv.rs`
 pub trait KVStoreExt {
     /// Get a value by key
-    fn kv_get(&mut self, key: &str) -> Result<Option<Value>>;
+    fn kv_get(&mut self, key: &str) -> StrataResult<Option<Value>>;
 
     /// Put a value
-    fn kv_put(&mut self, key: &str, value: Value) -> Result<()>;
+    fn kv_put(&mut self, key: &str, value: Value) -> StrataResult<()>;
 
     /// Delete a key
-    fn kv_delete(&mut self, key: &str) -> Result<()>;
+    fn kv_delete(&mut self, key: &str) -> StrataResult<()>;
 }
 
 /// Event log operations within a transaction
@@ -62,10 +62,10 @@ pub trait KVStoreExt {
 /// Implemented in `event_log.rs`
 pub trait EventLogExt {
     /// Append an event and return sequence number
-    fn event_append(&mut self, event_type: &str, payload: Value) -> Result<u64>;
+    fn event_append(&mut self, event_type: &str, payload: Value) -> StrataResult<u64>;
 
     /// Read an event by sequence number
-    fn event_read(&mut self, sequence: u64) -> Result<Option<Value>>;
+    fn event_read(&mut self, sequence: u64) -> StrataResult<Option<Value>>;
 }
 
 /// State cell operations within a transaction
@@ -73,13 +73,13 @@ pub trait EventLogExt {
 /// Implemented in `state_cell.rs`
 pub trait StateCellExt {
     /// Read current state
-    fn state_read(&mut self, name: &str) -> Result<Option<Value>>;
+    fn state_read(&mut self, name: &str) -> StrataResult<Option<Value>>;
 
     /// Compare-and-swap update, returns new version
-    fn state_cas(&mut self, name: &str, expected_version: Version, new_value: Value) -> Result<Version>;
+    fn state_cas(&mut self, name: &str, expected_version: Version, new_value: Value) -> StrataResult<Version>;
 
     /// Unconditional set, returns new version
-    fn state_set(&mut self, name: &str, value: Value) -> Result<Version>;
+    fn state_set(&mut self, name: &str, value: Value) -> StrataResult<Version>;
 }
 
 /// JSON store operations within a transaction
@@ -87,13 +87,13 @@ pub trait StateCellExt {
 /// Implemented in `json_store.rs`
 pub trait JsonStoreExt {
     /// Get value at path in a document
-    fn json_get(&mut self, doc_id: &str, path: &JsonPath) -> Result<Option<JsonValue>>;
+    fn json_get(&mut self, doc_id: &str, path: &JsonPath) -> StrataResult<Option<JsonValue>>;
 
     /// Set value at path in a document, returns new version
-    fn json_set(&mut self, doc_id: &str, path: &JsonPath, value: JsonValue) -> Result<Version>;
+    fn json_set(&mut self, doc_id: &str, path: &JsonPath, value: JsonValue) -> StrataResult<Version>;
 
     /// Create a new JSON document, returns version
-    fn json_create(&mut self, doc_id: &str, value: JsonValue) -> Result<Version>;
+    fn json_create(&mut self, doc_id: &str, value: JsonValue) -> StrataResult<Version>;
 }
 
 /// Vector store operations within a transaction
@@ -105,7 +105,7 @@ pub trait JsonStoreExt {
 /// Implemented in `vector/store.rs`
 pub trait VectorStoreExt {
     /// Get a vector by key
-    fn vector_get(&mut self, collection: &str, key: &str) -> Result<Option<Vec<f32>>>;
+    fn vector_get(&mut self, collection: &str, key: &str) -> StrataResult<Option<Vec<f32>>>;
 
     /// Insert/upsert a vector, returns version
     fn vector_insert(
@@ -113,7 +113,7 @@ pub trait VectorStoreExt {
         collection: &str,
         key: &str,
         embedding: &[f32],
-    ) -> Result<Version>;
+    ) -> StrataResult<Version>;
 }
 
 // Note: RunIndex does not have an extension trait because run operations

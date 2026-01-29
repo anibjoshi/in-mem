@@ -23,7 +23,7 @@
 use crate::database::Database;
 use serde::{Deserialize, Serialize};
 use strata_core::contract::{Timestamp, Version, Versioned};
-use strata_core::error::Result;
+use strata_core::StrataResult;
 use strata_core::types::{Key, Namespace, RunId, TypeTag};
 use strata_core::value::Value;
 use strata_core::StrataError;
@@ -239,7 +239,7 @@ impl RunIndex {
     ///
     /// ## Errors
     /// - `InvalidInput` if run already exists
-    pub fn create_run(&self, run_id: &str) -> Result<Versioned<RunMetadata>> {
+    pub fn create_run(&self, run_id: &str) -> StrataResult<Versioned<RunMetadata>> {
         self.db.transaction(global_run_id(), |txn| {
             let key = self.key_for(run_id);
 
@@ -263,7 +263,7 @@ impl RunIndex {
     /// ## Returns
     /// - `Some(Versioned<metadata>)` if run exists
     /// - `None` if run doesn't exist
-    pub fn get_run(&self, run_id: &str) -> Result<Option<Versioned<RunMetadata>>> {
+    pub fn get_run(&self, run_id: &str) -> StrataResult<Option<Versioned<RunMetadata>>> {
         self.db.transaction(global_run_id(), |txn| {
             let key = self.key_for(run_id);
             match txn.get(&key)? {
@@ -278,7 +278,7 @@ impl RunIndex {
     }
 
     /// Check if a run exists
-    pub fn exists(&self, run_id: &str) -> Result<bool> {
+    pub fn exists(&self, run_id: &str) -> StrataResult<bool> {
         self.db.transaction(global_run_id(), |txn| {
             let key = self.key_for(run_id);
             Ok(txn.get(&key)?.is_some())
@@ -286,7 +286,7 @@ impl RunIndex {
     }
 
     /// List all run IDs
-    pub fn list_runs(&self) -> Result<Vec<String>> {
+    pub fn list_runs(&self) -> StrataResult<Vec<String>> {
         self.db.transaction(global_run_id(), |txn| {
             let prefix = Key::new_run_with_id(global_namespace(), "");
             let results = txn.scan_prefix(&prefix)?;
@@ -313,7 +313,7 @@ impl RunIndex {
     /// - All run-scoped data (KV, Events, States, JSON, Vectors)
     ///
     /// USE WITH CAUTION - this is irreversible!
-    pub fn delete_run(&self, run_id: &str) -> Result<()> {
+    pub fn delete_run(&self, run_id: &str) -> StrataResult<()> {
         // First get the run metadata
         let run_meta = self
             .get_run(run_id)?
@@ -342,7 +342,7 @@ impl RunIndex {
     }
 
     /// Internal helper to delete all run-scoped data
-    fn delete_run_data_internal(&self, run_id: RunId) -> Result<()> {
+    fn delete_run_data_internal(&self, run_id: RunId) -> StrataResult<()> {
         let ns = Namespace::for_run(run_id);
 
         // Delete data for each type tag
@@ -376,11 +376,11 @@ impl RunIndex {
 // Search is handled by the intelligence layer.
 // This implementation returns empty results.
 
-impl crate::primitives::searchable::Searchable for RunIndex {
+impl crate::search::Searchable for RunIndex {
     fn search(
         &self,
         _req: &crate::SearchRequest,
-    ) -> strata_core::error::Result<crate::SearchResponse> {
+    ) -> strata_core::StrataResult<crate::SearchResponse> {
         // Search moved to intelligence layer - return empty results
         Ok(crate::SearchResponse::empty())
     }

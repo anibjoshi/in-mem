@@ -9,10 +9,8 @@
 //! - `Scorer` trait: pluggable scoring interface
 //! - `BM25LiteScorer`: default BM25-inspired scorer
 
-use strata_core::error::Result;
-use crate::search_types::{
-    EntityRef, SearchHit, SearchRequest, SearchResponse, SearchStats,
-};
+use strata_core::StrataResult;
+use super::types::{EntityRef, SearchHit, SearchRequest, SearchResponse, SearchStats};
 use strata_core::PrimitiveType;
 use super::tokenizer::tokenize;
 use super::index::InvertedIndex;
@@ -32,7 +30,7 @@ pub trait Searchable {
     ///
     /// Returns results matching the query within budget constraints.
     /// Uses a snapshot for consistency.
-    fn search(&self, req: &SearchRequest) -> Result<SearchResponse>;
+    fn search(&self, req: &SearchRequest) -> StrataResult<SearchResponse>;
 
     /// Get the primitive type
     fn primitive_kind(&self) -> PrimitiveType;

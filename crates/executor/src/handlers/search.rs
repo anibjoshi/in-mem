@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use strata_engine::{SearchBudget, SearchRequest};
-use strata_engine::search_types::PrimitiveType;
+use strata_engine::search::PrimitiveType;
 use strata_intelligence::HybridSearch;
 
 use crate::bridge::{to_core_run_id, Primitives};
@@ -74,25 +74,25 @@ pub fn search(
 }
 
 /// Format an EntityRef into (entity_string, primitive_string) for display
-fn format_entity_ref(doc_ref: &strata_engine::search_types::EntityRef) -> (String, String) {
+fn format_entity_ref(doc_ref: &strata_engine::search::EntityRef) -> (String, String) {
     match doc_ref {
-        strata_engine::search_types::EntityRef::Kv { key, .. } => {
+        strata_engine::search::EntityRef::Kv { key, .. } => {
             (key.clone(), "kv".to_string())
         }
-        strata_engine::search_types::EntityRef::Json { doc_id, .. } => {
+        strata_engine::search::EntityRef::Json { doc_id, .. } => {
             (doc_id.clone(), "json".to_string())
         }
-        strata_engine::search_types::EntityRef::Event { sequence, .. } => {
+        strata_engine::search::EntityRef::Event { sequence, .. } => {
             (format!("seq:{}", sequence), "event".to_string())
         }
-        strata_engine::search_types::EntityRef::State { name, .. } => {
+        strata_engine::search::EntityRef::State { name, .. } => {
             (name.clone(), "state".to_string())
         }
-        strata_engine::search_types::EntityRef::Run { run_id } => {
+        strata_engine::search::EntityRef::Run { run_id } => {
             let uuid = uuid::Uuid::from_bytes(*run_id.as_bytes());
             (uuid.to_string(), "run".to_string())
         }
-        strata_engine::search_types::EntityRef::Vector { key, .. } => {
+        strata_engine::search::EntityRef::Vector { key, .. } => {
             (key.clone(), "vector".to_string())
         }
     }

@@ -39,38 +39,34 @@
 //! })?;
 //! ```
 
-pub mod event_log;
+pub mod event;
 pub mod extensions;
-pub mod json_store;
+pub mod json;
 pub mod kv;
-pub mod run_handle;
-pub mod run_index;
-pub mod index;
-pub mod searchable;
-pub mod state_cell;
-pub mod tokenizer;
+pub mod run;
+pub mod state;
 pub mod vector;
 
 // Re-exports - primitives are exported as they're implemented
-pub use event_log::{Event, EventLog};
-pub use json_store::{JsonDoc, JsonStore};
+pub use event::{Event, EventLog};
+pub use json::{JsonDoc, JsonStore};
 pub use kv::KVStore;
-pub use run_handle::{
-    EventHandle, JsonHandle, KvHandle, RunHandle, StateHandle, VectorHandle,
-};
-pub use run_index::{RunIndex, RunMetadata, RunStatus};
-pub use index::{InvertedIndex, PostingEntry, PostingList};
-pub use searchable::{
-    build_search_response, build_search_response_with_index,
-    BM25LiteScorer, Scorer, ScorerContext, SearchCandidate, SearchDoc, Searchable, SimpleScorer,
-};
-pub use state_cell::{State, StateCell};
+pub use run::{RunHandle, EventHandle, JsonHandle, KvHandle, StateHandle, VectorHandle};
+pub use run::{RunIndex, RunMetadata, RunStatus};
+pub use state::{State, StateCell};
 pub use vector::{
     register_vector_recovery, validate_collection_name, validate_vector_key, BruteForceBackend,
     CollectionId, CollectionInfo, CollectionRecord, DistanceMetric, IndexBackendFactory,
     JsonScalar, MetadataFilter, StorageDtype, VectorConfig, VectorConfigSerde, VectorEntry,
     VectorError, VectorHeap, VectorId, VectorIndexBackend, VectorMatch, VectorRecord,
     VectorResult, VectorStore, VectorBackendState,
+};
+
+// Re-export search types for convenience (from search module)
+pub use crate::search::{
+    build_search_response, build_search_response_with_index,
+    BM25LiteScorer, Scorer, ScorerContext, SearchCandidate, SearchDoc, Searchable, SimpleScorer,
+    InvertedIndex, PostingEntry, PostingList, tokenize, tokenize_unique,
 };
 
 // Re-export extension traits for convenience

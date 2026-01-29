@@ -20,7 +20,7 @@
 
 use super::tokenizer::tokenize;
 use dashmap::DashMap;
-use crate::search_types::EntityRef;
+use super::types::EntityRef;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};

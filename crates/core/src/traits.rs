@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use crate::contract::VersionedValue;
-use crate::error::Result;
+use crate::error::StrataResult;
 use crate::types::{Key, RunId};
 use crate::value::Value;
 
@@ -33,7 +33,7 @@ pub trait Storage: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if the storage operation fails.
-    fn get(&self, key: &Key) -> Result<Option<VersionedValue>>;
+    fn get(&self, key: &Key) -> StrataResult<Option<VersionedValue>>;
 
     /// Get value at or before specified version (for snapshot isolation)
     ///
@@ -43,7 +43,7 @@ pub trait Storage: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if the storage operation fails.
-    fn get_versioned(&self, key: &Key, max_version: u64) -> Result<Option<VersionedValue>>;
+    fn get_versioned(&self, key: &Key, max_version: u64) -> StrataResult<Option<VersionedValue>>;
 
     /// Get version history for a key
     ///
@@ -67,7 +67,7 @@ pub trait Storage: Send + Sync {
         key: &Key,
         limit: Option<usize>,
         before_version: Option<u64>,
-    ) -> Result<Vec<VersionedValue>>;
+    ) -> StrataResult<Vec<VersionedValue>>;
 
     /// Put key-value pair with optional TTL
     ///
@@ -77,7 +77,7 @@ pub trait Storage: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if the storage operation fails.
-    fn put(&self, key: Key, value: Value, ttl: Option<Duration>) -> Result<u64>;
+    fn put(&self, key: Key, value: Value, ttl: Option<Duration>) -> StrataResult<u64>;
 
     /// Delete key
     ///
@@ -86,7 +86,7 @@ pub trait Storage: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if the storage operation fails.
-    fn delete(&self, key: &Key) -> Result<Option<VersionedValue>>;
+    fn delete(&self, key: &Key) -> StrataResult<Option<VersionedValue>>;
 
     /// Scan keys with given prefix at or before max_version
     ///
@@ -96,7 +96,7 @@ pub trait Storage: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if the storage operation fails.
-    fn scan_prefix(&self, prefix: &Key, max_version: u64) -> Result<Vec<(Key, VersionedValue)>>;
+    fn scan_prefix(&self, prefix: &Key, max_version: u64) -> StrataResult<Vec<(Key, VersionedValue)>>;
 
     /// Scan all keys for a given run_id at or before max_version
     ///
@@ -106,7 +106,7 @@ pub trait Storage: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if the storage operation fails.
-    fn scan_by_run(&self, run_id: RunId, max_version: u64) -> Result<Vec<(Key, VersionedValue)>>;
+    fn scan_by_run(&self, run_id: RunId, max_version: u64) -> StrataResult<Vec<(Key, VersionedValue)>>;
 
     /// Get current global version
     ///
@@ -137,7 +137,7 @@ pub trait Storage: Send + Sync {
         value: Value,
         version: u64,
         ttl: Option<Duration>,
-    ) -> Result<()>;
+    ) -> StrataResult<()>;
 
     /// Delete a key with a specific version (creates tombstone)
     ///
@@ -154,7 +154,7 @@ pub trait Storage: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if the storage operation fails.
-    fn delete_with_version(&self, key: &Key, version: u64) -> Result<Option<VersionedValue>>;
+    fn delete_with_version(&self, key: &Key, version: u64) -> StrataResult<Option<VersionedValue>>;
 }
 
 /// Snapshot view abstraction for snapshot isolation
@@ -180,7 +180,7 @@ pub trait SnapshotView: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if the storage operation fails.
-    fn get(&self, key: &Key) -> Result<Option<VersionedValue>>;
+    fn get(&self, key: &Key) -> StrataResult<Option<VersionedValue>>;
 
     /// Scan keys with prefix from snapshot
     ///
@@ -189,7 +189,7 @@ pub trait SnapshotView: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if the storage operation fails.
-    fn scan_prefix(&self, prefix: &Key) -> Result<Vec<(Key, VersionedValue)>>;
+    fn scan_prefix(&self, prefix: &Key) -> StrataResult<Vec<(Key, VersionedValue)>>;
 
     /// Get snapshot version
     ///
@@ -226,12 +226,12 @@ mod tests {
     }
 
     impl Storage for MockStorage {
-        fn get(&self, key: &Key) -> Result<Option<VersionedValue>> {
+        fn get(&self, key: &Key) -> StrataResult<Option<VersionedValue>> {
             let data = self.data.read().unwrap();
             Ok(data.get(key).and_then(|versions| versions.last().cloned()))
         }
 
-        fn get_versioned(&self, key: &Key, max_version: u64) -> Result<Option<VersionedValue>> {
+        fn get_versioned(&self, key: &Key, max_version: u64) -> StrataResult<Option<VersionedValue>> {
             let data = self.data.read().unwrap();
             Ok(data.get(key).and_then(|versions| {
                 versions.iter().rev()
@@ -245,7 +245,7 @@ mod tests {
             key: &Key,
             limit: Option<usize>,
             before_version: Option<u64>,
-        ) -> Result<Vec<VersionedValue>> {
+        ) -> StrataResult<Vec<VersionedValue>> {
             let data = self.data.read().unwrap();
             let Some(versions) = data.get(key) else {
                 return Ok(vec![]);
@@ -260,7 +260,7 @@ mod tests {
             Ok(result)
         }
 
-        fn put(&self, key: Key, value: Value, _ttl: Option<Duration>) -> Result<u64> {
+        fn put(&self, key: Key, value: Value, _ttl: Option<Duration>) -> StrataResult<u64> {
             let ver = self.version.fetch_add(1, Ordering::SeqCst) + 1;
             let versioned = Versioned::with_timestamp(value, Version::txn(ver), Timestamp::now());
             let mut data = self.data.write().unwrap();
@@ -268,12 +268,12 @@ mod tests {
             Ok(ver)
         }
 
-        fn delete(&self, key: &Key) -> Result<Option<VersionedValue>> {
+        fn delete(&self, key: &Key) -> StrataResult<Option<VersionedValue>> {
             let mut data = self.data.write().unwrap();
             Ok(data.remove(key).and_then(|v| v.last().cloned()))
         }
 
-        fn scan_prefix(&self, prefix: &Key, max_version: u64) -> Result<Vec<(Key, VersionedValue)>> {
+        fn scan_prefix(&self, prefix: &Key, max_version: u64) -> StrataResult<Vec<(Key, VersionedValue)>> {
             let data = self.data.read().unwrap();
             let mut result = vec![];
             for (k, versions) in data.iter() {
@@ -287,7 +287,7 @@ mod tests {
             Ok(result)
         }
 
-        fn scan_by_run(&self, run_id: RunId, max_version: u64) -> Result<Vec<(Key, VersionedValue)>> {
+        fn scan_by_run(&self, run_id: RunId, max_version: u64) -> StrataResult<Vec<(Key, VersionedValue)>> {
             let data = self.data.read().unwrap();
             let mut result = vec![];
             for (k, versions) in data.iter() {
@@ -305,14 +305,14 @@ mod tests {
             self.version.load(Ordering::SeqCst)
         }
 
-        fn put_with_version(&self, key: Key, value: Value, version: u64, _ttl: Option<Duration>) -> Result<()> {
+        fn put_with_version(&self, key: Key, value: Value, version: u64, _ttl: Option<Duration>) -> StrataResult<()> {
             let versioned = Versioned::with_timestamp(value, Version::txn(version), Timestamp::now());
             let mut data = self.data.write().unwrap();
             data.entry(key).or_default().push(versioned);
             Ok(())
         }
 
-        fn delete_with_version(&self, key: &Key, _version: u64) -> Result<Option<VersionedValue>> {
+        fn delete_with_version(&self, key: &Key, _version: u64) -> StrataResult<Option<VersionedValue>> {
             self.delete(key)
         }
     }
@@ -338,11 +338,11 @@ mod tests {
     }
 
     impl SnapshotView for MockSnapshot {
-        fn get(&self, key: &Key) -> Result<Option<VersionedValue>> {
+        fn get(&self, key: &Key) -> StrataResult<Option<VersionedValue>> {
             Ok(self.data.get(key).cloned())
         }
 
-        fn scan_prefix(&self, prefix: &Key) -> Result<Vec<(Key, VersionedValue)>> {
+        fn scan_prefix(&self, prefix: &Key) -> StrataResult<Vec<(Key, VersionedValue)>> {
             Ok(self.data.iter()
                 .filter(|(k, _)| k.starts_with(prefix))
                 .map(|(k, v)| (k.clone(), v.clone()))
@@ -646,32 +646,32 @@ mod tests {
     struct FailingStorage;
 
     impl Storage for FailingStorage {
-        fn get(&self, _: &Key) -> Result<Option<VersionedValue>> {
+        fn get(&self, _: &Key) -> StrataResult<Option<VersionedValue>> {
             Err(StrataError::storage("disk read failed"))
         }
-        fn get_versioned(&self, _: &Key, _: u64) -> Result<Option<VersionedValue>> {
+        fn get_versioned(&self, _: &Key, _: u64) -> StrataResult<Option<VersionedValue>> {
             Err(StrataError::storage("disk read failed"))
         }
-        fn get_history(&self, _: &Key, _: Option<usize>, _: Option<u64>) -> Result<Vec<VersionedValue>> {
+        fn get_history(&self, _: &Key, _: Option<usize>, _: Option<u64>) -> StrataResult<Vec<VersionedValue>> {
             Err(StrataError::storage("disk read failed"))
         }
-        fn put(&self, _: Key, _: Value, _: Option<Duration>) -> Result<u64> {
+        fn put(&self, _: Key, _: Value, _: Option<Duration>) -> StrataResult<u64> {
             Err(StrataError::storage("disk write failed"))
         }
-        fn delete(&self, _: &Key) -> Result<Option<VersionedValue>> {
+        fn delete(&self, _: &Key) -> StrataResult<Option<VersionedValue>> {
             Err(StrataError::storage("disk write failed"))
         }
-        fn scan_prefix(&self, _: &Key, _: u64) -> Result<Vec<(Key, VersionedValue)>> {
+        fn scan_prefix(&self, _: &Key, _: u64) -> StrataResult<Vec<(Key, VersionedValue)>> {
             Err(StrataError::storage("disk read failed"))
         }
-        fn scan_by_run(&self, _: RunId, _: u64) -> Result<Vec<(Key, VersionedValue)>> {
+        fn scan_by_run(&self, _: RunId, _: u64) -> StrataResult<Vec<(Key, VersionedValue)>> {
             Err(StrataError::storage("disk read failed"))
         }
         fn current_version(&self) -> u64 { 0 }
-        fn put_with_version(&self, _: Key, _: Value, _: u64, _: Option<Duration>) -> Result<()> {
+        fn put_with_version(&self, _: Key, _: Value, _: u64, _: Option<Duration>) -> StrataResult<()> {
             Err(StrataError::storage("disk write failed"))
         }
-        fn delete_with_version(&self, _: &Key, _: u64) -> Result<Option<VersionedValue>> {
+        fn delete_with_version(&self, _: &Key, _: u64) -> StrataResult<Option<VersionedValue>> {
             Err(StrataError::storage("disk write failed"))
         }
     }

@@ -15,7 +15,7 @@
 //! writer.write_commit()?;
 //! ```
 
-use strata_core::error::Result;
+use strata_core::StrataResult;
 use strata_core::types::{Key, RunId};
 use strata_core::value::Value;
 use strata_core::Timestamp;
@@ -60,7 +60,7 @@ impl<'a> TransactionWALWriter<'a> {
     /// Write BeginTxn entry
     ///
     /// Should be called at the start of the commit process.
-    pub fn write_begin(&mut self) -> Result<()> {
+    pub fn write_begin(&mut self) -> StrataResult<()> {
         let entry = WALEntry::BeginTxn {
             txn_id: self.txn_id,
             run_id: self.run_id,
@@ -76,7 +76,7 @@ impl<'a> TransactionWALWriter<'a> {
     /// * `key` - Key being written
     /// * `value` - Value being written
     /// * `version` - Commit version for this write
-    pub fn write_put(&mut self, key: Key, value: Value, version: u64) -> Result<()> {
+    pub fn write_put(&mut self, key: Key, value: Value, version: u64) -> StrataResult<()> {
         let entry = WALEntry::Write {
             run_id: self.run_id,
             key,
@@ -92,7 +92,7 @@ impl<'a> TransactionWALWriter<'a> {
     /// # Arguments
     /// * `key` - Key being deleted
     /// * `version` - Commit version for this delete
-    pub fn write_delete(&mut self, key: Key, version: u64) -> Result<()> {
+    pub fn write_delete(&mut self, key: Key, version: u64) -> StrataResult<()> {
         let entry = WALEntry::Delete {
             run_id: self.run_id,
             key,
@@ -107,7 +107,7 @@ impl<'a> TransactionWALWriter<'a> {
     /// Per spec Section 5: This is the DURABILITY POINT.
     /// Once this entry is written and flushed, the transaction is durable.
     /// If crash occurs after this, recovery will replay the transaction.
-    pub fn write_commit(&mut self) -> Result<()> {
+    pub fn write_commit(&mut self) -> StrataResult<()> {
         let entry = WALEntry::CommitTxn {
             txn_id: self.txn_id,
             run_id: self.run_id,
@@ -125,7 +125,7 @@ impl<'a> TransactionWALWriter<'a> {
     /// Per spec Appendix A.3: Aborted transactions don't need WAL entries
     /// because they never applied anything. However, we support this for
     /// explicit abort tracking if needed.
-    pub fn write_abort(&mut self) -> Result<()> {
+    pub fn write_abort(&mut self) -> StrataResult<()> {
         let entry = WALEntry::AbortTxn {
             txn_id: self.txn_id,
             run_id: self.run_id,
@@ -161,7 +161,7 @@ impl<'a> TransactionWALWriter<'a> {
         dimension: usize,
         metric: u8,
         version: u64,
-    ) -> Result<()> {
+    ) -> StrataResult<()> {
         let entry = WALEntry::VectorCollectionCreate {
             run_id: self.run_id,
             collection,
@@ -182,7 +182,7 @@ impl<'a> TransactionWALWriter<'a> {
         &mut self,
         collection: String,
         version: u64,
-    ) -> Result<()> {
+    ) -> StrataResult<()> {
         let entry = WALEntry::VectorCollectionDelete {
             run_id: self.run_id,
             collection,
@@ -211,7 +211,7 @@ impl<'a> TransactionWALWriter<'a> {
         metadata: Option<Vec<u8>>,
         version: u64,
         source_ref: Option<strata_core::EntityRef>,
-    ) -> Result<()> {
+    ) -> StrataResult<()> {
         let entry = WALEntry::VectorUpsert {
             run_id: self.run_id,
             collection,
@@ -239,7 +239,7 @@ impl<'a> TransactionWALWriter<'a> {
         key: String,
         vector_id: u64,
         version: u64,
-    ) -> Result<()> {
+    ) -> StrataResult<()> {
         let entry = WALEntry::VectorDelete {
             run_id: self.run_id,
             collection,

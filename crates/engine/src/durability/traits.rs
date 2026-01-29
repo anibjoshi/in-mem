@@ -29,7 +29,7 @@
 //! | Strict | ~2ms | Audit logs, checkpoints |
 
 use strata_concurrency::TransactionContext;
-use strata_core::error::Result;
+use strata_core::StrataResult;
 use strata_core::types::RunId;
 
 /// Durability behavior abstraction
@@ -52,7 +52,7 @@ use strata_core::types::RunId;
 ///     durability: &D,
 ///     txn: &TransactionContext,
 ///     commit_version: u64,
-/// ) -> Result<()> {
+/// ) -> StrataResult<()> {
 ///     durability.persist(txn, commit_version)?;
 ///     // ... apply to storage
 ///     Ok(())
@@ -79,7 +79,7 @@ pub trait Durability: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if WAL write or fsync fails.
-    fn persist(&self, txn: &TransactionContext, commit_version: u64) -> Result<()>;
+    fn persist(&self, txn: &TransactionContext, commit_version: u64) -> StrataResult<()>;
 
     /// Graceful shutdown - flush any pending data
     ///
@@ -95,7 +95,7 @@ pub trait Durability: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if the final flush fails.
-    fn shutdown(&self) -> Result<()>;
+    fn shutdown(&self) -> StrataResult<()>;
 
     /// Check if this durability mode persists data
     ///
@@ -138,7 +138,7 @@ pub trait DurabilityExt: Durability {
         txn: &TransactionContext,
         commit_version: u64,
         force_sync: bool,
-    ) -> Result<()>;
+    ) -> StrataResult<()>;
 }
 
 /// Commit data extracted from a transaction
@@ -196,11 +196,11 @@ mod tests {
     }
 
     impl Durability for MockDurability {
-        fn persist(&self, _txn: &TransactionContext, _commit_version: u64) -> Result<()> {
+        fn persist(&self, _txn: &TransactionContext, _commit_version: u64) -> StrataResult<()> {
             Ok(())
         }
 
-        fn shutdown(&self) -> Result<()> {
+        fn shutdown(&self) -> StrataResult<()> {
             Ok(())
         }
 
