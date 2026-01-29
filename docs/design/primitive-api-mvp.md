@@ -6,11 +6,33 @@ The current primitive API has **152 public methods** across 6 primitives. This i
 
 **Target: ~37 methods** (76% reduction)
 
+> **Related Documents:**
+> - [strata-api-structure.md](./strata-api-structure.md) - How users access the API (Strata, runs, concurrency)
+> - [run-api-git-semantics.md](./run-api-git-semantics.md) - Git-like run operations (fork, diff, merge)
+
 ## Current Issues
 
 1. **Inconsistent data access**: ~50% of methods bypass `Database.transaction()` and directly access `db.storage()`
 2. **API bloat**: Many convenience methods, batch operations, and advanced features
 3. **No run validation**: Methods don't verify the run exists before operating
+
+## User-Facing API
+
+Users access primitives through `Strata`, not by constructing primitives directly:
+
+```rust
+// User code
+let db = Strata::open("/path/to/data")?;
+db.checkout_run("my-agent-session")?;
+
+db.kv_put("key", value)?;           // KV primitive
+db.state_set("cell", value)?;       // State primitive
+db.event_append("stream", payload)?; // Event primitive
+```
+
+The `Strata` struct wraps the executor and maintains a "current run" context. See [strata-api-structure.md](./strata-api-structure.md) for details.
+
+Primitive structs (`KVStore`, `StateCell`, etc.) are internal to the engine layer and should not be exposed as public API. The methods listed below define what operations are available, but users access them through `Strata` methods, not primitive constructors.
 
 ## MVP Principles
 
@@ -27,15 +49,18 @@ The current primitive API has **152 public methods** across 6 primitives. This i
 
 **Current: 25 methods**
 
-### Keep (6 methods)
+### Keep (5 methods + internal constructor)
 | Method | Signature | Rationale |
 |--------|-----------|-----------|
-| `new` | `new(db: Arc<Database>) -> Self` | Constructor |
+| `new` | `new(db: Arc<Database>) -> Self` | Internal constructor (not user-facing) |
 | `get` | `get(run_id, key) -> Option<Value>` | Latest value (fast path) |
 | `getv` | `getv(run_id, key) -> Option<VersionedHistory<Value>>` | Full history, indexable |
 | `put` | `put(run_id, key, value) -> Version` | Core write |
 | `delete` | `delete(run_id, key) -> bool` | Core delete |
 | `list` | `list(run_id, prefix) -> Vec<String>` | List keys |
+
+> **Note**: Users access these via `Strata`: `db.kv_get("key")`, `db.kv_put("key", value)`, etc.
+> The `run_id` parameter is handled internally based on `Strata`'s current run context.
 
 ### Remove
 | Method | Reason |
