@@ -141,14 +141,15 @@ impl TransactionManager {
     ///
     /// Per spec Core Invariants:
     /// - Validates transaction (first-committer-wins)
-    /// - Writes to WAL for durability
+    /// - Writes to WAL for durability (when WAL is provided)
     /// - Applies to storage only after WAL is durable
     /// - All-or-nothing: either all writes succeed or transaction aborts
     ///
     /// # Arguments
     /// * `txn` - Transaction to commit (must be in Active state)
     /// * `store` - Storage to validate against and apply writes to
-    /// * `wal` - WAL for durability
+    /// * `wal` - Optional WAL for durability. Pass `None` for ephemeral databases
+    ///           or when durability is not required (DurabilityMode::None).
     ///
     /// # Returns
     /// - Ok(commit_version) on success
@@ -159,12 +160,13 @@ impl TransactionManager {
     /// 1. Acquire per-run commit lock (prevents TOCTOU race within same run)
     /// 2. Validate and mark committed (in-memory state transition)
     /// 3. Allocate commit version
-    /// 4. Write BeginTxn to WAL
-    /// 5. Write all operations to WAL
-    /// 6. Write CommitTxn to WAL (DURABILITY POINT)
-    /// 7. Apply writes to storage
-    /// 8. Release commit lock
-    /// 9. Return commit version
+    /// 4. Write to WAL if provided (BeginTxn, operations, CommitTxn)
+    /// 5. Apply writes to storage
+    /// 6. Release commit lock
+    /// 7. Return commit version
+    ///
+    /// When `wal` is `None`, steps 4 is skipped entirely. The transaction is
+    /// still validated and applied to storage, but without durability guarantees.
     ///
     /// # Thread Safety
     ///
@@ -177,7 +179,7 @@ impl TransactionManager {
         &self,
         txn: &mut TransactionContext,
         store: &S,
-        wal: &WAL,
+        wal: Option<&WAL>,
     ) -> std::result::Result<u64, CommitError> {
         // Acquire per-run commit lock to prevent TOCTOU race between validation and apply
         // This ensures no other transaction on the same run can modify storage between
@@ -197,52 +199,63 @@ impl TransactionManager {
         // Step 2: Allocate commit version
         let commit_version = self.allocate_version();
 
-        // Step 3-5: Write to WAL (durability)
-        let txn_id = self.next_txn_id();
-        let mut wal_writer = TransactionWALWriter::new(wal, txn_id, txn.run_id);
+        // Step 3: Write to WAL (durability) - only when WAL is provided
+        if let Some(wal) = wal {
+            let mut wal_writer = TransactionWALWriter::new(wal, txn.txn_id, txn.run_id);
 
-        // Write BeginTxn
-        if let Err(e) = wal_writer.write_begin() {
-            // WAL write failed - revert transaction state
-            txn.status = TransactionStatus::Aborted {
-                reason: format!("WAL write failed: {}", e),
-            };
-            return Err(CommitError::WALError(e.to_string()));
+            // Write BeginTxn
+            if let Err(e) = wal_writer.write_begin() {
+                // WAL write failed - revert transaction state
+                txn.status = TransactionStatus::Aborted {
+                    reason: format!("WAL write failed: {}", e),
+                };
+                return Err(CommitError::WALError(e.to_string()));
+            }
+
+            // Write all operations
+            if let Err(e) = txn.write_to_wal(&mut wal_writer, commit_version) {
+                txn.status = TransactionStatus::Aborted {
+                    reason: format!("WAL write failed: {}", e),
+                };
+                return Err(CommitError::WALError(e.to_string()));
+            }
+
+            // Write CommitTxn - DURABILITY POINT
+            if let Err(e) = wal_writer.write_commit() {
+                txn.status = TransactionStatus::Aborted {
+                    reason: format!("WAL commit failed: {}", e),
+                };
+                return Err(CommitError::WALError(e.to_string()));
+            }
+
+            // DURABILITY POINT: Transaction is now durable
+            // Even if we crash after this, recovery will replay from WAL
         }
 
-        // Write all operations
-        if let Err(e) = txn.write_to_wal(&mut wal_writer, commit_version) {
-            txn.status = TransactionStatus::Aborted {
-                reason: format!("WAL write failed: {}", e),
-            };
-            return Err(CommitError::WALError(e.to_string()));
-        }
-
-        // Write CommitTxn - DURABILITY POINT
-        if let Err(e) = wal_writer.write_commit() {
-            txn.status = TransactionStatus::Aborted {
-                reason: format!("WAL commit failed: {}", e),
-            };
-            return Err(CommitError::WALError(e.to_string()));
-        }
-
-        // DURABILITY POINT: Transaction is now durable
-        // Even if we crash after this, recovery will replay from WAL
-
-        // Step 6: Apply to storage
+        // Step 4: Apply to storage
         if let Err(e) = txn.apply_writes(store, commit_version) {
-            // This is a serious error - WAL says committed but storage failed
-            // Log error but return success since WAL is authoritative
-            // Recovery will replay the transaction anyway
-            tracing::error!(
-                txn_id = txn.txn_id,
-                commit_version = commit_version,
-                error = %e,
-                "Storage application failed after WAL commit - will be recovered on restart"
-            );
+            if wal.is_some() {
+                // WAL says committed but storage failed - serious error
+                // Log error but return success since WAL is authoritative
+                // Recovery will replay the transaction anyway
+                tracing::error!(
+                    txn_id = txn.txn_id,
+                    commit_version = commit_version,
+                    error = %e,
+                    "Storage application failed after WAL commit - will be recovered on restart"
+                );
+            } else {
+                // No WAL - storage failure means data loss, return error
+                txn.status = TransactionStatus::Aborted {
+                    reason: format!("Storage application failed: {}", e),
+                };
+                return Err(CommitError::WALError(format!(
+                    "Storage application failed (no WAL): {}", e
+                )));
+            }
         }
 
-        // Step 7: Return commit version
+        // Step 5: Return commit version
         Ok(commit_version)
     }
 
@@ -269,7 +282,7 @@ impl TransactionManager {
         &self,
         txn: &mut TransactionContext,
         store: &S,
-        wal: &WAL,
+        wal: Option<&WAL>,
     ) -> std::result::Result<u64, CommitError> {
         match self.commit(txn, store, wal) {
             Ok(version) => Ok(version),
@@ -378,7 +391,7 @@ mod tests {
         let wal_clone = Arc::clone(&wal);
 
         let handle1 = thread::spawn(move || {
-            manager_clone.commit(&mut txn1, store_clone.as_ref(), wal_clone.as_ref())
+            manager_clone.commit(&mut txn1, store_clone.as_ref(), Some(wal_clone.as_ref()))
         });
 
         let manager_clone2 = Arc::clone(&manager);
@@ -386,7 +399,7 @@ mod tests {
         let wal_clone2 = Arc::clone(&wal);
 
         let handle2 = thread::spawn(move || {
-            manager_clone2.commit(&mut txn2, store_clone2.as_ref(), wal_clone2.as_ref())
+            manager_clone2.commit(&mut txn2, store_clone2.as_ref(), Some(wal_clone2.as_ref()))
         });
 
         let v1 = handle1.join().unwrap().unwrap();
@@ -422,7 +435,7 @@ mod tests {
             let snapshot = store.snapshot();
             let mut txn = TransactionContext::with_snapshot(1, run_id, Box::new(snapshot));
             txn.put(key1.clone(), Value::Int(100)).unwrap();
-            let v = manager.commit(&mut txn, store.as_ref(), wal.as_ref()).unwrap();
+            let v = manager.commit(&mut txn, store.as_ref(), Some(wal.as_ref())).unwrap();
             assert_eq!(v, 1);
         }
 
@@ -431,7 +444,7 @@ mod tests {
             let snapshot = store.snapshot();
             let mut txn = TransactionContext::with_snapshot(2, run_id, Box::new(snapshot));
             txn.put(key2.clone(), Value::Int(200)).unwrap();
-            let v = manager.commit(&mut txn, store.as_ref(), wal.as_ref()).unwrap();
+            let v = manager.commit(&mut txn, store.as_ref(), Some(wal.as_ref())).unwrap();
             assert_eq!(v, 2);
         }
 
@@ -485,7 +498,7 @@ mod tests {
                 let mut txn = TransactionContext::with_snapshot(i as u64 + 1, run_id, Box::new(snapshot));
                 txn.put(key, Value::Int(i as i64)).unwrap();
 
-                manager_clone.commit(&mut txn, store_clone.as_ref(), wal_clone.as_ref())
+                manager_clone.commit(&mut txn, store_clone.as_ref(), Some(wal_clone.as_ref()))
             }));
         }
 
@@ -530,7 +543,7 @@ mod tests {
             let mut setup_txn = TransactionContext::with_snapshot(1, run_id, Box::new(snapshot));
             setup_txn.put(key_alice.clone(), Value::Int(100)).unwrap();
             setup_txn.put(key_bob.clone(), Value::Int(200)).unwrap();
-            manager.commit(&mut setup_txn, store.as_ref(), wal.as_ref()).unwrap();
+            manager.commit(&mut setup_txn, store.as_ref(), Some(wal.as_ref())).unwrap();
         }
 
         // T1: Delete alice (blind), then scan
@@ -550,11 +563,11 @@ mod tests {
             // T2 reads alice first (creates read_set entry)
             let _ = txn2.get(&key_alice).unwrap();
             txn2.put(key_alice.clone(), Value::Int(999)).unwrap();
-            manager.commit(&mut txn2, store.as_ref(), wal.as_ref()).unwrap();
+            manager.commit(&mut txn2, store.as_ref(), Some(wal.as_ref())).unwrap();
         }
 
         // T1 commits - should FAIL because alice was modified after T1 observed it in scan
-        let result = manager.commit(&mut txn1, store.as_ref(), wal.as_ref());
+        let result = manager.commit(&mut txn1, store.as_ref(), Some(wal.as_ref()));
 
         // Conflict should be detected: T1 scanned and saw alice at v1, but T2 updated it to v2
         assert!(result.is_err(), "Should detect conflict when scanned deleted key is modified");
@@ -583,7 +596,7 @@ mod tests {
             let snapshot = store.snapshot();
             let mut setup_txn = TransactionContext::with_snapshot(1, run_id, Box::new(snapshot));
             setup_txn.put(key_alice.clone(), Value::Int(100)).unwrap();
-            manager.commit(&mut setup_txn, store.as_ref(), wal.as_ref()).unwrap();
+            manager.commit(&mut setup_txn, store.as_ref(), Some(wal.as_ref())).unwrap();
         }
 
         // T1: Blind delete alice (no read, no scan)
@@ -597,11 +610,11 @@ mod tests {
             let mut txn2 = TransactionContext::with_snapshot(3, run_id, Box::new(snapshot2));
             let _ = txn2.get(&key_alice).unwrap();
             txn2.put(key_alice.clone(), Value::Int(999)).unwrap();
-            manager.commit(&mut txn2, store.as_ref(), wal.as_ref()).unwrap();
+            manager.commit(&mut txn2, store.as_ref(), Some(wal.as_ref())).unwrap();
         }
 
         // T1 commits - should SUCCEED because blind writes don't conflict
-        let result = manager.commit(&mut txn1, store.as_ref(), wal.as_ref());
+        let result = manager.commit(&mut txn1, store.as_ref(), Some(wal.as_ref()));
         assert!(result.is_ok(), "Blind delete should succeed (no read_set entry)");
 
         // T1's delete overwrites T2's update - this is expected for blind writes
