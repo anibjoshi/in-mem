@@ -286,14 +286,6 @@ impl Session {
                 let version = txn.state_cas(&cell, expected, value).map_err(Error::from)?;
                 Ok(Output::MaybeVersion(Some(extract_version(&version))))
             }
-            Command::StateDelete { cell, .. } => {
-                let deleted = txn.state_delete(&cell).map_err(Error::from)?;
-                Ok(Output::Bool(deleted))
-            }
-            Command::StateExists { cell, .. } => {
-                let exists = txn.state_exists(&cell).map_err(Error::from)?;
-                Ok(Output::Bool(exists))
-            }
 
             // === JSON ===
             Command::JsonSet {

@@ -439,35 +439,6 @@ impl<'a> TransactionOps for Transaction<'a> {
         Ok(new_version)
     }
 
-    fn state_delete(&mut self, name: &str) -> Result<bool, StrataError> {
-        let full_key = self.state_key(name);
-
-        // Check if state exists (for return value)
-        let existed = self.state_exists(name)?;
-
-        // Use the ctx.delete() method
-        self.ctx.delete(full_key).map_err(StrataError::from)?;
-
-        Ok(existed)
-    }
-
-    fn state_exists(&self, name: &str) -> Result<bool, StrataError> {
-        let full_key = self.state_key(name);
-
-        // Check write set first
-        if self.ctx.write_set.contains_key(&full_key) {
-            return Ok(true);
-        }
-
-        // Check delete set
-        if self.ctx.delete_set.contains(&full_key) {
-            return Ok(false);
-        }
-
-        // For keys not in write/delete set, we'd need snapshot access
-        Ok(false)
-    }
-
     // =========================================================================
     // Json Operations
     // =========================================================================
@@ -1005,36 +976,6 @@ mod tests {
             }
             _ => panic!("Expected VersionConflict error"),
         }
-    }
-
-    #[test]
-    fn test_state_delete() {
-        let ns = create_test_namespace();
-        let mut ctx = create_test_context(&ns);
-        let mut txn = Transaction::new(&mut ctx, ns.clone());
-
-        // Initialize then delete
-        txn.state_init("counter", Value::Int(0)).unwrap();
-        let existed = txn.state_delete("counter").unwrap();
-        assert!(existed);
-
-        // Read should return None
-        let result = txn.state_read("counter").unwrap();
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_state_exists() {
-        let ns = create_test_namespace();
-        let mut ctx = create_test_context(&ns);
-        let mut txn = Transaction::new(&mut ctx, ns.clone());
-
-        // State doesn't exist initially
-        assert!(!txn.state_exists("counter").unwrap());
-
-        // Initialize and check
-        txn.state_init("counter", Value::Int(0)).unwrap();
-        assert!(txn.state_exists("counter").unwrap());
     }
 
     #[test]
