@@ -67,7 +67,7 @@ fn test_kv_event_state_atomic() {
     let event_log = EventLog::new(db.clone());
 
     assert_eq!(
-        kv.get(&run_id, "task/status").unwrap().map(|v| v.value),
+        kv.get(&run_id, "task/status").unwrap(),
         Some(Value::String("running".into()))
     );
     assert_eq!(event_log.len(&run_id).unwrap(), 1);
@@ -268,7 +268,7 @@ fn test_multiple_transactions_consistency() {
     // All 10 KV entries exist
     for i in 1..=10 {
         assert_eq!(
-            kv.get(&run_id, &format!("key_{}", i)).unwrap().map(|v| v.value),
+            kv.get(&run_id, &format!("key_{}", i)).unwrap(),
             Some(Value::Int(i))
         );
     }
@@ -334,7 +334,7 @@ fn test_read_only_transaction() {
     assert!(result.is_ok());
 
     // Data unchanged
-    assert_eq!(kv.get(&run_id, "existing").unwrap().map(|v| v.value), Some(Value::Int(100)));
+    assert_eq!(kv.get(&run_id, "existing").unwrap(), Some(Value::Int(100)));
     let state = state_cell.read(&run_id, "cell").unwrap().unwrap();
     assert_eq!(state.value.version, Version::counter(1));
 }

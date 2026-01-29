@@ -229,7 +229,7 @@ impl Session {
             // === KV ===
             Command::KvGet { key, .. } => {
                 let result = txn.kv_get(&key).map_err(Error::from)?;
-                Ok(Output::MaybeVersioned(result.map(to_versioned_value)))
+                Ok(Output::Maybe(result.map(|v| v.value)))
             }
             Command::KvPut { key, value, .. } => {
                 let version = txn.kv_put(&key, value).map_err(Error::from)?;
@@ -239,17 +239,8 @@ impl Session {
                 let existed = txn.kv_delete(&key).map_err(Error::from)?;
                 Ok(Output::Bool(existed))
             }
-            Command::KvExists { key, .. } => {
-                let exists = txn.kv_exists(&key).map_err(Error::from)?;
-                Ok(Output::Bool(exists))
-            }
-            Command::KvKeys { prefix, .. } => {
-                let prefix_opt = if prefix.is_empty() {
-                    None
-                } else {
-                    Some(prefix.as_str())
-                };
-                let keys = txn.kv_list(prefix_opt).map_err(Error::from)?;
+            Command::KvList { prefix, .. } => {
+                let keys = txn.kv_list(prefix.as_deref()).map_err(Error::from)?;
                 Ok(Output::Keys(keys))
             }
 

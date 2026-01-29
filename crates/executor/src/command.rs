@@ -23,7 +23,7 @@ use crate::types::*;
 ///
 /// | Category | Count | Description |
 /// |----------|-------|-------------|
-/// | KV | 15 | Key-value operations |
+/// | KV | 4 | Key-value operations |
 /// | JSON | 17 | JSON document operations |
 /// | Event | 11 | Event log operations |
 /// | State | 8 | State cell operations |
@@ -66,7 +66,7 @@ use crate::types::*;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum Command {
-    // ==================== KV (15) ====================
+    // ==================== KV (4) ====================
     /// Put a key-value pair.
     /// Returns: `Output::Version`
     KvPut {
@@ -77,20 +77,11 @@ pub enum Command {
     },
 
     /// Get a value by key.
-    /// Returns: `Output::MaybeVersioned`
+    /// Returns: `Output::MaybeValue`
     KvGet {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         run: Option<RunId>,
         key: String,
-    },
-
-    /// Get a value at a specific version.
-    /// Returns: `Output::Versioned`
-    KvGetAt {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        run: Option<RunId>,
-        key: String,
-        version: u64,
     },
 
     /// Delete a key.
@@ -101,102 +92,12 @@ pub enum Command {
         key: String,
     },
 
-    /// Check if a key exists.
-    /// Returns: `Output::Bool`
-    KvExists {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        run: Option<RunId>,
-        key: String,
-    },
-
-    /// Get version history for a key.
-    /// Returns: `Output::VersionedValues`
-    KvHistory {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        run: Option<RunId>,
-        key: String,
-        limit: Option<u64>,
-        before: Option<u64>,
-    },
-
-    /// Atomic increment.
-    /// Returns: `Output::Int` (new value)
-    KvIncr {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        run: Option<RunId>,
-        key: String,
-        delta: i64,
-    },
-
-    /// Compare-and-swap by version.
-    /// Returns: `Output::Bool` (true if swap succeeded)
-    KvCasVersion {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        run: Option<RunId>,
-        key: String,
-        expected_version: Option<u64>,
-        new_value: Value,
-    },
-
-    /// Compare-and-swap by value.
-    /// Returns: `Output::Bool` (true if swap succeeded)
-    KvCasValue {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        run: Option<RunId>,
-        key: String,
-        expected_value: Option<Value>,
-        new_value: Value,
-    },
-
     /// List keys with optional prefix filter.
     /// Returns: `Output::Keys`
-    KvKeys {
+    KvList {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         run: Option<RunId>,
-        prefix: String,
-        limit: Option<u64>,
-    },
-
-    /// Scan keys with cursor-based pagination.
-    /// Returns: `Output::KvScanResult`
-    KvScan {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        run: Option<RunId>,
-        prefix: String,
-        limit: u64,
-        cursor: Option<String>,
-    },
-
-    /// Get multiple values.
-    /// Returns: `Output::MaybeVersionedValues`
-    KvMget {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        run: Option<RunId>,
-        keys: Vec<String>,
-    },
-
-    /// Put multiple key-value pairs atomically.
-    /// Returns: `Output::Version`
-    KvMput {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        run: Option<RunId>,
-        entries: Vec<(String, Value)>,
-    },
-
-    /// Delete multiple keys.
-    /// Returns: `Output::Uint` (count of keys that existed)
-    KvMdelete {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        run: Option<RunId>,
-        keys: Vec<String>,
-    },
-
-    /// Check existence of multiple keys.
-    /// Returns: `Output::Uint` (count of keys that exist)
-    KvMexists {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        run: Option<RunId>,
-        keys: Vec<String>,
+        prefix: Option<String>,
     },
 
     // ==================== JSON (17) ====================
@@ -931,22 +832,11 @@ impl Command {
         }
 
         match self {
-            // KV
+            // KV (4 MVP)
             Command::KvPut { run, .. }
             | Command::KvGet { run, .. }
-            | Command::KvGetAt { run, .. }
             | Command::KvDelete { run, .. }
-            | Command::KvExists { run, .. }
-            | Command::KvHistory { run, .. }
-            | Command::KvIncr { run, .. }
-            | Command::KvCasVersion { run, .. }
-            | Command::KvCasValue { run, .. }
-            | Command::KvKeys { run, .. }
-            | Command::KvScan { run, .. }
-            | Command::KvMget { run, .. }
-            | Command::KvMput { run, .. }
-            | Command::KvMdelete { run, .. }
-            | Command::KvMexists { run, .. }
+            | Command::KvList { run, .. }
             // JSON
             | Command::JsonSet { run, .. }
             | Command::JsonGet { run, .. }

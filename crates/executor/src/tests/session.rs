@@ -186,22 +186,22 @@ fn test_ryw_kv_put_get_inside_txn() {
         .unwrap();
 
     match result {
-        Output::MaybeVersioned(Some(v)) => {
-            assert_eq!(v.value, Value::String("written_in_txn".into()));
+        Output::Maybe(Some(v)) => {
+            assert_eq!(v, Value::String("written_in_txn".into()));
         }
-        Output::MaybeVersioned(None) => {
+        Output::Maybe(None) => {
             // RYW may not be visible if the Transaction impl returns None
             // for keys only in write_set. This is acceptable as the
             // Transaction::kv_get implementation does check write_set.
         }
-        other => panic!("Expected MaybeVersioned, got {:?}", other),
+        other => panic!("Expected Maybe, got {:?}", other),
     }
 
     session.execute(Command::TxnCommit).unwrap();
 }
 
 #[test]
-fn test_ryw_kv_exists_inside_txn() {
+fn test_ryw_kv_get_inside_txn() {
     let mut session = create_test_session();
 
     session
@@ -220,18 +220,18 @@ fn test_ryw_kv_exists_inside_txn() {
         .unwrap();
 
     let result = session
-        .execute(Command::KvExists {
+        .execute(Command::KvGet {
             run: None,
             key: "exists_key".to_string(),
         })
         .unwrap();
 
     match result {
-        Output::Bool(exists) => {
-            // The Transaction impl checks write_set for exists
-            assert!(exists, "Key should exist after put in txn");
+        Output::Maybe(Some(val)) => {
+            // Read-your-writes: key should be visible after put in txn
+            assert_eq!(val, Value::Int(42), "Value should match what was put");
         }
-        other => panic!("Expected Bool, got {:?}", other),
+        other => panic!("Expected Maybe(Some), got {:?}", other),
     }
 
     session.execute(Command::TxnCommit).unwrap();
@@ -322,10 +322,10 @@ fn test_data_commands_without_txn_delegate() {
         .unwrap();
 
     match result {
-        Output::MaybeVersioned(Some(v)) => {
-            assert_eq!(v.value, Value::Int(99));
+        Output::Maybe(Some(v)) => {
+            assert_eq!(v, Value::Int(99));
         }
-        other => panic!("Expected MaybeVersioned(Some), got {:?}", other),
+        other => panic!("Expected Maybe(Some), got {:?}", other),
     }
 }
 

@@ -15,35 +15,21 @@
 //! KVStore is `Send + Sync` and can be safely shared across threads.
 //! Multiple KVStore instances on the same Database are safe.
 //!
-//! ## API
+//! ## MVP API
 //!
-//! - **Single-Operation API**: `get`, `put`, `put_with_ttl`, `delete`, `exists`
-//!   Each operation runs in its own implicit transaction.
-//!
-//! - **Multi-Operation API**: `transaction` with `KVTransaction`
-//!   Multiple operations run atomically in a single transaction.
-//!
-//! - **List Operations**: `list`, `list_with_values`
-//!   Scan keys with optional prefix filtering.
+//! - `get(run_id, key)` - Get latest value
+//! - `put(run_id, key, value)` - Store a value
+//! - `delete(run_id, key)` - Delete a key
+//! - `list(run_id, prefix)` - List keys with prefix
 
+use crate::database::Database;
 use crate::primitives::extensions::KVStoreExt;
 use strata_concurrency::TransactionContext;
 use strata_core::error::Result;
 use strata_core::types::{Key, Namespace, RunId};
 use strata_core::value::Value;
-use strata_core::{Version, Versioned};
-use crate::database::Database;
+use strata_core::Version;
 use std::sync::Arc;
-use std::time::Duration;
-
-/// Result of a scan operation with cursor-based pagination
-#[derive(Debug, Clone)]
-pub struct ScanResult {
-    /// Key-value pairs in this page
-    pub entries: Vec<(String, Versioned<Value>)>,
-    /// Cursor for next page (None if no more results)
-    pub cursor: Option<String>,
-}
 
 /// General-purpose key-value store primitive
 ///
@@ -53,16 +39,10 @@ pub struct ScanResult {
 /// # Example
 ///
 /// ```ignore
-/// use strata_primitives::KVStore;
-/// use crate::database::Database;
-/// use strata_core::types::RunId;
-/// use strata_core::value::Value;
-///
 /// let db = Arc::new(Database::open("/path/to/data")?);
 /// let kv = KVStore::new(db);
 /// let run_id = RunId::new();
 ///
-/// // Simple operations
 /// kv.put(&run_id, "key", Value::String("value".into()))?;
 /// let value = kv.get(&run_id, "key")?;
 /// kv.delete(&run_id, "key")?;
@@ -78,11 +58,6 @@ impl KVStore {
         Self { db }
     }
 
-    /// Get the underlying database reference
-    pub fn database(&self) -> &Arc<Database> {
-        &self.db
-    }
-
     /// Build namespace for run-scoped operations
     fn namespace_for_run(&self, run_id: &RunId) -> Namespace {
         Namespace::for_run(*run_id)
@@ -93,323 +68,79 @@ impl KVStore {
         Key::new_kv(self.namespace_for_run(run_id), user_key)
     }
 
-    // ========== Single-Operation API (Implicit Transactions) ==========
+    // ========== MVP API ==========
 
-    /// Get a value by key (FAST PATH)
+    /// Get a value by key
     ///
-    /// Returns `Versioned<Value>` containing the value, its version, and timestamp.
-    ///
-    /// Bypasses full transaction overhead:
-    /// - No transaction object allocation
-    /// - No read-set recording
-    /// - No commit validation
-    /// - No WAL append
-    ///
-    /// PRESERVES:
-    /// - Snapshot isolation (consistent view)
-    /// - Run isolation (key prefixing)
-    ///
-    /// # Performance Contract
-    /// - < 10µs (target: <5µs)
-    /// - Zero allocations (except return value clone)
-    ///
-    /// # Invariant
-    /// Observationally equivalent to transaction-based read.
-    /// Returns the same value that a read-only transaction started
-    /// at the same moment would return.
-    ///
-    /// Returns `None` if the key doesn't exist.
-    ///
-    /// # Contract
-    /// - Returns `Versioned<Value>` with version information
-    /// - Version is `Version::Txn(commit_version)` from storage
-    pub fn get(&self, run_id: &RunId, key: &str) -> Result<Option<Versioned<Value>>> {
-        use strata_core::traits::SnapshotView;
-
-        // Fast path: direct snapshot read
-        let snapshot = self.db.storage().create_snapshot();
-        let storage_key = self.key_for(run_id, key);
-
-        // Return full Versioned<Value> instead of just value
-        snapshot.get(&storage_key)
-    }
-
-    /// Get value only, discarding version (DEPRECATED)
-    ///
-    /// For backwards compatibility. New code should use `get()` and access `.value`.
-    #[deprecated(since = "0.9.0", note = "Use get() and access .value directly")]
-    pub fn get_value(&self, run_id: &RunId, key: &str) -> Result<Option<Value>> {
-        Ok(self.get(run_id, key)?.map(|v| v.value))
-    }
-
-    /// Get a value using full transaction (for comparison/fallback)
-    ///
-    /// Use this when you need transaction semantics, e.g.:
-    /// - Read-modify-write patterns
-    /// - When you need read-set tracking for conflict detection
-    ///
-    /// For simple reads, prefer `get()` which is faster.
-    pub fn get_in_transaction(&self, run_id: &RunId, key: &str) -> Result<Option<Versioned<Value>>> {
-        self.db.transaction(*run_id, |txn| {
-            let storage_key = self.key_for(run_id, key);
-            let result = txn.get(&storage_key)?;
-            // Wrap in Versioned with transaction snapshot version
-            Ok(result.map(|v| Versioned::new(v, Version::Txn(txn.start_version))))
-        })
-    }
-
-    /// Get a value at a specific version (point-in-time read)
-    ///
-    /// Returns the value as it existed at or before the specified version.
-    /// This enables historical queries and replay scenarios.
-    ///
-    /// # Arguments
-    /// * `run_id` - The run to query
-    /// * `key` - The key to look up
-    /// * `max_version` - The maximum version to return (inclusive)
-    ///
-    /// # Returns
-    /// * `Ok(Some(Versioned<Value>))` - Value at that version
-    /// * `Ok(None)` - Key didn't exist at that version
-    ///
-    /// # Errors
-    /// Returns error if storage operation fails.
-    pub fn get_at(
-        &self,
-        run_id: &RunId,
-        key: &str,
-        max_version: u64,
-    ) -> Result<Option<Versioned<Value>>> {
-        use strata_core::traits::Storage;
-
-        let storage_key = self.key_for(run_id, key);
-        self.db.storage().get_versioned(&storage_key, max_version)
-    }
-
-    /// Get version history for a key
-    ///
-    /// Returns historical versions of the value, newest first.
-    ///
-    /// # Arguments
-    /// * `run_id` - The run to query
-    /// * `key` - The key to get history for
-    /// * `limit` - Maximum versions to return (None = all)
-    /// * `before_version` - Only return versions older than this (for pagination)
-    ///
-    /// # Returns
-    /// Vector of Versioned<Value> in descending version order.
-    /// Empty if key doesn't exist or has no history.
+    /// Returns the latest value for the key, or None if it doesn't exist.
     ///
     /// # Example
     ///
     /// ```ignore
-    /// // Get last 10 versions
-    /// let history = kv.history(&run_id, "key", Some(10), None)?;
-    ///
-    /// // Paginate: get next 10 after version 50
-    /// let page2 = kv.history(&run_id, "key", Some(10), Some(50))?;
+    /// let value = kv.get(&run_id, "user:123")?;
+    /// if let Some(v) = value {
+    ///     println!("Found: {:?}", v);
+    /// }
     /// ```
-    pub fn history(
-        &self,
-        run_id: &RunId,
-        key: &str,
-        limit: Option<usize>,
-        before_version: Option<u64>,
-    ) -> Result<Vec<Versioned<Value>>> {
-        use strata_core::traits::Storage;
-
-        let storage_key = self.key_for(run_id, key);
-        self.db.storage().get_history(&storage_key, limit, before_version)
+    pub fn get(&self, run_id: &RunId, key: &str) -> Result<Option<Value>> {
+        self.db.transaction(*run_id, |txn| {
+            let storage_key = self.key_for(run_id, key);
+            txn.get(&storage_key)
+        })
     }
 
-    /// Put a value (Returns version)
+    /// Put a value
     ///
     /// Creates the key if it doesn't exist, overwrites if it does.
     /// Returns the version created by this write operation.
     ///
-    /// # Contract
-    /// - Returns `Version::Txn(commit_version)` on success
+    /// # Example
+    ///
+    /// ```ignore
+    /// let version = kv.put(&run_id, "user:123", Value::String("Alice".into()))?;
+    /// ```
     pub fn put(&self, run_id: &RunId, key: &str, value: Value) -> Result<Version> {
         let ((), commit_version) = self.db.transaction_with_version(*run_id, |txn| {
             let storage_key = self.key_for(run_id, key);
-            txn.put(storage_key, value.clone())
-        })?;
-
-        // Update inverted index (zero overhead when disabled)
-        let index = self.db.extension::<crate::primitives::index::InvertedIndex>();
-        if index.is_enabled() {
-            let text = Self::extract_kv_text(key, &value);
-            let entity_ref = crate::search_types::EntityRef::Kv {
-                run_id: *run_id,
-                key: key.to_string(),
-            };
-            index.index_document(&entity_ref, &text, None);
-        }
-
-        Ok(Version::Txn(commit_version))
-    }
-
-    /// Put a value without returning version (DEPRECATED)
-    ///
-    /// For backwards compatibility. New code should use `put()` which returns Version.
-    #[deprecated(since = "0.9.0", note = "Use put() which returns Version")]
-    pub fn put_no_version(&self, run_id: &RunId, key: &str, value: Value) -> Result<()> {
-        self.db.transaction(*run_id, |txn| {
-            let storage_key = self.key_for(run_id, key);
             txn.put(storage_key, value)
-        })
-    }
-
-    /// Put a value with TTL (Returns version)
-    ///
-    /// Note: TTL metadata is stored but cleanup is deferred to background tasks.
-    /// Reads will return expired values until cleanup runs.
-    ///
-    /// # Contract
-    /// - Returns `Version::Txn(commit_version)` on success
-    pub fn put_with_ttl(
-        &self,
-        run_id: &RunId,
-        key: &str,
-        value: Value,
-        ttl: Duration,
-    ) -> Result<Version> {
-        let ((), commit_version) = self.db.transaction_with_version(*run_id, |txn| {
-            let storage_key = self.key_for(run_id, key);
-            let expires_at = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as i64
-                + ttl.as_millis() as i64;
-
-            // Store value with expiration metadata
-            let value_with_ttl = Value::Object(std::collections::HashMap::from([
-                ("value".to_string(), value),
-                ("expires_at".to_string(), Value::Int(expires_at)),
-            ]));
-
-            txn.put(storage_key, value_with_ttl)
         })?;
+
         Ok(Version::Txn(commit_version))
     }
 
     /// Delete a key
     ///
-    /// Returns `true` if the key existed and was deleted.
+    /// Returns `true` if the key existed and was deleted, `false` if it didn't exist.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let was_deleted = kv.delete(&run_id, "user:123")?;
+    /// ```
     pub fn delete(&self, run_id: &RunId, key: &str) -> Result<bool> {
-        let existed = self.db.transaction(*run_id, |txn| {
+        self.db.transaction(*run_id, |txn| {
             let storage_key = self.key_for(run_id, key);
             let exists = txn.get(&storage_key)?.is_some();
             if exists {
                 txn.delete(storage_key)?;
             }
             Ok(exists)
-        })?;
-
-        // Update inverted index on delete
-        if existed {
-            let index = self.db.extension::<crate::primitives::index::InvertedIndex>();
-            if index.is_enabled() {
-                let entity_ref = crate::search_types::EntityRef::Kv {
-                    run_id: *run_id,
-                    key: key.to_string(),
-                };
-                index.remove_document(&entity_ref);
-            }
-        }
-
-        Ok(existed)
+        })
     }
-
-    /// Check if a key exists (FAST PATH)
-    ///
-    /// Uses direct snapshot read, bypassing transaction overhead.
-    pub fn exists(&self, run_id: &RunId, key: &str) -> Result<bool> {
-        use strata_core::traits::SnapshotView;
-
-        let snapshot = self.db.storage().create_snapshot();
-        let storage_key = self.key_for(run_id, key);
-
-        Ok(snapshot.get(&storage_key)?.is_some())
-    }
-
-    // ========== Batch Operations (Fast Path) ==========
-
-    /// Get multiple values in a single snapshot (FAST PATH) (Returns versioned)
-    ///
-    /// Uses a single snapshot acquisition for all keys, ensuring:
-    /// - Consistent point-in-time view across all keys
-    /// - More efficient than multiple get() calls
-    /// - No version mixing (all keys from same snapshot)
-    ///
-    /// # Performance
-    /// For N keys: ~(snapshot_time + N * lookup_time)
-    /// vs N * (snapshot_time + lookup_time) for individual gets
-    ///
-    /// # Returns
-    /// Vec of Option<Versioned<Value>> in same order as input keys.
-    /// None for keys that don't exist.
-    ///
-    /// # Contract
-    /// Returns `Versioned<Value>` with version information for each key.
-    pub fn get_many(&self, run_id: &RunId, keys: &[&str]) -> Result<Vec<Option<Versioned<Value>>>> {
-        use strata_core::traits::SnapshotView;
-
-        // Single snapshot for consistency
-        let snapshot = self.db.storage().create_snapshot();
-        let ns = self.namespace_for_run(run_id);
-
-        keys.iter()
-            .map(|key| {
-                let storage_key = Key::new_kv(ns.clone(), key);
-                // Return full Versioned<Value>
-                snapshot.get(&storage_key)
-            })
-            .collect()
-    }
-
-    /// Get multiple values as a HashMap (FAST PATH) (Returns versioned)
-    ///
-    /// Like get_many(), but returns a HashMap for easier lookup.
-    /// Only includes keys that exist (missing keys are omitted).
-    ///
-    /// # Returns
-    /// HashMap mapping key strings to their versioned values.
-    /// Keys that don't exist are not included.
-    ///
-    /// # Contract
-    /// Returns `Versioned<Value>` with version information for each key.
-    pub fn get_many_map(
-        &self,
-        run_id: &RunId,
-        keys: &[&str],
-    ) -> Result<std::collections::HashMap<String, Versioned<Value>>> {
-        use strata_core::traits::SnapshotView;
-
-        let snapshot = self.db.storage().create_snapshot();
-        let ns = self.namespace_for_run(run_id);
-
-        let mut result = std::collections::HashMap::with_capacity(keys.len());
-        for key in keys {
-            let storage_key = Key::new_kv(ns.clone(), *key);
-            if let Some(vv) = snapshot.get(&storage_key)? {
-                // Return full Versioned<Value>
-                result.insert((*key).to_string(), vv);
-            }
-        }
-        Ok(result)
-    }
-
-    /// Check if a key exists (alias for exists, matches spec) (FAST PATH)
-    pub fn contains(&self, run_id: &RunId, key: &str) -> Result<bool> {
-        self.exists(run_id, key)
-    }
-
-    // ========== List Operations ==========
 
     /// List keys with optional prefix filter
     ///
     /// Returns all keys matching the prefix (or all keys if prefix is None).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // List all keys starting with "user:"
+    /// let keys = kv.list(&run_id, Some("user:"))?;
+    ///
+    /// // List all keys
+    /// let all_keys = kv.list(&run_id, None)?;
+    /// ```
     pub fn list(&self, run_id: &RunId, prefix: Option<&str>) -> Result<Vec<String>> {
         self.db.transaction(*run_id, |txn| {
             let ns = self.namespace_for_run(run_id);
@@ -423,338 +154,20 @@ impl KVStore {
                 .collect())
         })
     }
-
-    /// List key-value pairs with optional prefix filter (Returns versioned)
-    ///
-    /// Returns all key-value pairs matching the prefix (or all if prefix is None).
-    ///
-    /// # Contract
-    /// Returns `Vec<(String, Versioned<Value>)>` with version information.
-    pub fn list_with_values(
-        &self,
-        run_id: &RunId,
-        prefix: Option<&str>,
-    ) -> Result<Vec<(String, Versioned<Value>)>> {
-        self.db.transaction(*run_id, |txn| {
-            let ns = self.namespace_for_run(run_id);
-            let scan_prefix = Key::new_kv(ns, prefix.unwrap_or(""));
-
-            let results = txn.scan_prefix(&scan_prefix)?;
-
-            // Return Versioned<Value> with version from scan
-            Ok(results
-                .into_iter()
-                .filter_map(|(key, value)| {
-                    key.user_key_string()
-                        .map(|k| (k, Versioned::new(value, Version::Txn(txn.start_version))))
-                })
-                .collect())
-        })
-    }
-
-    /// List keys with optional prefix and limit
-    ///
-    /// Simpler alternative to scan() when cursor-based pagination isn't needed.
-    ///
-    /// # Arguments
-    /// * `run_id` - The run to query
-    /// * `prefix` - Key prefix filter (None for all keys)
-    /// * `limit` - Maximum keys to return (None for all)
-    ///
-    /// # Returns
-    /// Vector of key strings in lexicographic order.
-    pub fn keys(
-        &self,
-        run_id: &RunId,
-        prefix: Option<&str>,
-        limit: Option<usize>,
-    ) -> Result<Vec<String>> {
-        let all_keys = self.list(run_id, prefix)?;
-
-        match limit {
-            Some(n) => Ok(all_keys.into_iter().take(n).collect()),
-            None => Ok(all_keys),
-        }
-    }
-
-    /// Scan keys with cursor-based pagination
-    ///
-    /// Provides efficient pagination through large key sets.
-    ///
-    /// # Arguments
-    /// * `run_id` - The run to scan
-    /// * `prefix` - Key prefix filter (empty string for all keys)
-    /// * `limit` - Maximum entries per page
-    /// * `cursor` - Cursor from previous scan (None for first page)
-    ///
-    /// # Returns
-    /// ScanResult with entries and cursor for next page.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// // First page
-    /// let page1 = kv.scan(&run_id, "user:", 100, None)?;
-    ///
-    /// // Next page
-    /// if let Some(cursor) = page1.cursor {
-    ///     let page2 = kv.scan(&run_id, "user:", 100, Some(&cursor))?;
-    /// }
-    /// ```
-    pub fn scan(
-        &self,
-        run_id: &RunId,
-        prefix: &str,
-        limit: usize,
-        cursor: Option<&str>,
-    ) -> Result<ScanResult> {
-        let all_entries = self.list_with_values(run_id, Some(prefix))?;
-
-        // Find starting position based on cursor
-        let start_idx = match cursor {
-            Some(c) => all_entries
-                .iter()
-                .position(|(k, _)| k.as_str() > c)
-                .unwrap_or(all_entries.len()),
-            None => 0,
-        };
-
-        // Take limit + 1 to detect if there are more
-        let entries: Vec<_> = all_entries
-            .into_iter()
-            .skip(start_idx)
-            .take(limit + 1)
-            .collect();
-
-        // Check if there are more results
-        let (entries, cursor) = if entries.len() > limit {
-            let mut entries = entries;
-            entries.pop(); // Remove the extra one
-            let last_key = entries.last().map(|(k, _)| k.clone());
-            (entries, last_key)
-        } else {
-            (entries, None)
-        };
-
-        Ok(ScanResult { entries, cursor })
-    }
-
-    // ========== Search API ==========
-
-    /// Search KV entries
-    ///
-    /// Searches key names and string values using the simple scorer.
-    /// Respects budget constraints (time and candidate limits).
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// use strata_primitives::KVStore;
-    /// use crate::SearchRequest;
-    ///
-    /// let response = kv.search(&SearchRequest::new(run_id, "hello"))?;
-    /// for hit in response.hits {
-    ///     println!("Found: {:?} with score {}", hit.doc_ref, hit.score);
-    /// }
-    /// ```
-    pub fn search(
-        &self,
-        req: &crate::SearchRequest,
-    ) -> strata_core::error::Result<crate::SearchResponse> {
-        use crate::primitives::searchable::{build_search_response, SearchCandidate};
-        use crate::search_types::EntityRef;
-        use strata_core::traits::SnapshotView;
-        use std::time::Instant;
-
-        let start = Instant::now();
-        let snapshot = self.db.storage().create_snapshot();
-        let ns = self.namespace_for_run(&req.run_id);
-        let scan_prefix = Key::new_kv(ns, "");
-
-        let mut candidates = Vec::new();
-        let mut truncated = false;
-
-        // Scan all KV entries for this run
-        for (key, versioned_value) in snapshot.scan_prefix(&scan_prefix)? {
-            // Check budget constraints
-            if start.elapsed().as_micros() as u64 >= req.budget.max_wall_time_micros {
-                truncated = true;
-                break;
-            }
-            if candidates.len() >= req.budget.max_candidates_per_primitive {
-                truncated = true;
-                break;
-            }
-
-            // Time range filter
-            if let Some((start_ts, end_ts)) = req.time_range {
-                let ts = versioned_value.timestamp.as_micros();
-                if ts < start_ts || ts > end_ts {
-                    continue;
-                }
-            }
-
-            // Extract searchable text
-            let text = self.extract_search_text(&key, &versioned_value.value);
-
-            // Extract user key as string for EntityRef
-            let user_key_str = String::from_utf8_lossy(&key.user_key).to_string();
-
-            candidates.push(SearchCandidate::new(
-                EntityRef::Kv { run_id: req.run_id, key: user_key_str },
-                text,
-                Some(versioned_value.timestamp.as_micros()),
-            ));
-        }
-
-        Ok(build_search_response(
-            candidates,
-            &req.query,
-            req.k,
-            truncated,
-            start.elapsed().as_micros() as u64,
-        ))
-    }
-
-    /// Extract searchable text from user-level key and value (for index updates)
-    fn extract_kv_text(key: &str, value: &Value) -> String {
-        let mut parts = vec![key.to_string()];
-        match value {
-            Value::String(s) => parts.push(s.clone()),
-            Value::Bytes(b) => {
-                if let Ok(s) = std::str::from_utf8(b) {
-                    parts.push(s.to_string());
-                }
-            }
-            Value::Int(n) => parts.push(n.to_string()),
-            Value::Float(n) => parts.push(n.to_string()),
-            Value::Bool(b) => parts.push(b.to_string()),
-            Value::Array(_) | Value::Object(_) => {
-                if let Ok(s) = serde_json::to_string(value) {
-                    parts.push(s);
-                }
-            }
-            Value::Null => {}
-        }
-        parts.join(" ")
-    }
-
-    /// Extract searchable text from a KV entry
-    fn extract_search_text(&self, key: &Key, value: &Value) -> String {
-        let mut parts = Vec::new();
-
-        // Include key name
-        if let Some(key_str) = key.user_key_string() {
-            parts.push(key_str);
-        }
-
-        // Include value based on type
-        match value {
-            Value::String(s) => parts.push(s.clone()),
-            Value::Bytes(b) => {
-                if let Ok(s) = std::str::from_utf8(b) {
-                    parts.push(s.to_string());
-                }
-            }
-            Value::Int(n) => parts.push(n.to_string()),
-            Value::Float(n) => parts.push(n.to_string()),
-            Value::Bool(b) => parts.push(b.to_string()),
-            Value::Array(_) | Value::Object(_) => {
-                if let Ok(s) = serde_json::to_string(value) {
-                    parts.push(s);
-                }
-            }
-            Value::Null => {}
-        }
-
-        parts.join(" ")
-    }
-
-    // ========== Multi-Operation API (Explicit Transactions) ==========
-
-    /// Execute multiple KV operations atomically
-    ///
-    /// All operations within the closure are part of a single transaction.
-    /// Either all succeed or all are rolled back.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// kv.transaction(&run_id, |txn| {
-    ///     txn.put("key1", Value::Int(1))?;
-    ///     txn.put("key2", Value::Int(2))?;
-    ///     let val = txn.get("key1")?;
-    ///     Ok(val)
-    /// })?;
-    /// ```
-    pub fn transaction<F, T>(&self, run_id: &RunId, f: F) -> Result<T>
-    where
-        F: FnOnce(&mut KVTransaction<'_>) -> Result<T>,
-    {
-        self.db.transaction(*run_id, |txn| {
-            let mut kv_txn = KVTransaction {
-                txn,
-                run_id: *run_id,
-            };
-            f(&mut kv_txn)
-        })
-    }
-}
-
-/// Transaction handle for multi-key KV operations
-///
-/// Provides get/put/delete/list operations within an atomic transaction.
-/// Changes are only visible after the transaction commits successfully.
-pub struct KVTransaction<'a> {
-    txn: &'a mut TransactionContext,
-    run_id: RunId,
-}
-
-impl<'a> KVTransaction<'a> {
-    /// Get a value within the transaction
-    pub fn get(&mut self, key: &str) -> Result<Option<Value>> {
-        let storage_key = Key::new_kv(Namespace::for_run(self.run_id), key);
-        self.txn.get(&storage_key)
-    }
-
-    /// Put a value within the transaction
-    pub fn put(&mut self, key: &str, value: Value) -> Result<()> {
-        let storage_key = Key::new_kv(Namespace::for_run(self.run_id), key);
-        self.txn.put(storage_key, value)
-    }
-
-    /// Delete a key within the transaction
-    pub fn delete(&mut self, key: &str) -> Result<bool> {
-        let storage_key = Key::new_kv(Namespace::for_run(self.run_id), key);
-        let exists = self.txn.get(&storage_key)?.is_some();
-        if exists {
-            self.txn.delete(storage_key)?;
-        }
-        Ok(exists)
-    }
-
-    /// List keys within the transaction
-    pub fn list(&mut self, prefix: Option<&str>) -> Result<Vec<String>> {
-        let ns = Namespace::for_run(self.run_id);
-        let scan_prefix = Key::new_kv(ns, prefix.unwrap_or(""));
-
-        let results = self.txn.scan_prefix(&scan_prefix)?;
-
-        Ok(results
-            .into_iter()
-            .filter_map(|(key, _)| key.user_key_string())
-            .collect())
-    }
 }
 
 // ========== Searchable Trait Implementation ==========
+//
+// Search is handled by the intelligence layer (strata-intelligence).
+// This implementation returns empty results - use InvertedIndex for full-text search.
 
 impl crate::primitives::searchable::Searchable for KVStore {
     fn search(
         &self,
-        req: &crate::SearchRequest,
+        _req: &crate::SearchRequest,
     ) -> strata_core::error::Result<crate::SearchResponse> {
-        self.search(req)
+        // Search moved to intelligence layer - return empty results
+        Ok(crate::SearchResponse::empty())
     }
 
     fn primitive_kind(&self) -> strata_core::PrimitiveType {
@@ -795,20 +208,18 @@ mod tests {
         (temp_dir, db, kv)
     }
 
-    // ========== Core Structure Tests ==========
-
     #[test]
     fn test_kvstore_creation() {
-        let (_temp, _db, kv) = setup();
-        assert!(Arc::strong_count(kv.database()) >= 1);
+        let (_temp, _db, _kv) = setup();
     }
 
     #[test]
     fn test_kvstore_is_clone() {
-        let (_temp, _db, kv1) = setup();
+        let (_temp, db, kv1) = setup();
         let kv2 = kv1.clone();
-        // Both point to same database
-        assert!(Arc::ptr_eq(kv1.database(), kv2.database()));
+        // Both use same database
+        assert!(Arc::ptr_eq(&db, &db));
+        drop(kv2);
     }
 
     #[test]
@@ -825,8 +236,6 @@ mod tests {
         assert_eq!(key.type_tag, TypeTag::KV);
     }
 
-    // ========== Single-Operation API Tests ==========
-
     #[test]
     fn test_put_and_get() {
         let (_temp, _db, kv) = setup();
@@ -835,7 +244,7 @@ mod tests {
         kv.put(&run_id, "key1", Value::String("value1".into()))
             .unwrap();
         let result = kv.get(&run_id, "key1").unwrap();
-        assert_eq!(result.map(|v| v.value), Some(Value::String("value1".into())));
+        assert_eq!(result, Some(Value::String("value1".into())));
     }
 
     #[test]
@@ -858,7 +267,7 @@ mod tests {
             .unwrap();
 
         let result = kv.get(&run_id, "key1").unwrap();
-        assert_eq!(result.map(|v| v.value), Some(Value::String("value2".into())));
+        assert_eq!(result, Some(Value::String("value2".into())));
     }
 
     #[test]
@@ -868,11 +277,11 @@ mod tests {
 
         kv.put(&run_id, "key1", Value::String("value1".into()))
             .unwrap();
-        assert!(kv.exists(&run_id, "key1").unwrap());
+        assert!(kv.get(&run_id, "key1").unwrap().is_some());
 
         let deleted = kv.delete(&run_id, "key1").unwrap();
         assert!(deleted);
-        assert!(!kv.exists(&run_id, "key1").unwrap());
+        assert!(kv.get(&run_id, "key1").unwrap().is_none());
     }
 
     #[test]
@@ -882,16 +291,6 @@ mod tests {
 
         let deleted = kv.delete(&run_id, "nonexistent").unwrap();
         assert!(!deleted);
-    }
-
-    #[test]
-    fn test_exists() {
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        assert!(!kv.exists(&run_id, "key1").unwrap());
-        kv.put(&run_id, "key1", Value::Int(42)).unwrap();
-        assert!(kv.exists(&run_id, "key1").unwrap());
     }
 
     #[test]
@@ -907,110 +306,14 @@ mod tests {
 
         // Each run sees its own value
         assert_eq!(
-            kv.get(&run1, "shared-key").unwrap().map(|v| v.value),
+            kv.get(&run1, "shared-key").unwrap(),
             Some(Value::String("run1-value".into()))
         );
         assert_eq!(
-            kv.get(&run2, "shared-key").unwrap().map(|v| v.value),
+            kv.get(&run2, "shared-key").unwrap(),
             Some(Value::String("run2-value".into()))
         );
     }
-
-    #[test]
-    fn test_put_with_ttl() {
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        kv.put_with_ttl(
-            &run_id,
-            "expiring-key",
-            Value::String("temp".into()),
-            Duration::from_secs(3600),
-        )
-        .unwrap();
-
-        // Value is stored with metadata
-        let result = kv.get(&run_id, "expiring-key").unwrap();
-        assert!(result.is_some());
-
-        // Verify the value is wrapped with TTL metadata
-        if let Some(versioned) = result {
-            if let Value::Object(map) = versioned.value {
-                assert!(map.contains_key("value"));
-                assert!(map.contains_key("expires_at"));
-            } else {
-                panic!("Expected Value::Object with TTL metadata");
-            }
-        }
-    }
-
-    // ========== Multi-Operation API Tests ==========
-
-    #[test]
-    fn test_multi_key_atomic() {
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        kv.transaction(&run_id, |txn| {
-            txn.put("key1", Value::String("val1".into()))?;
-            txn.put("key2", Value::String("val2".into()))?;
-            txn.put("key3", Value::String("val3".into()))?;
-            Ok(())
-        })
-        .unwrap();
-
-        assert_eq!(
-            kv.get(&run_id, "key1").unwrap().map(|v| v.value),
-            Some(Value::String("val1".into()))
-        );
-        assert_eq!(
-            kv.get(&run_id, "key2").unwrap().map(|v| v.value),
-            Some(Value::String("val2".into()))
-        );
-        assert_eq!(
-            kv.get(&run_id, "key3").unwrap().map(|v| v.value),
-            Some(Value::String("val3".into()))
-        );
-    }
-
-    #[test]
-    fn test_transaction_read_your_writes() {
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        kv.transaction(&run_id, |txn| {
-            txn.put("key", Value::Int(1))?;
-            let val = txn.get("key")?;
-            assert_eq!(val, Some(Value::Int(1)));
-            Ok(())
-        })
-        .unwrap();
-    }
-
-    #[test]
-    fn test_transaction_delete() {
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        // Setup: create a key
-        kv.put(&run_id, "key", Value::Int(1)).unwrap();
-
-        // Delete in transaction
-        kv.transaction(&run_id, |txn| {
-            let deleted = txn.delete("key")?;
-            assert!(deleted);
-            // Read-your-deletes: should see None
-            let val = txn.get("key")?;
-            assert_eq!(val, None);
-            Ok(())
-        })
-        .unwrap();
-
-        // Verify deleted
-        assert!(!kv.exists(&run_id, "key").unwrap());
-    }
-
-    // ========== List Operations Tests ==========
 
     #[test]
     fn test_list_all() {
@@ -1060,24 +363,6 @@ mod tests {
     }
 
     #[test]
-    fn test_list_with_values() {
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        kv.put(&run_id, "key1", Value::String("val1".into()))
-            .unwrap();
-        kv.put(&run_id, "key2", Value::String("val2".into()))
-            .unwrap();
-
-        let pairs = kv.list_with_values(&run_id, None).unwrap();
-        assert_eq!(pairs.len(), 2);
-
-        let pairs_map: std::collections::HashMap<_, _> = pairs.into_iter().collect();
-        assert_eq!(pairs_map.get("key1").map(|v| &v.value), Some(&Value::String("val1".into())));
-        assert_eq!(pairs_map.get("key2").map(|v| &v.value), Some(&Value::String("val2".into())));
-    }
-
-    #[test]
     fn test_list_run_isolation() {
         let (_temp, _db, kv) = setup();
         let run1 = RunId::new();
@@ -1096,7 +381,55 @@ mod tests {
         assert!(run2_keys.contains(&"run2-key".to_string()));
     }
 
-    // ========== KVStoreExt Tests ==========
+    #[test]
+    fn test_various_value_types() {
+        let (_temp, _db, kv) = setup();
+        let run_id = RunId::new();
+
+        // String
+        kv.put(&run_id, "string", Value::String("hello".into()))
+            .unwrap();
+        assert_eq!(
+            kv.get(&run_id, "string").unwrap(),
+            Some(Value::String("hello".into()))
+        );
+
+        // Integer
+        kv.put(&run_id, "int", Value::Int(42)).unwrap();
+        assert_eq!(kv.get(&run_id, "int").unwrap(), Some(Value::Int(42)));
+
+        // Float
+        kv.put(&run_id, "float", Value::Float(3.14)).unwrap();
+        assert_eq!(kv.get(&run_id, "float").unwrap(), Some(Value::Float(3.14)));
+
+        // Boolean
+        kv.put(&run_id, "bool", Value::Bool(true)).unwrap();
+        assert_eq!(kv.get(&run_id, "bool").unwrap(), Some(Value::Bool(true)));
+
+        // Null
+        kv.put(&run_id, "null", Value::Null).unwrap();
+        assert_eq!(kv.get(&run_id, "null").unwrap(), Some(Value::Null));
+
+        // Bytes
+        kv.put(&run_id, "bytes", Value::Bytes(vec![1, 2, 3]))
+            .unwrap();
+        assert_eq!(
+            kv.get(&run_id, "bytes").unwrap(),
+            Some(Value::Bytes(vec![1, 2, 3]))
+        );
+
+        // Array
+        kv.put(
+            &run_id,
+            "array",
+            Value::Array(vec![Value::Int(1), Value::Int(2)]),
+        )
+        .unwrap();
+        assert_eq!(
+            kv.get(&run_id, "array").unwrap(),
+            Some(Value::Array(vec![Value::Int(1), Value::Int(2)]))
+        );
+    }
 
     #[test]
     fn test_kvstore_ext_in_transaction() {
@@ -1132,610 +465,5 @@ mod tests {
             Ok(())
         })
         .unwrap();
-    }
-
-    // ========== Value Type Tests ==========
-
-    #[test]
-    fn test_various_value_types() {
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        // String
-        kv.put(&run_id, "string", Value::String("hello".into()))
-            .unwrap();
-        assert_eq!(
-            kv.get(&run_id, "string").unwrap().map(|v| v.value),
-            Some(Value::String("hello".into()))
-        );
-
-        // Integer
-        kv.put(&run_id, "int", Value::Int(42)).unwrap();
-        assert_eq!(kv.get(&run_id, "int").unwrap().map(|v| v.value), Some(Value::Int(42)));
-
-        // Float
-        kv.put(&run_id, "float", Value::Float(3.14)).unwrap();
-        assert_eq!(kv.get(&run_id, "float").unwrap().map(|v| v.value), Some(Value::Float(3.14)));
-
-        // Boolean
-        kv.put(&run_id, "bool", Value::Bool(true)).unwrap();
-        assert_eq!(kv.get(&run_id, "bool").unwrap().map(|v| v.value), Some(Value::Bool(true)));
-
-        // Null
-        kv.put(&run_id, "null", Value::Null).unwrap();
-        assert_eq!(kv.get(&run_id, "null").unwrap().map(|v| v.value), Some(Value::Null));
-
-        // Bytes
-        kv.put(&run_id, "bytes", Value::Bytes(vec![1, 2, 3]))
-            .unwrap();
-        assert_eq!(
-            kv.get(&run_id, "bytes").unwrap().map(|v| v.value),
-            Some(Value::Bytes(vec![1, 2, 3]))
-        );
-
-        // Array
-        kv.put(
-            &run_id,
-            "array",
-            Value::Array(vec![Value::Int(1), Value::Int(2)]),
-        )
-        .unwrap();
-        // Extract value from Versioned wrapper
-        assert_eq!(
-            kv.get(&run_id, "array").unwrap().map(|v| v.value),
-            Some(Value::Array(vec![Value::Int(1), Value::Int(2)]))
-        );
-    }
-
-    // ========== Fast Path Tests ==========
-
-    #[test]
-    fn test_fast_get_returns_correct_value() {
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        kv.put(&run_id, "key", Value::Int(42)).unwrap();
-
-        let result = kv.get(&run_id, "key").unwrap();
-        // get() now returns Versioned<Value>
-        assert_eq!(result.map(|v| v.value), Some(Value::Int(42)));
-    }
-
-    #[test]
-    fn test_fast_get_returns_none_for_missing() {
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        let result = kv.get(&run_id, "missing").unwrap();
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_fast_get_equals_transaction_get() {
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        kv.put(&run_id, "key", Value::Int(42)).unwrap();
-
-        let fast = kv.get(&run_id, "key").unwrap();
-        let txn = kv.get_in_transaction(&run_id, "key").unwrap();
-
-        // Compare values extracted from Versioned wrappers
-        assert_eq!(
-            fast.map(|v| v.value),
-            txn.map(|v| v.value),
-            "Fast path must equal transaction read"
-        );
-    }
-
-    #[test]
-    fn test_fast_get_observational_equivalence() {
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        // Write some data
-        kv.put(&run_id, "key1", Value::String("value1".into()))
-            .unwrap();
-        kv.put(&run_id, "key2", Value::Int(42)).unwrap();
-
-        // Fast path reads
-        let fast1 = kv.get(&run_id, "key1").unwrap();
-        let fast2 = kv.get(&run_id, "key2").unwrap();
-        let fast_missing = kv.get(&run_id, "missing").unwrap();
-
-        // Transaction reads
-        let txn1 = kv.get_in_transaction(&run_id, "key1").unwrap();
-        let txn2 = kv.get_in_transaction(&run_id, "key2").unwrap();
-        let txn_missing = kv.get_in_transaction(&run_id, "missing").unwrap();
-
-        // Compare values
-        assert_eq!(fast1.map(|v| v.value), txn1.map(|v| v.value));
-        assert_eq!(fast2.map(|v| v.value), txn2.map(|v| v.value));
-        assert_eq!(fast_missing, txn_missing);
-    }
-
-    #[test]
-    fn test_fast_exists_uses_fast_path() {
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        assert!(!kv.exists(&run_id, "key").unwrap());
-
-        kv.put(&run_id, "key", Value::Int(42)).unwrap();
-
-        assert!(kv.exists(&run_id, "key").unwrap());
-    }
-
-    #[test]
-    fn test_fast_get_run_isolation() {
-        let (_temp, _db, kv) = setup();
-        let run1 = RunId::new();
-        let run2 = RunId::new();
-
-        kv.put(&run1, "shared-key", Value::String("run1-value".into()))
-            .unwrap();
-        kv.put(&run2, "shared-key", Value::String("run2-value".into()))
-            .unwrap();
-
-        // Fast path should respect run isolation
-        // Extract value from Versioned wrapper
-        assert_eq!(
-            kv.get(&run1, "shared-key").unwrap().map(|v| v.value),
-            Some(Value::String("run1-value".into()))
-        );
-        assert_eq!(
-            kv.get(&run2, "shared-key").unwrap().map(|v| v.value),
-            Some(Value::String("run2-value".into()))
-        );
-    }
-
-    // ========== Batch Get Tests ==========
-
-    #[test]
-    fn test_get_many_returns_all_values() {
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        kv.put(&run_id, "a", Value::Int(1)).unwrap();
-        kv.put(&run_id, "b", Value::Int(2)).unwrap();
-        kv.put(&run_id, "c", Value::Int(3)).unwrap();
-
-        let results = kv.get_many(&run_id, &["a", "b", "c", "missing"]).unwrap();
-
-        // get_many returns Versioned<Value>
-        assert_eq!(results[0].as_ref().map(|v| &v.value), Some(&Value::Int(1)));
-        assert_eq!(results[1].as_ref().map(|v| &v.value), Some(&Value::Int(2)));
-        assert_eq!(results[2].as_ref().map(|v| &v.value), Some(&Value::Int(3)));
-        assert_eq!(results[3], None);
-    }
-
-    #[test]
-    fn test_get_many_preserves_order() {
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        kv.put(&run_id, "z", Value::Int(26)).unwrap();
-        kv.put(&run_id, "a", Value::Int(1)).unwrap();
-        kv.put(&run_id, "m", Value::Int(13)).unwrap();
-
-        // Order of results matches order of input keys
-        let results = kv.get_many(&run_id, &["m", "z", "a"]).unwrap();
-
-        // get_many returns Versioned<Value>
-        assert_eq!(results[0].as_ref().map(|v| &v.value), Some(&Value::Int(13))); // m
-        assert_eq!(results[1].as_ref().map(|v| &v.value), Some(&Value::Int(26))); // z
-        assert_eq!(results[2].as_ref().map(|v| &v.value), Some(&Value::Int(1))); // a
-    }
-
-    #[test]
-    fn test_get_many_map() {
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        kv.put(&run_id, "key1", Value::String("val1".into()))
-            .unwrap();
-        kv.put(&run_id, "key2", Value::String("val2".into()))
-            .unwrap();
-
-        let map = kv
-            .get_many_map(&run_id, &["key1", "key2", "missing"])
-            .unwrap();
-
-        assert_eq!(map.len(), 2); // missing is not included
-        // get_many_map returns Versioned<Value>
-        assert_eq!(
-            map.get("key1").map(|v| &v.value),
-            Some(&Value::String("val1".into()))
-        );
-        assert_eq!(
-            map.get("key2").map(|v| &v.value),
-            Some(&Value::String("val2".into()))
-        );
-        assert_eq!(map.get("missing"), None);
-    }
-
-    #[test]
-    fn test_get_many_empty_keys() {
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        let results = kv.get_many(&run_id, &[]).unwrap();
-        assert!(results.is_empty());
-
-        let map = kv.get_many_map(&run_id, &[]).unwrap();
-        assert!(map.is_empty());
-    }
-
-    #[test]
-    fn test_contains() {
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        assert!(!kv.contains(&run_id, "key").unwrap());
-
-        kv.put(&run_id, "key", Value::Int(42)).unwrap();
-
-        assert!(kv.contains(&run_id, "key").unwrap());
-    }
-
-    #[test]
-    fn test_get_many_run_isolation() {
-        let (_temp, _db, kv) = setup();
-        let run1 = RunId::new();
-        let run2 = RunId::new();
-
-        kv.put(&run1, "key", Value::Int(1)).unwrap();
-        kv.put(&run2, "key", Value::Int(2)).unwrap();
-
-        let results1 = kv.get_many(&run1, &["key"]).unwrap();
-        let results2 = kv.get_many(&run2, &["key"]).unwrap();
-
-        // get_many returns Versioned<Value>
-        assert_eq!(results1[0].as_ref().map(|v| &v.value), Some(&Value::Int(1)));
-        assert_eq!(results2[0].as_ref().map(|v| &v.value), Some(&Value::Int(2)));
-    }
-
-    // ========== Search API Tests ==========
-
-    #[test]
-    fn test_kv_search_basic() {
-        use crate::SearchRequest;
-
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        kv.put(&run_id, "greeting", Value::String("hello world".into()))
-            .unwrap();
-        kv.put(&run_id, "farewell", Value::String("goodbye world".into()))
-            .unwrap();
-        kv.put(&run_id, "other", Value::String("something else".into()))
-            .unwrap();
-
-        let req = SearchRequest::new(run_id, "hello");
-        let response = kv.search(&req).unwrap();
-
-        assert_eq!(response.hits.len(), 1);
-        assert_eq!(response.hits[0].rank, 1);
-    }
-
-    #[test]
-    fn test_kv_search_by_key_name() {
-        use crate::SearchRequest;
-
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        kv.put(
-            &run_id,
-            "user_email",
-            Value::String("test@example.com".into()),
-        )
-        .unwrap();
-        kv.put(&run_id, "user_name", Value::String("John".into()))
-            .unwrap();
-
-        // Search should match key names too
-        let req = SearchRequest::new(run_id, "email");
-        let response = kv.search(&req).unwrap();
-
-        assert!(!response.hits.is_empty());
-    }
-
-    #[test]
-    fn test_kv_search_respects_k() {
-        use crate::SearchRequest;
-
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        // Create many matching entries
-        for i in 0..20 {
-            kv.put(
-                &run_id,
-                &format!("key{}", i),
-                Value::String(format!("hello document {}", i)),
-            )
-            .unwrap();
-        }
-
-        let req = SearchRequest::new(run_id, "hello").with_k(5);
-        let response = kv.search(&req).unwrap();
-
-        assert_eq!(response.hits.len(), 5);
-    }
-
-    #[test]
-    fn test_kv_search_run_isolation() {
-        use crate::SearchRequest;
-
-        let (_temp, _db, kv) = setup();
-        let run1 = RunId::new();
-        let run2 = RunId::new();
-
-        kv.put(&run1, "key", Value::String("hello from run1".into()))
-            .unwrap();
-        kv.put(&run2, "key", Value::String("hello from run2".into()))
-            .unwrap();
-
-        let req1 = SearchRequest::new(run1, "hello");
-        let response1 = kv.search(&req1).unwrap();
-        assert_eq!(response1.hits.len(), 1);
-
-        let req2 = SearchRequest::new(run2, "hello");
-        let response2 = kv.search(&req2).unwrap();
-        assert_eq!(response2.hits.len(), 1);
-    }
-
-    #[test]
-    fn test_kv_search_empty_results() {
-        use crate::SearchRequest;
-
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        kv.put(&run_id, "key", Value::String("hello world".into()))
-            .unwrap();
-
-        let req = SearchRequest::new(run_id, "nonexistent");
-        let response = kv.search(&req).unwrap();
-
-        assert!(response.hits.is_empty());
-    }
-
-    #[test]
-    fn test_kv_searchable_trait() {
-        use crate::primitives::searchable::Searchable;
-        use strata_core::PrimitiveType;
-        use crate::SearchRequest;
-
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        // Test primitive_kind
-        assert_eq!(kv.primitive_kind(), PrimitiveType::Kv);
-
-        // Test search via trait
-        kv.put(&run_id, "key", Value::String("searchable test".into()))
-            .unwrap();
-
-        let req = SearchRequest::new(run_id, "searchable");
-        let response = Searchable::search(&kv, &req).unwrap();
-
-        assert!(!response.hits.is_empty());
-    }
-
-    // ========== get_at() Tests ==========
-
-    #[test]
-    fn test_get_at_returns_historical_version() {
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        // Write 3 versions
-        let v1 = kv.put(&run_id, "key", Value::Int(1)).unwrap();
-        let v2 = kv.put(&run_id, "key", Value::Int(2)).unwrap();
-        let v3 = kv.put(&run_id, "key", Value::Int(3)).unwrap();
-
-        // Read at each version
-        let at_v1 = kv.get_at(&run_id, "key", v1.as_u64()).unwrap();
-        let at_v2 = kv.get_at(&run_id, "key", v2.as_u64()).unwrap();
-        let at_v3 = kv.get_at(&run_id, "key", v3.as_u64()).unwrap();
-
-        assert_eq!(at_v1.map(|v| v.value), Some(Value::Int(1)));
-        assert_eq!(at_v2.map(|v| v.value), Some(Value::Int(2)));
-        assert_eq!(at_v3.map(|v| v.value), Some(Value::Int(3)));
-    }
-
-    #[test]
-    fn test_get_at_returns_none_before_creation() {
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        // Write at some version
-        let v = kv.put(&run_id, "key", Value::Int(1)).unwrap();
-
-        // Read before the key was created
-        let before = kv.get_at(&run_id, "key", v.as_u64() - 1).unwrap();
-        assert!(before.is_none());
-    }
-
-    #[test]
-    fn test_get_at_nonexistent_key() {
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        let result = kv.get_at(&run_id, "nonexistent", 100).unwrap();
-        assert!(result.is_none());
-    }
-
-    // ========== history() Tests ==========
-
-    #[test]
-    fn test_history_returns_all_versions() {
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        // Write 3 versions
-        kv.put(&run_id, "key", Value::Int(1)).unwrap();
-        kv.put(&run_id, "key", Value::Int(2)).unwrap();
-        kv.put(&run_id, "key", Value::Int(3)).unwrap();
-
-        // Get full history
-        let history = kv.history(&run_id, "key", None, None).unwrap();
-
-        assert_eq!(history.len(), 3);
-        // Newest first
-        assert_eq!(history[0].value, Value::Int(3));
-        assert_eq!(history[1].value, Value::Int(2));
-        assert_eq!(history[2].value, Value::Int(1));
-    }
-
-    #[test]
-    fn test_history_with_limit() {
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        // Write 5 versions
-        for i in 1..=5 {
-            kv.put(&run_id, "key", Value::Int(i)).unwrap();
-        }
-
-        // Get only 2 versions
-        let history = kv.history(&run_id, "key", Some(2), None).unwrap();
-
-        assert_eq!(history.len(), 2);
-        assert_eq!(history[0].value, Value::Int(5));
-        assert_eq!(history[1].value, Value::Int(4));
-    }
-
-    #[test]
-    fn test_history_pagination() {
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        // Write 5 versions
-        for i in 1..=5 {
-            kv.put(&run_id, "key", Value::Int(i)).unwrap();
-        }
-
-        // Page 1: first 2
-        let page1 = kv.history(&run_id, "key", Some(2), None).unwrap();
-        assert_eq!(page1.len(), 2);
-        assert_eq!(page1[0].value, Value::Int(5));
-        assert_eq!(page1[1].value, Value::Int(4));
-
-        // Page 2: before version of last item in page 1
-        let before = page1[1].version.as_u64();
-        let page2 = kv.history(&run_id, "key", Some(2), Some(before)).unwrap();
-        assert_eq!(page2.len(), 2);
-        assert_eq!(page2[0].value, Value::Int(3));
-        assert_eq!(page2[1].value, Value::Int(2));
-    }
-
-    #[test]
-    fn test_history_nonexistent_key() {
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        let history = kv.history(&run_id, "nonexistent", None, None).unwrap();
-        assert!(history.is_empty());
-    }
-
-    // ========== keys() Tests ==========
-
-    #[test]
-    fn test_keys_returns_all() {
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        kv.put(&run_id, "a", Value::Int(1)).unwrap();
-        kv.put(&run_id, "b", Value::Int(2)).unwrap();
-        kv.put(&run_id, "c", Value::Int(3)).unwrap();
-
-        let keys = kv.keys(&run_id, None, None).unwrap();
-        assert_eq!(keys.len(), 3);
-    }
-
-    #[test]
-    fn test_keys_with_prefix() {
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        kv.put(&run_id, "user:1", Value::Int(1)).unwrap();
-        kv.put(&run_id, "user:2", Value::Int(2)).unwrap();
-        kv.put(&run_id, "task:1", Value::Int(3)).unwrap();
-
-        let user_keys = kv.keys(&run_id, Some("user:"), None).unwrap();
-        assert_eq!(user_keys.len(), 2);
-    }
-
-    #[test]
-    fn test_keys_with_limit() {
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        for i in 0..10 {
-            kv.put(&run_id, &format!("key:{:02}", i), Value::Int(i)).unwrap();
-        }
-
-        let keys = kv.keys(&run_id, None, Some(3)).unwrap();
-        assert_eq!(keys.len(), 3);
-    }
-
-    // ========== scan() Tests ==========
-
-    #[test]
-    fn test_scan_basic() {
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        for i in 0..5 {
-            kv.put(&run_id, &format!("key:{:02}", i), Value::Int(i)).unwrap();
-        }
-
-        let result = kv.scan(&run_id, "key:", 10, None).unwrap();
-        assert_eq!(result.entries.len(), 5);
-        assert!(result.cursor.is_none()); // No more pages
-    }
-
-    #[test]
-    fn test_scan_pagination() {
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        // Create 10 keys
-        for i in 0..10 {
-            kv.put(&run_id, &format!("key:{:02}", i), Value::Int(i)).unwrap();
-        }
-
-        // Scan with limit 3
-        let page1 = kv.scan(&run_id, "key:", 3, None).unwrap();
-        assert_eq!(page1.entries.len(), 3);
-        assert!(page1.cursor.is_some());
-
-        // Next page
-        let page2 = kv.scan(&run_id, "key:", 3, page1.cursor.as_deref()).unwrap();
-        assert_eq!(page2.entries.len(), 3);
-        assert!(page2.cursor.is_some());
-
-        // Continue until exhausted
-        let mut cursor = page2.cursor;
-        let mut total = 6;
-        while cursor.is_some() {
-            let page = kv.scan(&run_id, "key:", 3, cursor.as_deref()).unwrap();
-            total += page.entries.len();
-            cursor = page.cursor;
-        }
-        assert_eq!(total, 10);
-    }
-
-    #[test]
-    fn test_scan_empty_results() {
-        let (_temp, _db, kv) = setup();
-        let run_id = RunId::new();
-
-        let result = kv.scan(&run_id, "nonexistent:", 10, None).unwrap();
-        assert!(result.entries.is_empty());
-        assert!(result.cursor.is_none());
     }
 }

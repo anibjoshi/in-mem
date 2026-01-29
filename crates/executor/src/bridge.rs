@@ -427,9 +427,16 @@ mod tests {
     }
 
     #[test]
-    fn test_to_core_run_id_invalid() {
+    fn test_to_core_run_id_name_generates_v5_uuid() {
+        // Non-UUID names generate a deterministic UUID v5
         let run = RunId::from("not-a-valid-id");
-        assert!(to_core_run_id(&run).is_err());
+        let result = to_core_run_id(&run);
+        assert!(result.is_ok(), "Arbitrary names should generate valid v5 UUIDs");
+
+        // Same name should produce same UUID (deterministic)
+        let run2 = RunId::from("not-a-valid-id");
+        let result2 = to_core_run_id(&run2).unwrap();
+        assert_eq!(result.unwrap().as_bytes(), result2.as_bytes());
     }
 
     #[test]

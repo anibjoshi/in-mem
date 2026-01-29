@@ -19,7 +19,7 @@ fn create_test_environment() -> (Executor, Arc<Primitives>) {
 }
 
 // =============================================================================
-// KV Parity Tests
+// KV Parity Tests (MVP: 4 commands)
 // =============================================================================
 
 #[test]
@@ -52,12 +52,12 @@ fn test_kv_put_get_parity() {
         key: "key2".to_string(),
     });
 
-    assert_eq!(direct_value.unwrap().value, Value::String("direct".into()));
+    assert_eq!(direct_value.unwrap(), Value::String("direct".into()));
     match exec_get {
-        Ok(Output::MaybeVersioned(Some(v))) => {
-            assert_eq!(v.value, Value::String("executor".into()));
+        Ok(Output::Maybe(Some(v))) => {
+            assert_eq!(v, Value::String("executor".into()));
         }
-        _ => panic!("Expected MaybeVersioned output"),
+        _ => panic!("Expected Maybe output"),
     }
 
     // Cross-check: executor can read primitive write and vice versa
@@ -66,14 +66,14 @@ fn test_kv_put_get_parity() {
         key: "key1".to_string(),
     });
     match cross_read_exec {
-        Ok(Output::MaybeVersioned(Some(v))) => {
-            assert_eq!(v.value, Value::String("direct".into()));
+        Ok(Output::Maybe(Some(v))) => {
+            assert_eq!(v, Value::String("direct".into()));
         }
         _ => panic!("Cross-read failed"),
     }
 
     let cross_read_prim = p.kv.get(&run_id, "key2").unwrap();
-    assert_eq!(cross_read_prim.unwrap().value, Value::String("executor".into()));
+    assert_eq!(cross_read_prim.unwrap(), Value::String("executor".into()));
 }
 
 #[test]
@@ -90,8 +90,11 @@ fn test_kv_delete_parity() {
         key: "to-delete".to_string(),
     });
 
-    // Should succeed
-    assert!(result.is_ok());
+    // Should succeed and return true (existed)
+    match result {
+        Ok(Output::Bool(existed)) => assert!(existed),
+        _ => panic!("Expected Bool output"),
+    }
 
     // Verify deleted via direct primitive call
     let check = p.kv.get(&run_id, "to-delete").unwrap();
@@ -99,59 +102,42 @@ fn test_kv_delete_parity() {
 }
 
 #[test]
-fn test_kv_exists_parity() {
+fn test_kv_list_parity() {
     let (executor, p) = create_test_environment();
     let run_id = strata_core::types::RunId::from_bytes([0u8; 16]);
 
-    // Create via primitive
-    p.kv.put(&run_id, "exists-key", Value::Int(1)).unwrap();
+    // Create keys via primitive
+    p.kv.put(&run_id, "user:1", Value::Int(1)).unwrap();
+    p.kv.put(&run_id, "user:2", Value::Int(2)).unwrap();
+    p.kv.put(&run_id, "task:1", Value::Int(3)).unwrap();
 
-    // Check via executor
-    let result = executor.execute(Command::KvExists {
+    // List via executor with prefix filter
+    let result = executor.execute(Command::KvList {
         run: None,
-        key: "exists-key".to_string(),
+        prefix: Some("user:".to_string()),
     });
 
     match result {
-        Ok(Output::Bool(exists)) => assert!(exists),
-        _ => panic!("Expected Bool output"),
+        Ok(Output::Keys(keys)) => {
+            assert_eq!(keys.len(), 2);
+            assert!(keys.contains(&"user:1".to_string()));
+            assert!(keys.contains(&"user:2".to_string()));
+        }
+        _ => panic!("Expected Keys output"),
     }
 
-    // Check non-existent key
-    let result2 = executor.execute(Command::KvExists {
+    // List all via executor
+    let result_all = executor.execute(Command::KvList {
         run: None,
-        key: "nonexistent".to_string(),
+        prefix: None,
     });
 
-    match result2 {
-        Ok(Output::Bool(exists)) => assert!(!exists),
-        _ => panic!("Expected Bool output"),
+    match result_all {
+        Ok(Output::Keys(keys)) => {
+            assert_eq!(keys.len(), 3);
+        }
+        _ => panic!("Expected Keys output"),
     }
-}
-
-#[test]
-fn test_kv_incr_parity() {
-    let (executor, p) = create_test_environment();
-    let run_id = strata_core::types::RunId::from_bytes([0u8; 16]);
-
-    // Initialize counter via primitive
-    p.kv.put(&run_id, "counter", Value::Int(10)).unwrap();
-
-    // Increment via executor
-    let result = executor.execute(Command::KvIncr {
-        run: None,
-        key: "counter".to_string(),
-        delta: 5,
-    });
-
-    match result {
-        Ok(Output::Int(val)) => assert_eq!(val, 15),
-        _ => panic!("Expected Int output"),
-    }
-
-    // Verify via direct read
-    let check = p.kv.get(&run_id, "counter").unwrap().unwrap();
-    assert_eq!(check.value, Value::Int(15));
 }
 
 // =============================================================================
@@ -508,8 +494,8 @@ fn test_run_isolation_parity() {
     });
 
     match result_a {
-        Ok(Output::MaybeVersioned(Some(v))) => {
-            assert_eq!(v.value, Value::String("from-a".into()));
+        Ok(Output::Maybe(Some(v))) => {
+            assert_eq!(v, Value::String("from-a".into()));
         }
         _ => panic!("Expected value from run-a"),
     }
@@ -521,8 +507,8 @@ fn test_run_isolation_parity() {
     });
 
     match result_b {
-        Ok(Output::MaybeVersioned(Some(v))) => {
-            assert_eq!(v.value, Value::String("from-b".into()));
+        Ok(Output::Maybe(Some(v))) => {
+            assert_eq!(v, Value::String("from-b".into()));
         }
         _ => panic!("Expected value from run-b"),
     }

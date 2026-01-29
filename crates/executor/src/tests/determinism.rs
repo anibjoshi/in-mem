@@ -75,30 +75,8 @@ fn test_kv_get_nonexistent_determinism() {
 
     for result in &results {
         match result {
-            Ok(Output::MaybeVersioned(None)) => {}
-            _ => panic!("Expected MaybeVersioned(None) for nonexistent key"),
-        }
-    }
-}
-
-#[test]
-fn test_kv_exists_nonexistent_determinism() {
-    let executor = create_test_executor();
-
-    // Checking existence of non-existent key should always return false
-    let results: Vec<_> = (0..5)
-        .map(|_| {
-            executor.execute(Command::KvExists {
-                run: Some(RunId::from("default")),
-                key: "nonexistent-key".to_string(),
-            })
-        })
-        .collect();
-
-    for result in &results {
-        match result {
-            Ok(Output::Bool(false)) => {}
-            _ => panic!("Expected Bool(false) for nonexistent key"),
+            Ok(Output::Maybe(None)) => {}
+            _ => panic!("Expected Maybe(None) for nonexistent key"),
         }
     }
 }
@@ -132,11 +110,10 @@ fn test_kv_write_read_determinism() {
 
     for result in &results {
         match result {
-            Ok(Output::MaybeVersioned(Some(v))) => {
-                assert_eq!(v.value, Value::String("test-value".into()));
-                assert_eq!(v.version, 1); // First write is version 1
+            Ok(Output::Maybe(Some(v))) => {
+                assert_eq!(v, &Value::String("test-value".into()));
             }
-            _ => panic!("Expected MaybeVersioned(Some) after write"),
+            _ => panic!("Expected Maybe(Some) after write"),
         }
     }
 }
@@ -179,53 +156,25 @@ fn test_state_write_read_determinism() {
 // =============================================================================
 
 #[test]
-fn test_invalid_run_determinism() {
+fn test_kv_delete_nonexistent_determinism() {
     let executor = create_test_executor();
 
-    // Using an invalid run ID should always produce the same error
+    // Deleting a non-existent key should always return false deterministically
     let results: Vec<_> = (0..5)
         .map(|_| {
-            executor.execute(Command::KvGetAt {
-                run: Some(RunId::from("nonexistent-run-12345")),
-                key: "key".to_string(),
-                version: 1,
-            })
-        })
-        .collect();
-
-    // All should be errors
-    for result in &results {
-        assert!(result.is_err(), "Invalid run should produce error");
-    }
-}
-
-#[test]
-fn test_type_error_determinism() {
-    let executor = create_test_executor();
-
-    // Set up a string value
-    executor
-        .execute(Command::KvPut {
-            run: Some(RunId::from("default")),
-            key: "string-key".to_string(),
-            value: Value::String("hello".into()),
-        })
-        .unwrap();
-
-    // Trying to increment a string should always produce the same error
-    let results: Vec<_> = (0..5)
-        .map(|_| {
-            executor.execute(Command::KvIncr {
+            executor.execute(Command::KvDelete {
                 run: Some(RunId::from("default")),
-                key: "string-key".to_string(),
-                delta: 1,
+                key: "nonexistent-key".to_string(),
             })
         })
         .collect();
 
-    // All should be errors (can't increment a string)
+    // All should return Bool(false)
     for result in &results {
-        assert!(result.is_err(), "Incrementing string should produce error");
+        match result {
+            Ok(Output::Bool(false)) => {}
+            _ => panic!("Expected Bool(false) for deleting nonexistent key"),
+        }
     }
 }
 
@@ -262,8 +211,8 @@ fn test_sequential_writes_determinism() {
         });
 
         match result {
-            Ok(Output::MaybeVersioned(Some(v))) => {
-                assert_eq!(v.value, Value::Int(i));
+            Ok(Output::Maybe(Some(v))) => {
+                assert_eq!(v, Value::Int(i));
             }
             _ => panic!("Expected value at key-{}", i),
         }
@@ -271,47 +220,48 @@ fn test_sequential_writes_determinism() {
 }
 
 #[test]
-fn test_increment_determinism() {
+fn test_kv_list_determinism() {
     let executor = create_test_executor();
 
-    // Initialize counter
-    executor
-        .execute(Command::KvPut {
-            run: Some(RunId::from("default")),
-            key: "counter".to_string(),
-            value: Value::Int(0),
-        })
-        .unwrap();
-
-    // Increment 10 times
-    let mut expected = 0i64;
-    for _ in 0..10 {
-        expected += 5;
-        let result = executor.execute(Command::KvIncr {
-            run: Some(RunId::from("default")),
-            key: "counter".to_string(),
-            delta: 5,
-        });
-
-        match result {
-            Ok(Output::Int(val)) => {
-                assert_eq!(val, expected, "Increment should be deterministic");
-            }
-            _ => panic!("Expected Int output for incr"),
-        }
+    // Write some keys with a common prefix
+    for i in 0..5 {
+        executor
+            .execute(Command::KvPut {
+                run: Some(RunId::from("default")),
+                key: format!("user:{}", i),
+                value: Value::Int(i),
+            })
+            .unwrap();
     }
 
-    // Final value should be 50
-    let final_result = executor.execute(Command::KvGet {
-        run: Some(RunId::from("default")),
-        key: "counter".to_string(),
-    });
+    // List keys multiple times - should get same results
+    let results: Vec<_> = (0..5)
+        .map(|_| {
+            executor.execute(Command::KvList {
+                run: Some(RunId::from("default")),
+                prefix: Some("user:".to_string()),
+            })
+        })
+        .collect();
 
-    match final_result {
-        Ok(Output::MaybeVersioned(Some(v))) => {
-            assert_eq!(v.value, Value::Int(50));
+    // All results should have same keys
+    let first = match &results[0] {
+        Ok(Output::Keys(keys)) => keys,
+        _ => panic!("Expected Keys output"),
+    };
+
+    assert_eq!(first.len(), 5, "Should have 5 keys");
+
+    for result in &results {
+        match result {
+            Ok(Output::Keys(keys)) => {
+                assert_eq!(keys.len(), first.len());
+                for key in keys {
+                    assert!(first.contains(key), "Key should be in first result");
+                }
+            }
+            _ => panic!("Expected Keys output"),
         }
-        _ => panic!("Expected final value of 50"),
     }
 }
 

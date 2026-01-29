@@ -62,7 +62,7 @@ fn test_command_compact() {
 }
 
 // =============================================================================
-// KV Command Tests
+// KV Command Tests (4 MVP)
 // =============================================================================
 
 #[test]
@@ -91,58 +91,10 @@ fn test_command_kv_delete() {
 }
 
 #[test]
-fn test_command_kv_exists() {
-    test_command_round_trip(Command::KvExists {
+fn test_command_kv_list() {
+    test_command_round_trip(Command::KvList {
         run: Some(RunId::from("default")),
-        key: "test-key".to_string(),
-    });
-}
-
-#[test]
-fn test_command_kv_history() {
-    test_command_round_trip(Command::KvHistory {
-        run: Some(RunId::from("default")),
-        key: "test-key".to_string(),
-        limit: Some(10),
-        before: Some(100),
-    });
-}
-
-#[test]
-fn test_command_kv_incr() {
-    test_command_round_trip(Command::KvIncr {
-        run: Some(RunId::from("default")),
-        key: "counter".to_string(),
-        delta: 5,
-    });
-}
-
-#[test]
-fn test_command_kv_cas_version() {
-    test_command_round_trip(Command::KvCasVersion {
-        run: Some(RunId::from("default")),
-        key: "test-key".to_string(),
-        expected_version: Some(5),
-        new_value: Value::Int(42),
-    });
-}
-
-#[test]
-fn test_command_kv_mget() {
-    test_command_round_trip(Command::KvMget {
-        run: Some(RunId::from("default")),
-        keys: vec!["key1".to_string(), "key2".to_string()],
-    });
-}
-
-#[test]
-fn test_command_kv_mput() {
-    test_command_round_trip(Command::KvMput {
-        run: Some(RunId::from("default")),
-        entries: vec![
-            ("key1".to_string(), Value::Int(1)),
-            ("key2".to_string(), Value::Int(2)),
-        ],
+        prefix: Some("user:".to_string()),
     });
 }
 

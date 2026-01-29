@@ -83,7 +83,7 @@ impl Executor {
                 Ok(Output::Unit)
             }
 
-            // KV commands
+            // KV commands (MVP: 4 commands)
             Command::KvPut { run, key, value } => {
                 let run = run.expect("resolved by resolve_default_run");
                 crate::handlers::kv::kv_put(&self.primitives, run, key, value)
@@ -92,89 +92,13 @@ impl Executor {
                 let run = run.expect("resolved by resolve_default_run");
                 crate::handlers::kv::kv_get(&self.primitives, run, key)
             }
-            Command::KvGetAt { run, key, version } => {
-                let run = run.expect("resolved by resolve_default_run");
-                crate::handlers::kv::kv_get_at(&self.primitives, run, key, version)
-            }
             Command::KvDelete { run, key } => {
                 let run = run.expect("resolved by resolve_default_run");
                 crate::handlers::kv::kv_delete(&self.primitives, run, key)
             }
-            Command::KvExists { run, key } => {
+            Command::KvList { run, prefix } => {
                 let run = run.expect("resolved by resolve_default_run");
-                crate::handlers::kv::kv_exists(&self.primitives, run, key)
-            }
-            Command::KvHistory {
-                run,
-                key,
-                limit,
-                before,
-            } => {
-                let run = run.expect("resolved by resolve_default_run");
-                crate::handlers::kv::kv_history(&self.primitives, run, key, limit, before)
-            }
-            Command::KvIncr { run, key, delta } => {
-                let run = run.expect("resolved by resolve_default_run");
-                crate::handlers::kv::kv_incr(&self.primitives, run, key, delta)
-            }
-            Command::KvCasVersion {
-                run,
-                key,
-                expected_version,
-                new_value,
-            } => {
-                let run = run.expect("resolved by resolve_default_run");
-                crate::handlers::kv::kv_cas_version(
-                    &self.primitives,
-                    run,
-                    key,
-                    expected_version,
-                    new_value,
-                )
-            }
-            Command::KvCasValue {
-                run,
-                key,
-                expected_value,
-                new_value,
-            } => {
-                let run = run.expect("resolved by resolve_default_run");
-                crate::handlers::kv::kv_cas_value(
-                    &self.primitives,
-                    run,
-                    key,
-                    expected_value,
-                    new_value,
-                )
-            }
-            Command::KvKeys { run, prefix, limit } => {
-                let run = run.expect("resolved by resolve_default_run");
-                crate::handlers::kv::kv_keys(&self.primitives, run, prefix, limit)
-            }
-            Command::KvScan {
-                run,
-                prefix,
-                limit,
-                cursor,
-            } => {
-                let run = run.expect("resolved by resolve_default_run");
-                crate::handlers::kv::kv_scan(&self.primitives, run, prefix, limit, cursor)
-            }
-            Command::KvMget { run, keys } => {
-                let run = run.expect("resolved by resolve_default_run");
-                crate::handlers::kv::kv_mget(&self.primitives, run, keys)
-            }
-            Command::KvMput { run, entries } => {
-                let run = run.expect("resolved by resolve_default_run");
-                crate::handlers::kv::kv_mput(&self.primitives, run, entries)
-            }
-            Command::KvMdelete { run, keys } => {
-                let run = run.expect("resolved by resolve_default_run");
-                crate::handlers::kv::kv_mdelete(&self.primitives, run, keys)
-            }
-            Command::KvMexists { run, keys } => {
-                let run = run.expect("resolved by resolve_default_run");
-                crate::handlers::kv::kv_mexists(&self.primitives, run, keys)
+                crate::handlers::kv::kv_list(&self.primitives, run, prefix)
             }
 
             // JSON commands
