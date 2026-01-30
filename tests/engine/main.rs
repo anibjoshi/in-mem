@@ -8,6 +8,7 @@ mod common;
 mod database;
 mod primitives;
 
+mod acid_concurrent;
 mod acid_properties;
 mod adversarial;
 mod adversarial_deep;
