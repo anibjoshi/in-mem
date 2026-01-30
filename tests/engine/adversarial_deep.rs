@@ -46,7 +46,7 @@ fn lost_update_prevented() {
             loop {
                 let result = db.transaction(run_id, |txn| {
                     // Read current value
-                    let current = txn.kv_get("counter")?.unwrap_or(Value::Int(0));
+                    let current = txn.kv_get("counter")?.expect("counter key must exist after initialization");
                     let n = match current {
                         Value::Int(v) => v,
                         _ => 0,

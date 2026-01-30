@@ -25,7 +25,7 @@ fn vector_upsert_to_nonexistent_collection_behavior() {
     // Note: Current behavior allows upsert to create collection implicitly
     // This is a design choice - documenting current behavior
     // If this changes to require explicit collection creation, update this test
-    assert!(result.is_ok() || result.is_err());
+    assert!(result.is_ok(), "Vector upsert should implicitly create collection");
 }
 
 #[test]

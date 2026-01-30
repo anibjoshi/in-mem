@@ -245,7 +245,7 @@ fn concurrent_cas_exactly_one_wins() {
     // Exactly one thread should have succeeded
     // (others see stale version after first CAS)
     let wins = success_count.load(Ordering::SeqCst);
-    assert!(wins >= 1, "At least one CAS should succeed");
+    assert_eq!(wins, 1, "Exactly one CAS should succeed, got {}", wins);
 }
 
 // ============================================================================
