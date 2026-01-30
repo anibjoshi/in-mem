@@ -213,7 +213,7 @@ fn run_list() {
 
     let runs = db.run_list(None, None, None).unwrap();
     // At least our two runs plus default
-    assert!(runs.len() >= 2);
+    assert!(runs.len() >= 2, "Expected >= 2 runs (dev + prod), got {}", runs.len());
 }
 
 // ============================================================================

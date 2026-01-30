@@ -106,6 +106,7 @@ fn different_runs_have_independent_namespaces() {
 #[test]
 fn high_contention_single_key() {
     let store = Arc::new(ShardedStore::new());
+    let manager = Arc::new(TransactionManager::new(1));
     let run_id = RunId::new();
     let key = create_test_key(run_id, "contested");
 
@@ -114,48 +115,49 @@ fn high_contention_single_key() {
 
     let barrier = Arc::new(Barrier::new(8));
     let commits = Arc::new(AtomicU64::new(0));
-    let conflicts = Arc::new(AtomicU64::new(0));
+    let retries = Arc::new(AtomicU64::new(0));
 
     let handles: Vec<_> = (0..8)
         .map(|thread_id| {
             let store = Arc::clone(&store);
+            let manager = Arc::clone(&manager);
             let barrier = Arc::clone(&barrier);
             let commits = Arc::clone(&commits);
-            let conflicts = Arc::clone(&conflicts);
+            let retries = Arc::clone(&retries);
             let key = key.clone();
 
             thread::spawn(move || {
                 barrier.wait();
 
                 for i in 0..10 {
-                    // Read current value
-                    let current = Storage::get(&*store, &key).unwrap().unwrap();
-                    let read_version = current.version.as_u64();
+                    loop {
+                        // Read current value
+                        let current = Storage::get(&*store, &key).unwrap().unwrap();
+                        let read_version = current.version.as_u64();
 
-                    // Create transaction
-                    let mut txn = TransactionContext::new(
-                        (thread_id * 100 + i) as u64,
-                        run_id,
-                        read_version,
-                    );
-                    txn.read_set.insert(key.clone(), read_version);
-                    txn.write_set
-                        .insert(key.clone(), Value::Int((thread_id * 100 + i) as i64));
+                        // Create transaction
+                        let txn_id = manager.next_txn_id();
+                        let mut txn = TransactionContext::new(txn_id, run_id, read_version);
+                        txn.read_set.insert(key.clone(), read_version);
+                        txn.write_set
+                            .insert(key.clone(), Value::Int((thread_id * 100 + i) as i64));
 
-                    // Validate
-                    let result = validate_transaction(&txn, &*store);
-                    if result.is_valid() {
-                        // Try to apply (race with other threads)
-                        Storage::put(
-                            &*store,
-                            key.clone(),
-                            Value::Int((thread_id * 100 + i) as i64),
-                            None,
-                        )
-                        .unwrap();
-                        commits.fetch_add(1, Ordering::Relaxed);
-                    } else {
-                        conflicts.fetch_add(1, Ordering::Relaxed);
+                        // Validate
+                        let result = validate_transaction(&txn, &*store);
+                        if result.is_valid() {
+                            Storage::put(
+                                &*store,
+                                key.clone(),
+                                Value::Int((thread_id * 100 + i) as i64),
+                                None,
+                            )
+                            .unwrap();
+                            commits.fetch_add(1, Ordering::Relaxed);
+                            break;
+                        } else {
+                            retries.fetch_add(1, Ordering::Relaxed);
+                            // Retry with fresh read
+                        }
                     }
                 }
             })
@@ -167,12 +169,9 @@ fn high_contention_single_key() {
     }
 
     let total_commits = commits.load(Ordering::Relaxed);
-    let total_conflicts = conflicts.load(Ordering::Relaxed);
 
-    // With 8 threads x 10 iterations = 80 attempts
-    // Due to contention, we expect some conflicts
-    assert!(total_commits > 0, "Some transactions should commit");
-    assert!(total_commits + total_conflicts == 80, "All attempts accounted for");
+    // All 80 operations must eventually commit (with retries)
+    assert_eq!(total_commits, 80, "All 80 operations must eventually commit");
 }
 
 // ============================================================================

@@ -193,7 +193,7 @@ fn read_your_writes_event() {
     }).unwrap();
 
     match output {
-        Output::Uint(len) => assert!(len >= 1, "Expected at least 1 event, got {}", len),
+        Output::Uint(len) => assert_eq!(len, 1, "Expected exactly 1 event, got {}", len),
         _ => panic!("Expected Uint output"),
     }
 
@@ -529,7 +529,7 @@ fn cross_primitive_transaction() {
         run: None,
     }).unwrap();
     match event_out {
-        Output::Uint(len) => assert!(len >= 1, "Expected at least 1 event"),
+        Output::Uint(len) => assert_eq!(len, 1, "Expected exactly 1 event, got {}", len),
         _ => panic!("Expected Uint"),
     }
 }

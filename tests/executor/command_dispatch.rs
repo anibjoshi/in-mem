@@ -390,7 +390,7 @@ fn run_list_returns_runs() {
     match output {
         Output::RunInfoList(runs) => {
             // At least the default run plus our two created runs
-            assert!(runs.len() >= 2);
+            assert!(runs.len() >= 2, "Expected >= 2 runs (production + staging), got {}", runs.len());
         }
         _ => panic!("Expected RunInfos output"),
     }

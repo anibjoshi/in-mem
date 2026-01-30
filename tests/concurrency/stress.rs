@@ -21,7 +21,7 @@ fn create_test_key(run_id: RunId, name: &str) -> Key {
     Key::new_kv(ns, name)
 }
 
-/// High concurrency read-write mix
+/// High concurrency read-write mix with retry loops
 #[test]
 #[ignore]
 fn stress_concurrent_read_write() {
@@ -37,7 +37,7 @@ fn stress_concurrent_read_write() {
 
     let barrier = Arc::new(Barrier::new(16));
     let commits = Arc::new(AtomicU64::new(0));
-    let conflicts = Arc::new(AtomicU64::new(0));
+    let retries = Arc::new(AtomicU64::new(0));
 
     let handles: Vec<_> = (0..16)
         .map(|thread_id| {
@@ -45,38 +45,41 @@ fn stress_concurrent_read_write() {
             let manager = Arc::clone(&manager);
             let barrier = Arc::clone(&barrier);
             let commits = Arc::clone(&commits);
-            let conflicts = Arc::clone(&conflicts);
+            let retries = Arc::clone(&retries);
 
             thread::spawn(move || {
                 barrier.wait();
 
                 for iter in 0..100 {
-                    // Pick a random key based on thread and iteration
                     let key_idx = (thread_id * 7 + iter * 11) % 100;
                     let key = create_test_key(run_id, &format!("key_{}", key_idx));
 
-                    // Read-modify-write
-                    let current = Storage::get(&*store, &key).unwrap().unwrap();
-                    let version = current.version.as_u64();
+                    loop {
+                        // Read-modify-write with retry
+                        let current = Storage::get(&*store, &key).unwrap().unwrap();
+                        let version = current.version.as_u64();
 
-                    let txn_id = manager.next_txn_id();
-                    let mut txn = TransactionContext::new(txn_id, run_id, version);
-                    txn.read_set.insert(key.clone(), version);
-                    txn.write_set
-                        .insert(key.clone(), Value::Int((thread_id * 1000 + iter) as i64));
+                        let txn_id = manager.next_txn_id();
+                        let mut txn = TransactionContext::new(txn_id, run_id, version);
+                        txn.read_set.insert(key.clone(), version);
+                        txn.write_set
+                            .insert(key.clone(), Value::Int((thread_id * 1000 + iter) as i64));
 
-                    let result = validate_transaction(&txn, &*store);
-                    if result.is_valid() {
-                        Storage::put(
-                            &*store,
-                            key,
-                            Value::Int((thread_id * 1000 + iter) as i64),
-                            None,
-                        )
-                        .unwrap();
-                        commits.fetch_add(1, Ordering::Relaxed);
-                    } else {
-                        conflicts.fetch_add(1, Ordering::Relaxed);
+                        let result = validate_transaction(&txn, &*store);
+                        if result.is_valid() {
+                            Storage::put(
+                                &*store,
+                                key.clone(),
+                                Value::Int((thread_id * 1000 + iter) as i64),
+                                None,
+                            )
+                            .unwrap();
+                            commits.fetch_add(1, Ordering::Relaxed);
+                            break;
+                        } else {
+                            retries.fetch_add(1, Ordering::Relaxed);
+                            // Retry with fresh read
+                        }
                     }
                 }
             })
@@ -88,17 +91,14 @@ fn stress_concurrent_read_write() {
     }
 
     let total_commits = commits.load(Ordering::Relaxed);
-    let total_conflicts = conflicts.load(Ordering::Relaxed);
+    let total_retries = retries.load(Ordering::Relaxed);
 
     println!(
-        "Commits: {}, Conflicts: {}, Total: {}",
-        total_commits,
-        total_conflicts,
-        total_commits + total_conflicts
+        "Commits: {}, Retries: {}",
+        total_commits, total_retries
     );
 
-    assert_eq!(total_commits + total_conflicts, 16 * 100);
-    assert!(total_commits > 0, "Some transactions should commit");
+    assert_eq!(total_commits, 16 * 100, "All 1600 operations must eventually commit");
 }
 
 /// Rapid transaction throughput measurement
