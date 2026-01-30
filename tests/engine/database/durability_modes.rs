@@ -151,8 +151,8 @@ fn transaction_atomicity_in_memory() {
     }).unwrap();
 
     let kv = test_db.kv();
-    assert!(kv.get(&run_id, "a").unwrap().is_some());
-    assert!(kv.get(&run_id, "b").unwrap().is_some());
+    assert_eq!(kv.get(&run_id, "a").unwrap(), Some(Value::Int(1)));
+    assert_eq!(kv.get(&run_id, "b").unwrap(), Some(Value::Int(2)));
 }
 
 #[test]
@@ -167,8 +167,8 @@ fn transaction_atomicity_buffered() {
     }).unwrap();
 
     let kv = test_db.kv();
-    assert!(kv.get(&run_id, "a").unwrap().is_some());
-    assert!(kv.get(&run_id, "b").unwrap().is_some());
+    assert_eq!(kv.get(&run_id, "a").unwrap(), Some(Value::Int(1)));
+    assert_eq!(kv.get(&run_id, "b").unwrap(), Some(Value::Int(2)));
 }
 
 #[test]
@@ -188,8 +188,8 @@ fn transaction_atomicity_strict() {
     }).unwrap();
 
     let kv = KVStore::new(db);
-    assert!(kv.get(&run_id, "a").unwrap().is_some());
-    assert!(kv.get(&run_id, "b").unwrap().is_some());
+    assert_eq!(kv.get(&run_id, "a").unwrap(), Some(Value::Int(1)));
+    assert_eq!(kv.get(&run_id, "b").unwrap(), Some(Value::Int(2)));
 }
 
 // ============================================================================

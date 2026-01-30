@@ -40,19 +40,22 @@ fn all_six_primitives_recover_together() {
     let p = test_db.all_primitives();
 
     let kv_val = p.kv.get(&run_id, "k1").unwrap();
-    assert!(kv_val.is_some(), "KV should recover");
+    assert_eq!(kv_val, Some(Value::Int(1)), "KV should recover");
 
     let json_val = p.json.get(&run_id, &doc_id, &root()).unwrap();
-    assert!(json_val.is_some(), "JSON should recover");
+    let json_val = json_val.expect("JSON should recover");
+    assert_eq!(json_val.value, test_json_value(1));
 
     let events = p.event.read_by_type(&run_id, "stream").unwrap();
     assert_eq!(events.len(), 1, "EventLog should recover");
 
     let state_val = p.state.read(&run_id, "cell").unwrap();
-    assert!(state_val.is_some(), "StateCell should recover");
+    let state_val = state_val.expect("StateCell should recover");
+    assert_eq!(state_val.value.value, Value::String("initial".into()));
 
     let vec_val = p.vector.get(run_id, "col", "v1").unwrap();
-    assert!(vec_val.is_some(), "VectorStore should recover");
+    let vec_val = vec_val.expect("VectorStore should recover");
+    assert_eq!(vec_val.value.embedding, vec![1.0, 0.0, 0.0]);
 }
 
 #[test]
@@ -78,7 +81,7 @@ fn interleaved_writes_recover_correctly() {
 
     for i in 0..50 {
         let val = kv.get(&run_id, &format!("k{}", i)).unwrap();
-        assert!(val.is_some(), "KV key k{} missing after recovery", i);
+        assert_eq!(val, Some(Value::Int(i)), "KV key k{} should be {}", i, i);
     }
 
     let events = event.read_by_type(&run_id, "interleaved").unwrap();
@@ -102,8 +105,8 @@ fn multiple_runs_recover_independently() {
     let kv = test_db.kv();
     let v1 = kv.get(&run1, "run1_key").unwrap();
     let v2 = kv.get(&run2, "run2_key").unwrap();
-    assert!(v1.is_some(), "Run1 data should recover");
-    assert!(v2.is_some(), "Run2 data should recover");
+    assert_eq!(v1, Some(Value::String("from_run1".into())), "Run1 data should recover");
+    assert_eq!(v2, Some(Value::String("from_run2".into())), "Run2 data should recover");
 
     // Cross-contamination check
     let cross = kv.get(&run1, "run2_key").unwrap();

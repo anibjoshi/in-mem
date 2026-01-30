@@ -50,7 +50,7 @@ mod kv_scale {
         measure(&format!("Read {} KV entries", count), || {
             for i in 0..count {
                 let val = kv.get(&run_id, &format!("key_{:08}", i)).unwrap();
-                assert!(val.is_some());
+                assert_eq!(val.unwrap(), Value::Int(i as i64));
             }
         });
 

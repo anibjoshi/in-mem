@@ -31,7 +31,7 @@ fn kv_and_eventlog_atomic() {
     let kv = test_db.kv();
     let event = test_db.event();
 
-    assert!(kv.get(&run_id, "order_id").unwrap().is_some());
+    assert_eq!(kv.get(&run_id, "order_id").unwrap(), Some(Value::String("ORD-123".into())));
     assert_eq!(event.len(&run_id).unwrap(), 1);
 }
 
@@ -51,7 +51,7 @@ fn kv_and_statecell_atomic() {
     }).unwrap();
 
     let kv = test_db.kv();
-    assert!(kv.get(&run_id, "processed_at").unwrap().is_some());
+    assert_eq!(kv.get(&run_id, "processed_at").unwrap(), Some(Value::Int(1234567890)));
 
     let current = state.read(&run_id, "status").unwrap().unwrap();
     assert_eq!(current.value.value, Value::String("completed".into()));
@@ -81,7 +81,7 @@ fn three_primitives_atomic() {
     let kv = test_db.kv();
     let event = test_db.event();
 
-    assert!(kv.get(&run_id, "data").unwrap().is_some());
+    assert_eq!(kv.get(&run_id, "data").unwrap(), Some(Value::String("value".into())));
     assert_eq!(event.len(&run_id).unwrap(), 1);
 
     let counter = state.read(&run_id, "counter").unwrap().unwrap();
@@ -219,10 +219,10 @@ fn saga_pattern_all_steps_complete() {
     let event = test_db.event();
     let state = test_db.state();
 
-    assert!(kv.get(&run_id, "order:1").unwrap().is_some());
-    assert!(kv.get(&run_id, "inventory:item1").unwrap().is_some());
+    assert_eq!(kv.get(&run_id, "order:1").unwrap(), Some(Value::String("created".into())));
+    assert_eq!(kv.get(&run_id, "inventory:item1").unwrap(), Some(Value::Int(99)));
     assert_eq!(event.len(&run_id).unwrap(), 1);
-    assert!(state.read(&run_id, "order:1:status").unwrap().is_some());
+    assert_eq!(state.read(&run_id, "order:1:status").unwrap().unwrap().value.value, Value::String("processing".into()));
 }
 
 // ============================================================================

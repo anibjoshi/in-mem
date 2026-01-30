@@ -216,7 +216,7 @@ fn empty_string_key_works() {
 
     kv.put(&test_db.run_id, "", Value::Int(1)).unwrap();
     let result = kv.get(&test_db.run_id, "").unwrap();
-    assert!(result.is_some());
+    assert_eq!(result, Some(Value::Int(1)));
 }
 
 #[test]
@@ -227,7 +227,7 @@ fn long_key_works() {
     let long_key = "k".repeat(1000);
     kv.put(&test_db.run_id, &long_key, Value::Int(1)).unwrap();
     let result = kv.get(&test_db.run_id, &long_key).unwrap();
-    assert!(result.is_some());
+    assert_eq!(result, Some(Value::Int(1)));
 }
 
 #[test]
@@ -238,5 +238,5 @@ fn special_characters_in_key() {
     let special_key = "key/with:special@chars#and$symbols";
     kv.put(&test_db.run_id, special_key, Value::Int(1)).unwrap();
     let result = kv.get(&test_db.run_id, special_key).unwrap();
-    assert!(result.is_some());
+    assert_eq!(result, Some(Value::Int(1)));
 }

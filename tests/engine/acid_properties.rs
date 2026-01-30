@@ -37,9 +37,9 @@ fn atomicity_success_all_visible() {
     }).unwrap();
 
     let kv = test_db.kv();
-    assert!(kv.get(&run_id, "key1").unwrap().is_some());
-    assert!(kv.get(&run_id, "key2").unwrap().is_some());
-    assert!(kv.get(&run_id, "key3").unwrap().is_some());
+    assert_eq!(kv.get(&run_id, "key1").unwrap(), Some(Value::Int(1)));
+    assert_eq!(kv.get(&run_id, "key2").unwrap(), Some(Value::Int(2)));
+    assert_eq!(kv.get(&run_id, "key3").unwrap(), Some(Value::Int(3)));
 }
 
 #[test]
@@ -85,7 +85,7 @@ fn atomicity_cross_primitive() {
     let event = test_db.event();
 
     // Both committed together
-    assert!(kv.get(&run_id, "cross_key").unwrap().is_some());
+    assert_eq!(kv.get(&run_id, "cross_key").unwrap(), Some(Value::Int(42)));
     assert_eq!(event.len(&run_id).unwrap(), 1);
 }
 

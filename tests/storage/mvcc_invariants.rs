@@ -151,7 +151,7 @@ fn no_ttl_never_expires() {
 
     // Should always be returned
     let result = Storage::get(&store, &key).unwrap();
-    assert!(result.is_some(), "Value without TTL should be returned");
+    assert_eq!(result.unwrap().value, Value::Int(42), "Value without TTL should be returned");
 }
 
 // ============================================================================

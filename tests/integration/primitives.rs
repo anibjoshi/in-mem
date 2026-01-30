@@ -281,7 +281,7 @@ mod vector_single {
         vector.create_collection(run_id, "test", config_small()).unwrap();
         vector.insert(run_id, "test", "to_delete", &[1.0, 0.0, 0.0], None).unwrap();
 
-        assert!(vector.get(run_id, "test", "to_delete").unwrap().is_some());
+        assert_eq!(vector.get(run_id, "test", "to_delete").unwrap().unwrap().value.embedding, vec![1.0f32, 0.0, 0.0]);
 
         vector.delete(run_id, "test", "to_delete").unwrap();
 
@@ -320,11 +320,11 @@ fn all_six_primitives_together() {
     // In production, you would either use the default run or create one explicitly
 
     // Verify all readable
-    assert!(p.kv.get(&run_id, "config").unwrap().is_some());
-    assert!(p.state.read(&run_id, "status").unwrap().is_some());
+    assert_eq!(p.kv.get(&run_id, "config").unwrap(), Some(Value::String("enabled".into())));
+    assert_eq!(p.state.read(&run_id, "status").unwrap().unwrap().value.value, Value::String("running".into()));
     assert!(p.event.len(&run_id).unwrap() > 0);
-    assert!(p.json.get(&run_id, "context", &root()).unwrap().is_some());
-    assert!(p.vector.get(run_id, "memory", "m1").unwrap().is_some());
+    assert_eq!(p.json.get(&run_id, "context", &root()).unwrap().unwrap().value.as_inner(), &serde_json::json!({"task": "test"}));
+    assert_eq!(p.vector.get(run_id, "memory", "m1").unwrap().unwrap().value.embedding, vec![1.0f32, 0.0, 0.0]);
 }
 
 #[test]
@@ -398,6 +398,6 @@ fn delete_in_one_primitive_doesnt_affect_others() {
 
     // Verify KV deleted but others remain
     assert!(p.kv.get(&run_id, "shared").unwrap().is_none());
-    assert!(p.state.read(&run_id, "shared").unwrap().is_some());
-    assert!(p.json.get(&run_id, "shared", &root()).unwrap().is_some());
+    assert_eq!(p.state.read(&run_id, "shared").unwrap().unwrap().value.value, Value::String("state".into()));
+    assert_eq!(p.json.get(&run_id, "shared", &root()).unwrap().unwrap().value.as_inner(), &serde_json::json!({"type": "json"}));
 }

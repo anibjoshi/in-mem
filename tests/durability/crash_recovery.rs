@@ -93,7 +93,7 @@ fn completely_corrupted_wal_still_boots() {
     let kv = test_db.kv();
     kv.put(&run_id, "after_corruption", Value::Int(2)).unwrap();
     let val = kv.get(&run_id, "after_corruption").unwrap();
-    assert!(val.is_some(), "New writes should work after corrupted WAL recovery");
+    assert_eq!(val, Some(Value::Int(2)), "New writes should work after corrupted WAL recovery");
 }
 
 #[test]
@@ -152,11 +152,7 @@ fn rapid_reopen_cycles_are_stable() {
         let val = kv
             .get(&run_id, &format!("cycle_{}", cycle))
             .unwrap();
-        assert!(
-            val.is_some(),
-            "Key from cycle {} should survive rapid reopen",
-            cycle
-        );
+        assert_eq!(val, Some(Value::Int(cycle as i64)), "Key from cycle {} should survive rapid reopen", cycle);
     }
 }
 

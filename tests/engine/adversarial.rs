@@ -521,7 +521,7 @@ fn large_transaction() {
     let kv = test_db.kv();
     for i in 0..100 {
         let val = kv.get(&run_id, &format!("key_{}", i)).unwrap();
-        assert!(val.is_some(), "key_{} should exist", i);
+        assert_eq!(val, Some(Value::Int(i)), "key_{} should be {}", i, i);
     }
 }
 

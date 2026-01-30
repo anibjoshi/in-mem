@@ -259,7 +259,7 @@ fn transaction_put_and_delete() {
     }).unwrap();
 
     // New key exists
-    assert!(kv.get(&run_id, "new_key").unwrap().is_some());
+    assert_eq!(kv.get(&run_id, "new_key").unwrap(), Some(Value::Int(42)));
     // Old key gone
     assert!(kv.get(&run_id, "to_delete").unwrap().is_none());
 }

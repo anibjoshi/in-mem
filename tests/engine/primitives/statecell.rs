@@ -259,7 +259,7 @@ fn empty_cell_name() {
 
     state.init(&test_db.run_id, "", Value::Int(1)).unwrap();
     // exists rewritten using read().is_some()
-    assert!(state.read(&test_db.run_id, "").unwrap().is_some());
+    assert_eq!(state.read(&test_db.run_id, "").unwrap().unwrap().value.value, Value::Int(1));
 }
 
 #[test]
@@ -270,5 +270,5 @@ fn special_characters_in_name() {
     let name = "cell/with:special@chars";
     state.init(&test_db.run_id, name, Value::Int(1)).unwrap();
     // exists rewritten using read().is_some()
-    assert!(state.read(&test_db.run_id, name).unwrap().is_some());
+    assert_eq!(state.read(&test_db.run_id, name).unwrap().unwrap().value.value, Value::Int(1));
 }

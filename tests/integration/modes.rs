@@ -69,11 +69,11 @@ fn ephemeral_all_primitives() {
 
     // KV
     kv.put(&run_id, "k", Value::Int(1)).unwrap();
-    assert!(kv.get(&run_id, "k").unwrap().is_some());
+    assert_eq!(kv.get(&run_id, "k").unwrap(), Some(Value::Int(1)));
 
     // State
     state.init(&run_id, "s", Value::Int(2)).unwrap();
-    assert!(state.read(&run_id, "s").unwrap().is_some());
+    assert_eq!(state.read(&run_id, "s").unwrap().unwrap().value.value, Value::Int(2));
 
     // Event
     event.append(&run_id, "stream", int_payload(3)).unwrap();
@@ -81,12 +81,12 @@ fn ephemeral_all_primitives() {
 
     // JSON
     json.create(&run_id, "doc", json_value(serde_json::json!({"x": 4}))).unwrap();
-    assert!(json.get(&run_id, "doc", &root()).unwrap().is_some());
+    assert_eq!(json.get(&run_id, "doc", &root()).unwrap().unwrap().value.as_inner(), &serde_json::json!({"x": 4}));
 
     // Vector
     vector.create_collection(run_id, "coll", config_small()).unwrap();
     vector.insert(run_id, "coll", "v", &[1.0, 0.0, 0.0], None).unwrap();
-    assert!(vector.get(run_id, "coll", "v").unwrap().is_some());
+    assert_eq!(vector.get(run_id, "coll", "v").unwrap().unwrap().value.embedding, vec![1.0f32, 0.0, 0.0]);
 }
 
 #[test]
@@ -208,19 +208,19 @@ fn strict_mode_all_primitives_survive_reopen() {
         let db = create_persistent_strict(&dir);
 
         let kv = KVStore::new(db.clone());
-        assert!(kv.get(&run_id, "kv_key").unwrap().is_some());
+        assert_eq!(kv.get(&run_id, "kv_key").unwrap(), Some(Value::String("kv_val".into())));
 
         let state = StateCell::new(db.clone());
-        assert!(state.read(&run_id, "state_cell").unwrap().is_some());
+        assert_eq!(state.read(&run_id, "state_cell").unwrap().unwrap().value.value, Value::Int(42));
 
         let event = EventLog::new(db.clone());
         assert!(event.len(&run_id).unwrap() > 0);
 
         let json = JsonStore::new(db.clone());
-        assert!(json.get(&run_id, "doc", &root()).unwrap().is_some());
+        assert_eq!(json.get(&run_id, "doc", &root()).unwrap().unwrap().value.as_inner(), &serde_json::json!({"k": "v"}));
 
         let vector = VectorStore::new(db.clone());
-        assert!(vector.get(run_id, "coll", "vec").unwrap().is_some());
+        assert_eq!(vector.get(run_id, "coll", "vec").unwrap().unwrap().value.embedding, vec![1.0f32, 0.0, 0.0]);
     }
 }
 

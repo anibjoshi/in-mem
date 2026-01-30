@@ -831,7 +831,7 @@ pub fn assert_db_healthy(db: &Arc<Database>, run_id: &RunId) {
     kv.put(run_id, &key, Value::String("test".into()))
         .expect("Database should be able to write");
     let value = kv.get(run_id, &key).expect("Database should be able to read");
-    assert!(value.is_some(), "Database should return written value");
+    assert_eq!(value, Some(Value::String("test".into())), "Database should return written value");
 }
 
 /// Assert all 6 primitives can perform basic operations.
@@ -843,7 +843,7 @@ pub fn assert_all_primitives_healthy(test_db: &TestDb) {
     let key = unique_key();
     p.kv.put(&run_id, &key, Value::String("kv_test".into()))
         .expect("KV should write");
-    assert!(p.kv.get(&run_id, &key).expect("KV read").is_some());
+    assert_eq!(p.kv.get(&run_id, &key).expect("KV read"), Some(Value::String("kv_test".into())));
 
     // JSON
     let doc_id = new_doc_id();

@@ -128,7 +128,7 @@ fn stress_rapid_snapshot_creation() {
     for snapshot in snapshots.iter().take(100) {
         let key = create_test_key(run_id, "key_0");
         let result = SnapshotView::get(snapshot, &key).unwrap();
-        assert!(result.is_some());
+        assert_eq!(result.unwrap().value, Value::Int(0));
     }
 }
 
@@ -230,7 +230,7 @@ fn stress_many_runs_concurrent() {
         for i in 0..keys_per_run {
             let key = create_test_key(run_id, &format!("key_{}", i));
             let val = Storage::get(&*store, &key).unwrap();
-            assert!(val.is_some());
+            assert_eq!(val.unwrap().value, Value::Int(i));
         }
     }
     let verify_elapsed = verify_start.elapsed();

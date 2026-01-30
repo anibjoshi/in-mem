@@ -48,7 +48,7 @@ fn delete_in_one_run_doesnt_affect_other() {
 
     // Run A should be empty, run B should have data
     assert!(kv.get(&run_a, "shared_key").unwrap().is_none());
-    assert!(kv.get(&run_b, "shared_key").unwrap().is_some());
+    assert_eq!(kv.get(&run_b, "shared_key").unwrap(), Some(Value::Int(2)));
 }
 
 #[test]
@@ -89,8 +89,8 @@ fn all_primitives_isolated_between_runs() {
 
     let json_a = p.json.get(&run_a, "j", &root()).unwrap().unwrap();
     let json_b = p.json.get(&run_b, "j", &root()).unwrap().unwrap();
-    assert!(json_a.value.as_inner().get("a").is_some());
-    assert!(json_b.value.as_inner().get("b").is_some());
+    assert_eq!(json_a.value.as_inner().get("a"), Some(&serde_json::json!(1)));
+    assert_eq!(json_b.value.as_inner().get("b"), Some(&serde_json::json!(2)));
 
     let vec_a = p.vector.get(run_a, "v", "vec").unwrap().unwrap();
     let vec_b = p.vector.get(run_b, "v", "vec").unwrap().unwrap();
@@ -265,7 +265,7 @@ fn child_run_does_not_inherit_parent_data_currently() {
 
     // Parent data should still exist
     let parent_value = kv.get(&parent_run_id, "parent_key").unwrap();
-    assert!(parent_value.is_some(), "Parent data should remain");
+    assert_eq!(parent_value, Some(Value::String("parent_value".into())), "Parent data should remain");
 }
 
 /// When forking is properly implemented, child should inherit all parent data.
@@ -305,11 +305,11 @@ fn child_run_should_inherit_parent_data() {
     let child_id = RunId::from_string(&child_meta.value.run_id).unwrap();
 
     // Child SHOULD have all parent's data (when #780 is fixed)
-    assert!(p.kv.get(&child_id, "config").unwrap().is_some());
-    assert!(p.state.read(&child_id, "status").unwrap().is_some());
+    assert_eq!(p.kv.get(&child_id, "config").unwrap(), Some(Value::String("inherited".into())));
+    assert_eq!(p.state.read(&child_id, "status").unwrap().unwrap().value.value, Value::String("active".into()));
     assert!(!p.event.read_by_type(&child_id, "history").unwrap().is_empty());
-    assert!(p.json.get(&child_id, "context", &root()).unwrap().is_some());
-    assert!(p.vector.get(child_id, "memory", "m1").unwrap().is_some());
+    assert_eq!(p.json.get(&child_id, "context", &root()).unwrap().unwrap().value.as_inner(), &serde_json::json!({"fork": true}));
+    assert_eq!(p.vector.get(child_id, "memory", "m1").unwrap().unwrap().value.embedding, vec![1.0f32, 0.0, 0.0]);
 
     // Modifications to child should not affect parent
     p.kv.put(&child_id, "config", Value::String("modified".into()))

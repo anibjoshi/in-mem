@@ -815,7 +815,7 @@ fn strata_api_thread_safe() {
 
                 // Read back
                 let value = strata.kv_get(&key).unwrap();
-                assert!(value.is_some());
+                assert_eq!(value, Some(Value::Int(i as i64)));
             }
         })
     }).collect();

@@ -115,10 +115,6 @@ fn wal_handles_many_small_writes() {
     // Sample check — don't need to check all 2000
     for i in (0..2000).step_by(100) {
         let val = kv.get(&run_id, &format!("small_{}", i)).unwrap();
-        assert!(
-            val.is_some(),
-            "Key small_{} should survive recovery from large WAL",
-            i
-        );
+        assert_eq!(val, Some(Value::Int(i)), "Key small_{} should have value {} after WAL recovery", i, i);
     }
 }

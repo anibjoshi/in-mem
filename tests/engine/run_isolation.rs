@@ -133,8 +133,8 @@ fn eventlog_independent_per_run() {
     // Events should be readable independently
     let a_event = event.read(&run_a, 0).unwrap();
     let b_event = event.read(&run_b, 0).unwrap();
-    assert!(a_event.is_some());
-    assert!(b_event.is_some());
+    assert_eq!(a_event.as_ref().unwrap().value.event_type, "type");
+    assert_eq!(b_event.as_ref().unwrap().value.event_type, "type");
 }
 
 // ============================================================================

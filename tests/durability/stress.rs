@@ -29,7 +29,7 @@ fn stress_large_wal_recovery() {
     let kv = test_db.kv();
     for i in (0..10_000).step_by(100) {
         let val = kv.get(&run_id, &format!("key_{}", i)).unwrap();
-        assert!(val.is_some(), "Key {} missing after recovery", i);
+        assert_eq!(val, Some(Value::Int(i)), "Key {} should be {} after recovery", i, i);
     }
 }
 
@@ -129,7 +129,7 @@ fn stress_many_small_writes() {
     // Verify sampling
     for i in (0..100_000).step_by(10_000) {
         let val = kv.get(&run_id, &format!("k{}", i)).unwrap();
-        assert!(val.is_some());
+        assert_eq!(val, Some(Value::Int(i)));
     }
 }
 
@@ -150,7 +150,7 @@ fn stress_large_values() {
 
     for i in 0..50 {
         let val = kv.get(&run_id, &format!("large_{}", i)).unwrap();
-        assert!(val.is_some(), "Large value {} missing", i);
+        assert_eq!(val, Some(large.clone()), "Large value {} should be preserved", i);
     }
 }
 
@@ -229,11 +229,7 @@ fn stress_repeated_reopen() {
         let val = kv
             .get(&run_id, &format!("c{}_k0", cycle))
             .unwrap();
-        assert!(
-            val.is_some(),
-            "Data from cycle {} should survive repeated reopens",
-            cycle
-        );
+        assert_eq!(val, Some(Value::Int((cycle * 100) as i64)), "Data from cycle {} should survive repeated reopens", cycle);
     }
 }
 

@@ -363,5 +363,5 @@ fn special_characters_in_key() {
     vector.insert(test_db.run_id, "coll", key, &v, None).unwrap();
 
     let result = vector.get(test_db.run_id, "coll", key).unwrap();
-    assert!(result.is_some());
+    assert_eq!(result.unwrap().value.embedding, vec![1.0f32, 2.0, 3.0]);
 }

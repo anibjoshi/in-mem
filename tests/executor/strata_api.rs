@@ -65,7 +65,7 @@ fn kv_delete() {
     let db = create_strata();
 
     db.kv_put("key1", Value::Int(42)).unwrap();
-    assert!(db.kv_get("key1").unwrap().is_some());
+    assert_eq!(db.kv_get("key1").unwrap(), Some(Value::Int(42)));
 
     db.kv_delete("key1").unwrap();
     assert!(db.kv_get("key1").unwrap().is_none());
@@ -295,8 +295,8 @@ fn use_all_primitives() {
     let (run_info, _) = db.run_create(Some("integration-test".to_string()), None).unwrap();
 
     // Verify all data
-    assert!(db.kv_get("config").unwrap().is_some());
-    assert!(db.state_read("status").unwrap().is_some());
+    assert_eq!(db.kv_get("config").unwrap(), Some(Value::String("enabled".into())));
+    assert_eq!(db.state_read("status").unwrap().unwrap().value, Value::String("running".into()));
     assert_eq!(db.event_len().unwrap(), 1);
     let collections = db.vector_list_collections().unwrap();
     assert!(collections.iter().any(|c| c.name == "embeddings"));

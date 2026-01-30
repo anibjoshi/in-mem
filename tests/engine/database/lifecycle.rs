@@ -165,7 +165,7 @@ fn builder_strict_mode() {
     let run_id = RunId::new();
     let kv = KVStore::new(db);
     kv.put(&run_id, "key", Value::Int(1)).unwrap();
-    assert!(kv.get(&run_id, "key").unwrap().is_some());
+    assert_eq!(kv.get(&run_id, "key").unwrap(), Some(Value::Int(1)));
 }
 
 #[test]
@@ -182,7 +182,7 @@ fn builder_buffered_mode() {
     let run_id = RunId::new();
     let kv = KVStore::new(db);
     kv.put(&run_id, "key", Value::Int(1)).unwrap();
-    assert!(kv.get(&run_id, "key").unwrap().is_some());
+    assert_eq!(kv.get(&run_id, "key").unwrap(), Some(Value::Int(1)));
 }
 
 // ============================================================================

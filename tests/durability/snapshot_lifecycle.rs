@@ -99,11 +99,7 @@ fn deleted_snapshots_dont_prevent_recovery() {
     let kv = test_db.kv();
     for i in 0..20 {
         let val = kv.get(&run_id, &format!("k{}", i)).unwrap();
-        assert!(
-            val.is_some(),
-            "Key k{} should be recoverable from WAL after snapshot deletion",
-            i
-        );
+        assert_eq!(val, Some(Value::Int(i)), "Key k{} should be recoverable from WAL after snapshot deletion", i);
     }
 }
 
@@ -150,7 +146,7 @@ fn data_written_after_snapshot_recovers() {
     let kv = test_db.kv();
     let pre = kv.get(&run_id, "pre_0").unwrap();
     let post = kv.get(&run_id, "post_0").unwrap();
-    assert!(pre.is_some(), "Pre-snapshot data should recover");
+    assert_eq!(pre, Some(Value::Int(0)), "Pre-snapshot data should recover");
     assert!(post.is_some(), "Post-snapshot data should recover");
     assert_eq!(post.unwrap(), Value::Int(1000));
 }
