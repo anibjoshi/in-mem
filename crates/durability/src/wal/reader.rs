@@ -253,7 +253,7 @@ mod tests {
     use super::*;
     use crate::codec::IdentityCodec;
     use crate::wal::config::WalConfig;
-    use crate::wal::durability::DurabilityMode;
+    use crate::wal::DurabilityMode;
     use crate::wal::writer::WalWriter;
     use tempfile::tempdir;
 

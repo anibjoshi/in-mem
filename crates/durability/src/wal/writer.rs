@@ -6,7 +6,7 @@
 use crate::codec::StorageCodec;
 use crate::format::{WalRecord, WalSegment, SEGMENT_HEADER_SIZE};
 use crate::wal::config::WalConfig;
-use crate::wal::durability::DurabilityMode;
+use super::DurabilityMode;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -17,17 +17,16 @@ use std::time::Instant;
 ///
 /// # Durability Modes
 ///
-/// - `InMemory`: No persistence - records are not written to disk
+/// - `None`: No persistence - records are not written to disk
 /// - `Strict`: fsync after every record - maximum durability
 /// - `Batched`: fsync periodically based on time/count
-/// - `Async`: Background fsync (uses batched behavior for now)
 ///
 /// # Segment Rotation
 ///
 /// When the current segment exceeds the configured size limit, the writer
 /// automatically rotates to a new segment. Closed segments are immutable.
 pub struct WalWriter {
-    /// Current active segment (None for InMemory mode)
+    /// Current active segment (None for DurabilityMode::None)
     segment: Option<WalSegment>,
 
     /// Durability mode
@@ -51,7 +50,7 @@ pub struct WalWriter {
     /// Writes since last fsync (for Batched mode)
     writes_since_sync: usize,
 
-    /// Last fsync time (for Batched/Async modes)
+    /// Last fsync time (for Batched mode)
     last_sync_time: Instant,
 
     /// Current segment number
@@ -70,7 +69,7 @@ impl WalWriter {
         config: WalConfig,
         codec: Box<dyn StorageCodec>,
     ) -> std::io::Result<Self> {
-        // For InMemory mode, don't create any files
+        // For None mode, don't create any files
         if !durability.requires_wal() {
             return Ok(WalWriter {
                 segment: None,
@@ -129,12 +128,11 @@ impl WalWriter {
     /// Append a record to the WAL.
     ///
     /// Respects the configured durability mode:
-    /// - `InMemory`: No-op, returns immediately
+    /// - `None`: No-op, returns immediately
     /// - `Strict`: Writes and fsyncs before returning
     /// - `Batched`: Writes, fsyncs periodically
-    /// - `Async`: Same as Batched for now
     pub fn append(&mut self, record: &WalRecord) -> std::io::Result<()> {
-        // InMemory mode: no persistence
+        // None mode: no persistence
         if !self.durability.requires_wal() {
             return Ok(());
         }
@@ -142,7 +140,7 @@ impl WalWriter {
         let segment = self
             .segment
             .as_mut()
-            .expect("Segment should exist for non-InMemory mode");
+            .expect("Segment should exist for non-None mode");
 
         // Serialize record
         let record_bytes = record.to_bytes();
@@ -193,18 +191,7 @@ impl WalWriter {
                     self.reset_sync_counters();
                 }
             }
-            DurabilityMode::Async { interval_ms } => {
-                // For now, treat as batched with just time interval
-                if self.last_sync_time.elapsed().as_millis() as u64 >= interval_ms
-                    || self.bytes_since_sync >= self.config.buffered_sync_bytes
-                {
-                    if let Some(ref mut segment) = self.segment {
-                        segment.sync()?;
-                    }
-                    self.reset_sync_counters();
-                }
-            }
-            DurabilityMode::InMemory => {
+            DurabilityMode::None => {
                 // No sync needed
             }
         }
@@ -343,7 +330,7 @@ mod tests {
     fn test_inmemory_mode_no_files() {
         let dir = tempdir().unwrap();
 
-        let mut writer = make_writer(dir.path(), DurabilityMode::InMemory);
+        let mut writer = make_writer(dir.path(), DurabilityMode::None);
         writer.append(&make_record(1)).unwrap();
         writer.append(&make_record(2)).unwrap();
 

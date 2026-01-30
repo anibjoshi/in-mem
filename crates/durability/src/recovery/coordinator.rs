@@ -297,8 +297,7 @@ mod tests {
     use crate::codec::IdentityCodec;
     use crate::disk_snapshot::{SnapshotSection, SnapshotWriter};
     use crate::format::{primitive_tags, WalRecord};
-    use crate::wal::{WalConfig, WalWriter};
-    use crate::wal::durability::DurabilityMode;
+    use crate::wal::{DurabilityMode, WalConfig, WalWriter};
     use tempfile::tempdir;
 
     fn make_codec() -> Box<dyn StorageCodec> {

@@ -4,7 +4,7 @@
 //! WAL settings, and codec selection.
 
 use crate::codec::get_codec;
-use crate::wal::durability::DurabilityMode;
+use crate::wal::DurabilityMode;
 use crate::wal::{WalConfig, WalConfigError};
 
 /// Database configuration
