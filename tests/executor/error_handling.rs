@@ -98,18 +98,18 @@ fn vector_delete_nonexistent_collection_behavior() {
 }
 
 // ============================================================================
-// Run Errors
+// Branch Errors
 // ============================================================================
 
 #[test]
-fn run_get_nonexistent_returns_none() {
+fn branch_get_nonexistent_returns_none() {
     let executor = create_executor();
 
     let result = executor.execute(Command::BranchGet {
-        run: BranchId::from("nonexistent-run"),
+        run: BranchId::from("nonexistent-branch"),
     });
 
-    // RunGet on nonexistent run should either return Maybe(None) or error
+    // BranchGet on nonexistent branch should either return Maybe(None) or error
     match result {
         Ok(strata_executor::Output::Maybe(None)) => {}
         Err(_) => {} // Also acceptable
@@ -118,26 +118,26 @@ fn run_get_nonexistent_returns_none() {
 }
 
 #[test]
-fn run_duplicate_id_fails() {
+fn branch_duplicate_id_fails() {
     let executor = create_executor();
 
     executor.execute(Command::BranchCreate {
-        branch_id: Some("unique-run".into()),
+        branch_id: Some("unique-branch".into()),
         metadata: None,
     }).unwrap();
 
     // Try to create another with same name
     let result = executor.execute(Command::BranchCreate {
-        branch_id: Some("unique-run".into()),
+        branch_id: Some("unique-branch".into()),
         metadata: None,
     });
 
     match result {
         Err(Error::BranchExists { branch }) => {
-            assert!(branch.contains("unique-run"), "BranchExists error should reference 'unique-run', got: {}", branch);
+            assert!(branch.contains("unique-branch"), "BranchExists error should reference 'unique-run', got: {}", branch);
         }
         Err(Error::InvalidInput { reason }) => {
-            assert!(reason.contains("unique-run"), "InvalidInput error should reference 'unique-run', got: {}", reason);
+            assert!(reason.contains("unique-branch"), "InvalidInput error should reference 'unique-run', got: {}", reason);
         }
         other => panic!("Expected BranchExists or InvalidInput, got {:?}", other),
     }

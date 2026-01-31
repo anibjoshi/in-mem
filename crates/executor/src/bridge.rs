@@ -69,9 +69,9 @@ impl Primitives {
 // BranchId Conversion
 // =============================================================================
 
-/// Namespace UUID for generating deterministic run IDs.
+/// Namespace UUID for generating deterministic branch IDs.
 /// This is a fixed UUID used as the namespace for UUID v5 generation.
-const RUN_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
+const BRANCH_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
     0x6b, 0xa7, 0xb8, 0x10, 0x9d, 0xad, 0x11, 0xd1,
     0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8,
 ]);
@@ -82,18 +82,18 @@ const RUN_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
 /// - Valid UUID string → `BranchId` with parsed UUID bytes
 /// - Any other string → `BranchId` with deterministic UUID v5 generated from name
 ///
-/// This allows users to use human-readable run names like "main", "experiment-1",
+/// This allows users to use human-readable branch names like "main", "experiment-1",
 /// etc. while still providing a unique UUID for internal namespacing.
-pub fn to_core_branch_id(run: &BranchId) -> crate::Result<strata_core::types::BranchId> {
-    let s = run.as_str();
+pub fn to_core_branch_id(branch: &BranchId) -> crate::Result<strata_core::types::BranchId> {
+    let s = branch.as_str();
     if s == "default" {
         Ok(strata_core::types::BranchId::from_bytes([0u8; 16]))
     } else if let Ok(u) = uuid::Uuid::parse_str(s) {
         // If it's already a valid UUID, use it directly
         Ok(strata_core::types::BranchId::from_bytes(*u.as_bytes()))
     } else {
-        // Generate a deterministic UUID v5 from the run name
-        let uuid = uuid::Uuid::new_v5(&RUN_NAMESPACE, s.as_bytes());
+        // Generate a deterministic UUID v5 from the branch name
+        let uuid = uuid::Uuid::new_v5(&BRANCH_NAMESPACE, s.as_bytes());
         Ok(strata_core::types::BranchId::from_bytes(*uuid.as_bytes()))
     }
 }
@@ -375,30 +375,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_to_core_run_id_default() {
-        let run = BranchId::from("default");
-        let core_id = to_core_branch_id(&run).unwrap();
+    fn test_to_core_branch_id_default() {
+        let branch = BranchId::from("default");
+        let core_id = to_core_branch_id(&branch).unwrap();
         assert_eq!(core_id.as_bytes(), &[0u8; 16]);
     }
 
     #[test]
-    fn test_to_core_run_id_uuid() {
-        let run = BranchId::from("f47ac10b-58cc-4372-a567-0e02b2c3d479");
-        let core_id = to_core_branch_id(&run).unwrap();
+    fn test_to_core_branch_id_uuid() {
+        let branch = BranchId::from("f47ac10b-58cc-4372-a567-0e02b2c3d479");
+        let core_id = to_core_branch_id(&branch).unwrap();
         let expected = uuid::Uuid::parse_str("f47ac10b-58cc-4372-a567-0e02b2c3d479").unwrap();
         assert_eq!(core_id.as_bytes(), expected.as_bytes());
     }
 
     #[test]
-    fn test_to_core_run_id_name_generates_v5_uuid() {
+    fn test_to_core_branch_id_name_generates_v5_uuid() {
         // Non-UUID names generate a deterministic UUID v5
-        let run = BranchId::from("not-a-valid-id");
-        let result = to_core_branch_id(&run);
+        let branch = BranchId::from("not-a-valid-id");
+        let result = to_core_branch_id(&branch);
         assert!(result.is_ok(), "Arbitrary names should generate valid v5 UUIDs");
 
         // Same name should produce same UUID (deterministic)
-        let run2 = BranchId::from("not-a-valid-id");
-        let result2 = to_core_branch_id(&run2).unwrap();
+        let branch2 = BranchId::from("not-a-valid-id");
+        let result2 = to_core_branch_id(&branch2).unwrap();
         assert_eq!(result.unwrap().as_bytes(), result2.as_bytes());
     }
 

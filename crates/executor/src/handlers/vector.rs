@@ -214,9 +214,9 @@ mod tests {
     use crate::bridge;
 
     #[test]
-    fn test_to_core_run_id_default() {
-        let run = BranchId::from("default");
-        let core_id = bridge::to_core_branch_id(&run).unwrap();
+    fn test_to_core_branch_id_default() {
+        let branch = BranchId::from("default");
+        let core_id = bridge::to_core_branch_id(&branch).unwrap();
         assert_eq!(core_id.as_bytes(), &[0u8; 16]);
     }
 }

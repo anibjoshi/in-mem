@@ -1,6 +1,6 @@
-//! Run command handlers (MVP)
+//! Branch command handlers (MVP)
 //!
-//! This module implements handlers for MVP Run commands by dispatching
+//! This module implements handlers for MVP Branch commands by dispatching
 //! directly to engine primitives via `bridge::Primitives`.
 
 use std::sync::Arc;
@@ -37,11 +37,11 @@ fn versioned_to_branch_info(v: strata_core::Versioned<BranchMetadata>) -> Versio
     }
 }
 
-/// Guard: reject operations on the default run that would delete it.
-fn reject_default_branch(run: &BranchId, operation: &str) -> Result<()> {
-    if run.is_default() {
+/// Guard: reject operations on the default branch that would delete it.
+fn reject_default_branch(branch: &BranchId, operation: &str) -> Result<()> {
+    if branch.is_default() {
         return Err(Error::ConstraintViolation {
-            reason: format!("Cannot {} the default run", operation),
+            reason: format!("Cannot {} the default branch", operation),
         });
     }
     Ok(())
@@ -57,15 +57,15 @@ pub fn branch_create(
     branch_id: Option<String>,
     _metadata: Option<strata_core::Value>,
 ) -> Result<Output> {
-    // Users can provide any string as a run name (like git branch names).
-    // If not provided, generate a UUID for anonymous runs.
-    let run_str = match &branch_id {
+    // Users can provide any string as a branch name (like git branch names).
+    // If not provided, generate a UUID for anonymous branches.
+    let branch_str = match &branch_id {
         Some(s) => s.clone(),
         None => uuid::Uuid::new_v4().to_string(),
     };
 
     // MVP: ignore metadata, use simple create_branch
-    let versioned = convert_result(p.branch.create_branch(&run_str))?;
+    let versioned = convert_result(p.branch.create_branch(&branch_str))?;
 
     Ok(Output::BranchWithVersion {
         info: metadata_to_branch_info(&versioned.value),
@@ -74,8 +74,8 @@ pub fn branch_create(
 }
 
 /// Handle BranchGet command.
-pub fn branch_get(p: &Arc<Primitives>, run: BranchId) -> Result<Output> {
-    let result = convert_result(p.branch.get_branch(run.as_str()))?;
+pub fn branch_get(p: &Arc<Primitives>, branch: BranchId) -> Result<Output> {
+    let result = convert_result(p.branch.get_branch(branch.as_str()))?;
     match result {
         Some(v) => Ok(Output::BranchInfoVersioned(versioned_to_branch_info(v))),
         None => Ok(Output::Maybe(None)),
@@ -89,7 +89,7 @@ pub fn branch_list(
     limit: Option<u64>,
     _offset: Option<u64>,
 ) -> Result<Output> {
-    // MVP: ignore status filter, list all runs
+    // MVP: ignore status filter, list all branches
     let ids = convert_result(p.branch.list_branches())?;
 
     let mut all = Vec::new();
@@ -109,15 +109,15 @@ pub fn branch_list(
 }
 
 /// Handle BranchExists command.
-pub fn branch_exists(p: &Arc<Primitives>, run: BranchId) -> Result<Output> {
-    let exists = convert_result(p.branch.exists(run.as_str()))?;
+pub fn branch_exists(p: &Arc<Primitives>, branch: BranchId) -> Result<Output> {
+    let exists = convert_result(p.branch.exists(branch.as_str()))?;
     Ok(Output::Bool(exists))
 }
 
 /// Handle BranchDelete command.
-pub fn branch_delete(p: &Arc<Primitives>, run: BranchId) -> Result<Output> {
-    reject_default_branch(&run, "delete")?;
-    convert_result(p.branch.delete_branch(run.as_str()))?;
+pub fn branch_delete(p: &Arc<Primitives>, branch: BranchId) -> Result<Output> {
+    reject_default_branch(&branch, "delete")?;
+    convert_result(p.branch.delete_branch(branch.as_str()))?;
     Ok(Output::Unit)
 }
 
@@ -128,7 +128,7 @@ pub fn branch_delete(p: &Arc<Primitives>, run: BranchId) -> Result<Output> {
 /// Handle BranchExport command.
 pub fn branch_export(p: &Arc<Primitives>, branch_id: String, path: String) -> Result<Output> {
     let export_path = std::path::Path::new(&path);
-    let info = strata_engine::bundle::export_run(&p.db, &branch_id, export_path).map_err(|e| {
+    let info = strata_engine::bundle::export_branch(&p.db, &branch_id, export_path).map_err(|e| {
         Error::Io {
             reason: format!("Export failed: {}", e),
         }
@@ -145,7 +145,7 @@ pub fn branch_export(p: &Arc<Primitives>, branch_id: String, path: String) -> Re
 /// Handle BranchImport command.
 pub fn branch_import(p: &Arc<Primitives>, path: String) -> Result<Output> {
     let import_path = std::path::Path::new(&path);
-    let info = strata_engine::bundle::import_run(&p.db, import_path).map_err(|e| {
+    let info = strata_engine::bundle::import_branch(&p.db, import_path).map_err(|e| {
         Error::Io {
             reason: format!("Import failed: {}", e),
         }
@@ -180,20 +180,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_reject_default_run() {
-        let run = BranchId::from("default");
-        assert!(reject_default_branch(&run, "delete").is_err());
+    fn test_reject_default_branch() {
+        let branch = BranchId::from("default");
+        assert!(reject_default_branch(&branch, "delete").is_err());
 
-        let run = BranchId::from("f47ac10b-58cc-4372-a567-0e02b2c3d479");
-        assert!(reject_default_branch(&run, "delete").is_ok());
+        let branch = BranchId::from("f47ac10b-58cc-4372-a567-0e02b2c3d479");
+        assert!(reject_default_branch(&branch, "delete").is_ok());
     }
 
     #[test]
-    fn test_metadata_to_run_info() {
+    fn test_metadata_to_branch_info() {
         let m = BranchMetadata {
             name: "test-run".to_string(),
             branch_id: "some-uuid".to_string(),
-            parent_run: None,
+            parent_branch: None,
             status: strata_engine::BranchStatus::Active,
             created_at: 1000000,
             updated_at: 2000000,

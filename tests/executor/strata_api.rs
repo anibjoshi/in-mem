@@ -185,23 +185,23 @@ fn vector_delete_collection() {
 }
 
 // ============================================================================
-// Run Operations
+// Branch Operations
 // ============================================================================
 
 #[test]
-fn run_create_and_get() {
+fn branch_create_and_get() {
     let db = create_strata();
 
-    // Users can name runs like git branches
+    // Users can name branches like git branches
     let (info, _version) = db.branch_create(
-        Some("my-agent-run".to_string()),
+        Some("my-agent-branch".to_string()),
         None,
     ).unwrap();
-    assert_eq!(info.id.as_str(), "my-agent-run");
+    assert_eq!(info.id.as_str(), "my-agent-branch");
 
-    let run_info = db.branch_get(info.id.as_str()).unwrap();
-    assert!(run_info.is_some());
-    assert_eq!(run_info.unwrap().info.id.as_str(), "my-agent-run");
+    let branch_info = db.branch_get(info.id.as_str()).unwrap();
+    assert!(branch_info.is_some());
+    assert_eq!(branch_info.unwrap().info.id.as_str(), "my-agent-branch");
 }
 
 #[test]
@@ -211,9 +211,9 @@ fn branch_list() {
     db.branch_create(Some("dev".to_string()), None).unwrap();
     db.branch_create(Some("prod".to_string()), None).unwrap();
 
-    let runs = db.branch_list(None, None, None).unwrap();
-    // At least our two runs plus default
-    assert!(runs.len() >= 2, "Expected >= 2 runs (dev + prod), got {}", runs.len());
+    let branches = db.branch_list(None, None, None).unwrap();
+    // At least our two branches plus default
+    assert!(branches.len() >= 2, "Expected >= 2 branches (dev + prod), got {}", branches.len());
 }
 
 // ============================================================================
@@ -291,8 +291,8 @@ fn use_all_primitives() {
     ].into_iter().collect());
     db.json_set("doc1", "$", doc).unwrap();
 
-    // Run
-    let (run_info, _) = db.branch_create(Some("integration-test".to_string()), None).unwrap();
+    // Branch
+    let (branch_info, _) = db.branch_create(Some("integration-test".to_string()), None).unwrap();
 
     // Verify all data
     assert_eq!(db.kv_get("config").unwrap(), Some(Value::String("enabled".into())));
@@ -301,7 +301,7 @@ fn use_all_primitives() {
     let collections = db.vector_list_collections().unwrap();
     assert!(collections.iter().any(|c| c.name == "embeddings"));
     assert!(db.json_get("doc1", "$").unwrap().is_some());
-    assert!(db.branch_get(run_info.id.as_str()).unwrap().is_some());
+    assert!(db.branch_get(branch_info.id.as_str()).unwrap().is_some());
 }
 
 // ============================================================================

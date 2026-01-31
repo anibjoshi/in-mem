@@ -312,14 +312,14 @@ fn vector_list_collections() {
 }
 
 // ============================================================================
-// Run Commands
+// Branch Commands
 // ============================================================================
 
 #[test]
-fn run_create_and_get() {
+fn branch_create_and_get() {
     let executor = create_executor();
 
-    // Users can name runs like git branches - no UUID required
+    // Users can name branches like git branches - no UUID required
     let output = executor.execute(Command::BranchCreate {
         branch_id: Some("main".into()),
         metadata: None,
@@ -346,11 +346,11 @@ fn run_create_and_get() {
 }
 
 #[test]
-fn run_names_can_be_human_readable() {
+fn branch_names_can_be_human_readable() {
     let executor = create_executor();
 
-    // Test various human-readable run names (like git branches)
-    let names = ["experiment-1", "feature/new-model", "v2.0", "test_run"];
+    // Test various human-readable branch names (like git branches)
+    let names = ["experiment-1", "feature/new-model", "v2.0", "test_branch"];
 
     for name in names {
         let output = executor.execute(Command::BranchCreate {
@@ -360,7 +360,7 @@ fn run_names_can_be_human_readable() {
 
         match output {
             Output::BranchWithVersion { info, .. } => {
-                assert_eq!(info.id.as_str(), name, "Run name should be preserved");
+                assert_eq!(info.id.as_str(), name, "Branch name should be preserved");
             }
             _ => panic!("Expected BranchWithVersion output"),
         }
@@ -368,7 +368,7 @@ fn run_names_can_be_human_readable() {
 }
 
 #[test]
-fn run_list_returns_runs() {
+fn branch_list_returns_branches() {
     let executor = create_executor();
 
     executor.execute(Command::BranchCreate {
@@ -388,20 +388,20 @@ fn run_list_returns_runs() {
     }).unwrap();
 
     match output {
-        Output::BranchInfoList(runs) => {
-            // At least the default run plus our two created runs
-            assert!(runs.len() >= 2, "Expected >= 2 runs (production + staging), got {}", runs.len());
+        Output::BranchInfoList(branches) => {
+            // At least the default branch plus our two created branches
+            assert!(branches.len() >= 2, "Expected >= 2 branches (production + staging), got {}", branches.len());
         }
         _ => panic!("Expected BranchInfoList output"),
     }
 }
 
 #[test]
-fn run_delete_removes_run() {
+fn branch_delete_removes_branch() {
     let executor = create_executor();
 
     let branch_id = match executor.execute(Command::BranchCreate {
-        branch_id: Some("deletable-run".into()),
+        branch_id: Some("deletable-branch".into()),
         metadata: None,
     }).unwrap() {
         Output::BranchWithVersion { info, .. } => info.id,
@@ -427,16 +427,16 @@ fn run_delete_removes_run() {
 }
 
 #[test]
-fn run_exists_returns_bool() {
+fn branch_exists_returns_bool() {
     let executor = create_executor();
 
-    // Non-existent run
+    // Non-existent branch
     let output = executor.execute(Command::BranchExists {
-        run: BranchId::from("non-existent-run"),
+        run: BranchId::from("non-existent-branch"),
     }).unwrap();
     assert!(matches!(output, Output::Bool(false)));
 
-    // Create a run
+    // Create a branch
     executor.execute(Command::BranchCreate {
         branch_id: Some("exists-test".into()),
         metadata: None,
@@ -450,11 +450,11 @@ fn run_exists_returns_bool() {
 }
 
 // ============================================================================
-// Default Run Resolution
+// Default Branch Resolution
 // ============================================================================
 
 #[test]
-fn commands_with_none_run_use_default() {
+fn commands_with_none_branch_use_default() {
     let executor = create_executor();
 
     // Put with run: None
@@ -464,7 +464,7 @@ fn commands_with_none_run_use_default() {
         value: Value::String("value".into()),
     }).unwrap();
 
-    // Get with explicit default run
+    // Get with explicit default branch
     let output = executor.execute(Command::KvGet {
         run: Some(BranchId::default()),
         key: "default_test".into(),
@@ -475,15 +475,15 @@ fn commands_with_none_run_use_default() {
         Output::Maybe(Some(val)) => {
             assert_eq!(val, Value::String("value".into()));
         }
-        _ => panic!("Expected to find value in default run"),
+        _ => panic!("Expected to find value in default branch"),
     }
 }
 
 #[test]
-fn different_runs_are_isolated() {
+fn different_branches_are_isolated() {
     let executor = create_executor();
 
-    // Create two runs with human-readable names
+    // Create two branches with human-readable names
     let branch_a = match executor.execute(Command::BranchCreate {
         branch_id: Some("agent-alpha".into()),
         metadata: None,
@@ -500,21 +500,21 @@ fn different_runs_are_isolated() {
         _ => panic!("Expected BranchCreated"),
     };
 
-    // Put in run A
+    // Put in branch A
     executor.execute(Command::KvPut {
         run: Some(branch_a.clone()),
         key: "shared_key".into(),
-        value: Value::String("run_a_value".into()),
+        value: Value::String("branch_a_value".into()),
     }).unwrap();
 
-    // Put in run B
+    // Put in branch B
     executor.execute(Command::KvPut {
         run: Some(branch_b.clone()),
         key: "shared_key".into(),
-        value: Value::String("run_b_value".into()),
+        value: Value::String("branch_b_value".into()),
     }).unwrap();
 
-    // Get from run A
+    // Get from branch A
     let output = executor.execute(Command::KvGet {
         run: Some(branch_a),
         key: "shared_key".into(),
@@ -522,12 +522,12 @@ fn different_runs_are_isolated() {
 
     match output {
         Output::Maybe(Some(val)) => {
-            assert_eq!(val, Value::String("run_a_value".into()));
+            assert_eq!(val, Value::String("branch_a_value".into()));
         }
-        _ => panic!("Expected run A value"),
+        _ => panic!("Expected branch A value"),
     }
 
-    // Get from run B
+    // Get from branch B
     let output = executor.execute(Command::KvGet {
         run: Some(branch_b),
         key: "shared_key".into(),
@@ -535,8 +535,8 @@ fn different_runs_are_isolated() {
 
     match output {
         Output::Maybe(Some(val)) => {
-            assert_eq!(val, Value::String("run_b_value".into()));
+            assert_eq!(val, Value::String("branch_b_value".into()));
         }
-        _ => panic!("Expected run B value"),
+        _ => panic!("Expected branch B value"),
     }
 }

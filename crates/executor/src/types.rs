@@ -244,7 +244,7 @@ pub struct RetentionVersionInfo {
 pub struct DatabaseInfo {
     pub version: String,
     pub uptime_secs: u64,
-    pub run_count: u64,
+    pub branch_count: u64,
     pub total_keys: u64,
 }
 
@@ -252,7 +252,7 @@ pub struct DatabaseInfo {
 // Bundle Types
 // =============================================================================
 
-/// Information about a run export operation
+/// Information about a branch export operation
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BranchExportResult {
     pub branch_id: String,
@@ -261,7 +261,7 @@ pub struct BranchExportResult {
     pub bundle_size: u64,
 }
 
-/// Information about a run import operation
+/// Information about a branch import operation
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BranchImportResult {
     pub branch_id: String,

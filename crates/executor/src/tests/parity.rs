@@ -365,10 +365,10 @@ fn test_vector_upsert_search_parity() {
 // =============================================================================
 
 #[test]
-fn test_run_create_get_parity() {
+fn test_branch_create_get_parity() {
     let (executor, _p) = create_test_environment();
 
-    // Create run via executor with a UUID
+    // Create branch via executor with a UUID
     let result = executor.execute(Command::BranchCreate {
         branch_id: Some("550e8400-e29b-41d4-a716-446655440001".to_string()),
         metadata: Some(Value::Object(
@@ -385,7 +385,7 @@ fn test_run_create_get_parity() {
         other => panic!("Expected BranchWithVersion output, got {:?}", other),
     }
 
-    // List runs via executor
+    // List branches via executor
     let list_result = executor.execute(Command::BranchList {
         state: None,
         limit: None,
@@ -393,8 +393,8 @@ fn test_run_create_get_parity() {
     });
 
     match list_result {
-        Ok(Output::BranchInfoList(runs)) => {
-            assert!(!runs.is_empty(), "Expected at least 1 run");
+        Ok(Output::BranchInfoList(branches)) => {
+            assert!(!branches.is_empty(), "Expected at least 1 branch");
         }
         other => panic!("Expected BranchInfoList output, got {:?}", other),
     }
@@ -449,10 +449,10 @@ fn test_flush_compact_parity() {
 // =============================================================================
 
 #[test]
-fn test_run_isolation_parity() {
+fn test_branch_isolation_parity() {
     let (executor, _p) = create_test_environment();
 
-    // Create two runs with valid UUIDs
+    // Create two branches with valid UUIDs
     executor
         .execute(Command::BranchCreate {
             branch_id: Some("550e8400-e29b-41d4-a716-446655440003".to_string()),
@@ -467,7 +467,7 @@ fn test_run_isolation_parity() {
         })
         .unwrap();
 
-    // Write to run-a
+    // Write to branch-a
     executor
         .execute(Command::KvPut {
             run: Some(BranchId::from("550e8400-e29b-41d4-a716-446655440003")),
@@ -476,7 +476,7 @@ fn test_run_isolation_parity() {
         })
         .unwrap();
 
-    // Write to run-b
+    // Write to branch-b
     executor
         .execute(Command::KvPut {
             run: Some(BranchId::from("550e8400-e29b-41d4-a716-446655440004")),
@@ -485,7 +485,7 @@ fn test_run_isolation_parity() {
         })
         .unwrap();
 
-    // Read from run-a
+    // Read from branch-a
     let result_a = executor.execute(Command::KvGet {
         run: Some(BranchId::from("550e8400-e29b-41d4-a716-446655440003")),
         key: "shared-key".to_string(),
@@ -495,10 +495,10 @@ fn test_run_isolation_parity() {
         Ok(Output::Maybe(Some(v))) => {
             assert_eq!(v, Value::String("from-a".into()));
         }
-        _ => panic!("Expected value from run-a"),
+        _ => panic!("Expected value from branch-a"),
     }
 
-    // Read from run-b
+    // Read from branch-b
     let result_b = executor.execute(Command::KvGet {
         run: Some(BranchId::from("550e8400-e29b-41d4-a716-446655440004")),
         key: "shared-key".to_string(),
@@ -508,6 +508,6 @@ fn test_run_isolation_parity() {
         Ok(Output::Maybe(Some(v))) => {
             assert_eq!(v, Value::String("from-b".into()));
         }
-        _ => panic!("Expected value from run-b"),
+        _ => panic!("Expected value from branch-b"),
     }
 }

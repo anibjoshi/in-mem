@@ -728,15 +728,15 @@ fn kv_put_atomic() {
 }
 
 // ============================================================================
-// Run Isolation at Executor Level
+// Branch Isolation at Executor Level
 // ============================================================================
 
-/// Operations in different runs must be isolated
+/// Operations in different branches must be isolated
 #[test]
-fn executor_run_isolation() {
+fn executor_branch_isolation() {
     let executor = create_executor();
 
-    // Create two runs with human-readable names
+    // Create two branches with human-readable names
     let branch_a = match executor.execute(Command::BranchCreate {
         branch_id: Some("isolation-test-a".into()),
         metadata: None,
@@ -753,20 +753,20 @@ fn executor_run_isolation() {
         _ => panic!("Expected BranchWithVersion"),
     };
 
-    // Write same key to both runs with different values
+    // Write same key to both branches with different values
     executor.execute(Command::KvPut {
         run: Some(branch_a.clone()),
         key: "shared_key".into(),
-        value: Value::String("value_in_run_a".into()),
+        value: Value::String("value_in_branch_a".into()),
     }).unwrap();
 
     executor.execute(Command::KvPut {
         run: Some(branch_b.clone()),
         key: "shared_key".into(),
-        value: Value::String("value_in_run_b".into()),
+        value: Value::String("value_in_branch_b".into()),
     }).unwrap();
 
-    // Each run should see its own value
+    // Each branch should see its own value
     let output_a = executor.execute(Command::KvGet {
         run: Some(branch_a),
         key: "shared_key".into(),
@@ -779,10 +779,10 @@ fn executor_run_isolation() {
 
     match (output_a, output_b) {
         (Output::Maybe(Some(va)), Output::Maybe(Some(vb))) => {
-            assert_eq!(va, Value::String("value_in_run_a".into()));
-            assert_eq!(vb, Value::String("value_in_run_b".into()));
+            assert_eq!(va, Value::String("value_in_branch_a".into()));
+            assert_eq!(vb, Value::String("value_in_branch_b".into()));
         }
-        _ => panic!("Both runs should have their own values"),
+        _ => panic!("Both branches should have their own values"),
     }
 }
 
