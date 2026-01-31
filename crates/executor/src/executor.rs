@@ -27,16 +27,16 @@ use crate::{Command, Error, Output, Result};
 ///
 /// let executor = Executor::new(substrate);
 ///
-/// // Run is optional - omit it to use the default run
+/// // Branch is optional - omit it to use the default branch
 /// let result = executor.execute(Command::KvPut {
 ///     run: None,
 ///     key: "foo".into(),
 ///     value: Value::Int(42),
 /// })?;
 ///
-/// // Or provide an explicit run
+/// // Or provide an explicit branch
 /// let result = executor.execute(Command::KvPut {
-///     run: Some(BranchId::from("my-run")),
+///     run: Some(BranchId::from("my-branch")),
 ///     key: "foo".into(),
 ///     value: Value::Int(42),
 /// })?;
@@ -55,7 +55,7 @@ impl Executor {
 
     /// Execute a single command.
     ///
-    /// Resolves any `None` run fields to the default run before dispatch.
+    /// Resolves any `None` run fields to the default branch before dispatch.
     /// Returns the command result or an error.
     pub fn execute(&self, mut cmd: Command) -> Result<Output> {
         cmd.resolve_default_branch();
@@ -70,7 +70,7 @@ impl Executor {
                 Ok(Output::DatabaseInfo(crate::types::DatabaseInfo {
                     version: env!("CARGO_PKG_VERSION").to_string(),
                     uptime_secs: 0,
-                    run_count: 0,
+                    branch_count: 0,
                     total_keys: 0,
                 }))
             }

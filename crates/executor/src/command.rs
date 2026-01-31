@@ -28,7 +28,7 @@ use crate::types::*;
 /// | Event | 4 | Event log operations (MVP) |
 /// | State | 4 | State cell operations (MVP) |
 /// | Vector | 7 | Vector store operations (MVP) |
-/// | Run | 5 | Run lifecycle operations (MVP) |
+/// | Branch | 5 | Branch lifecycle operations (MVP) |
 /// | Transaction | 5 | Transaction control |
 /// | Retention | 3 | Retention policy |
 /// | Database | 4 | Database-level operations |
@@ -36,12 +36,12 @@ use crate::types::*;
 /// # Run field
 ///
 /// Data-scoped commands have an optional `run` field. When omitted (or `None`),
-/// the executor resolves it to the default run before dispatch. Existing JSON
+/// the executor resolves it to the default branch before dispatch. Existing JSON
 /// with `"run": "default"` continues to work; new callers can simply omit the
 /// field.
 ///
-/// Run lifecycle commands (RunGet, RunComplete, RunDelete, etc.) keep a required
-/// `run: BranchId` since they explicitly operate on a specific run.
+/// Branch lifecycle commands (BranchGet, BranchDelete, etc.) keep a required
+/// `run: BranchId` since they explicitly operate on a specific branch.
 ///
 /// # Example
 ///
@@ -49,14 +49,14 @@ use crate::types::*;
 /// use strata_executor::{Command, BranchId};
 /// use strata_core::Value;
 ///
-/// // Explicit run
+/// // Explicit branch
 /// let cmd = Command::KvPut {
 ///     run: Some(BranchId::default()),
 ///     key: "foo".into(),
 ///     value: Value::Int(42),
 /// };
 ///
-/// // Omit run (defaults to "default")
+/// // Omit branch (defaults to "default")
 /// let cmd = Command::KvPut {
 ///     run: None,
 ///     key: "foo".into(),
@@ -299,28 +299,28 @@ pub enum Command {
         collection: String,
     },
 
-    /// List all collections in a run.
+    /// List all collections in a branch.
     /// Returns: `Output::VectorCollectionList`
     VectorListCollections {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         run: Option<BranchId>,
     },
 
-    // ==================== Run (5 MVP) ====================
-    /// Create a new run.
+    // ==================== Branch (5 MVP) ====================
+    /// Create a new branch.
     /// Returns: `Output::BranchWithVersion`
     BranchCreate {
         branch_id: Option<String>,
         metadata: Option<Value>,
     },
 
-    /// Get run info.
+    /// Get branch info.
     /// Returns: `Output::BranchInfoVersioned` or `Output::Maybe(None)`
     BranchGet {
         run: BranchId,
     },
 
-    /// List all runs.
+    /// List all branches.
     /// Returns: `Output::BranchInfoList`
     BranchList {
         state: Option<BranchStatus>,
@@ -328,13 +328,13 @@ pub enum Command {
         offset: Option<u64>,
     },
 
-    /// Check if a run exists.
+    /// Check if a branch exists.
     /// Returns: `Output::Bool`
     BranchExists {
         run: BranchId,
     },
 
-    /// Delete a run and all its data (cascading delete).
+    /// Delete a branch and all its data (cascading delete).
     /// Returns: `Output::Unit`
     BranchDelete {
         run: BranchId,
@@ -366,7 +366,7 @@ pub enum Command {
     TxnIsActive,
 
     // ==================== Retention (3) ====================
-    // Note: Run-level retention is handled via RunSetRetention/RunGetRetention
+    // Note: Branch-level retention is handled via BranchSetRetention/BranchGetRetention
     // These are database-wide retention operations
 
     /// Apply retention policy (trigger garbage collection).
@@ -404,20 +404,20 @@ pub enum Command {
     Compact,
 
     // ==================== Bundle (3) ====================
-    /// Export a run to a .runbundle.tar.zst archive.
+    /// Export a branch to a .branchbundle.tar.zst archive.
     /// Returns: `Output::BranchExported`
     BranchExport {
         branch_id: String,
         path: String,
     },
 
-    /// Import a run from a .runbundle.tar.zst archive.
+    /// Import a branch from a .branchbundle.tar.zst archive.
     /// Returns: `Output::BranchImported`
     BranchImport {
         path: String,
     },
 
-    /// Validate a .runbundle.tar.zst archive without importing.
+    /// Validate a .branchbundle.tar.zst archive without importing.
     /// Returns: `Output::BundleValidated`
     BranchBundleValidate {
         path: String,
@@ -439,7 +439,7 @@ pub enum Command {
 }
 
 impl Command {
-    /// Fill in the default run for any data command where run is `None`.
+    /// Fill in the default branch for any data command where run is `None`.
     ///
     /// Called by the executor before dispatch so handlers always receive a
     /// concrete `BranchId`.
@@ -495,7 +495,7 @@ impl Command {
                 resolve!(run);
             }
 
-            // Run lifecycle (5 MVP), Transaction, and Database commands have no
+            // Branch lifecycle (5 MVP), Transaction, and Database commands have no
             // optional run to resolve.
             Command::BranchCreate { .. }
             | Command::BranchGet { .. }
