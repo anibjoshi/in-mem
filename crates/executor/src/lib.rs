@@ -33,12 +33,12 @@
 //! | **VectorStore** | Embeddings & similarity search |
 //! | **Run** | Data isolation (like git branches) |
 //!
-//! ## Run Context
+//! ## Branch Context
 //!
 //! Data is isolated by "branches" (like git branches). Use `create_branch()` and `set_branch()`:
 //!
 //! ```ignore
-//! db.create_branch("experiment-1")?;    // Create a new blank run
+//! db.create_branch("experiment-1")?;    // Create a new blank branch
 //! db.set_branch("experiment-1")?;       // Switch to it
 //! db.kv_put("key", Value::Int(42))?; // Data goes to experiment-1
 //!

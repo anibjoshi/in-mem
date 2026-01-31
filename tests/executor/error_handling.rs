@@ -15,7 +15,7 @@ fn vector_upsert_to_nonexistent_collection_behavior() {
     let executor = create_executor();
 
     let result = executor.execute(Command::VectorUpsert {
-        run: None,
+        branch: None,
         collection: "nonexistent".into(),
         key: "v1".into(),
         vector: vec![1.0, 0.0, 0.0, 0.0],
@@ -33,7 +33,7 @@ fn vector_search_in_nonexistent_collection_fails() {
     let executor = create_executor();
 
     let result = executor.execute(Command::VectorSearch {
-        run: None,
+        branch: None,
         collection: "nonexistent".into(),
         query: vec![1.0, 0.0, 0.0, 0.0],
         k: 10,
@@ -54,7 +54,7 @@ fn vector_wrong_dimension_fails() {
     let executor = create_executor();
 
     executor.execute(Command::VectorCreateCollection {
-        run: None,
+        branch: None,
         collection: "dim4".into(),
         dimension: 4,
         metric: DistanceMetric::Cosine,
@@ -62,7 +62,7 @@ fn vector_wrong_dimension_fails() {
 
     // Try to insert wrong dimension
     let result = executor.execute(Command::VectorUpsert {
-        run: None,
+        branch: None,
         collection: "dim4".into(),
         key: "v1".into(),
         vector: vec![1.0, 0.0], // Only 2 dimensions
@@ -83,7 +83,7 @@ fn vector_delete_nonexistent_collection_behavior() {
     let executor = create_executor();
 
     let result = executor.execute(Command::VectorDeleteCollection {
-        run: None,
+        branch: None,
         collection: "nonexistent".into(),
     });
 
@@ -98,18 +98,18 @@ fn vector_delete_nonexistent_collection_behavior() {
 }
 
 // ============================================================================
-// Run Errors
+// Branch Errors
 // ============================================================================
 
 #[test]
-fn run_get_nonexistent_returns_none() {
+fn branch_get_nonexistent_returns_none() {
     let executor = create_executor();
 
     let result = executor.execute(Command::BranchGet {
-        run: BranchId::from("nonexistent-run"),
+        branch: BranchId::from("nonexistent-branch"),
     });
 
-    // RunGet on nonexistent run should either return Maybe(None) or error
+    // BranchGet on nonexistent branch should either return Maybe(None) or error
     match result {
         Ok(strata_executor::Output::Maybe(None)) => {}
         Err(_) => {} // Also acceptable
@@ -118,26 +118,26 @@ fn run_get_nonexistent_returns_none() {
 }
 
 #[test]
-fn run_duplicate_id_fails() {
+fn branch_duplicate_id_fails() {
     let executor = create_executor();
 
     executor.execute(Command::BranchCreate {
-        branch_id: Some("unique-run".into()),
+        branch_id: Some("unique-branch".into()),
         metadata: None,
     }).unwrap();
 
     // Try to create another with same name
     let result = executor.execute(Command::BranchCreate {
-        branch_id: Some("unique-run".into()),
+        branch_id: Some("unique-branch".into()),
         metadata: None,
     });
 
     match result {
         Err(Error::BranchExists { branch }) => {
-            assert!(branch.contains("unique-run"), "BranchExists error should reference 'unique-run', got: {}", branch);
+            assert!(branch.contains("unique-branch"), "BranchExists error should reference 'unique-branch', got: {}", branch);
         }
         Err(Error::InvalidInput { reason }) => {
-            assert!(reason.contains("unique-run"), "InvalidInput error should reference 'unique-run', got: {}", reason);
+            assert!(reason.contains("unique-branch"), "InvalidInput error should reference 'unique-branch', got: {}", reason);
         }
         other => panic!("Expected BranchExists or InvalidInput, got {:?}", other),
     }
@@ -152,12 +152,12 @@ fn transaction_already_active_error() {
     let mut session = create_session();
 
     session.execute(Command::TxnBegin {
-        run: None,
+        branch: None,
         options: None,
     }).unwrap();
 
     let result = session.execute(Command::TxnBegin {
-        run: None,
+        branch: None,
         options: None,
     });
 
@@ -204,7 +204,7 @@ fn event_append_non_object_fails() {
 
     // Event payloads must be Objects
     let result = executor.execute(Command::EventAppend {
-        run: None,
+        branch: None,
         event_type: "stream".into(),
         payload: Value::Int(42), // Not an object
     });
@@ -224,7 +224,7 @@ fn json_get_nonexistent_returns_none() {
     let executor = create_executor();
 
     let result = executor.execute(Command::JsonGet {
-        run: None,
+        branch: None,
         key: "nonexistent".into(),
         path: "$".into(),
     }).unwrap();
@@ -266,12 +266,12 @@ fn concurrent_sessions_independent_transactions() {
 
     // Both can start transactions
     session1.execute(Command::TxnBegin {
-        run: None,
+        branch: None,
         options: None,
     }).unwrap();
 
     session2.execute(Command::TxnBegin {
-        run: None,
+        branch: None,
         options: None,
     }).unwrap();
 
@@ -296,7 +296,7 @@ fn state_read_nonexistent_returns_none() {
     let executor = create_executor();
 
     let result = executor.execute(Command::StateRead {
-        run: None,
+        branch: None,
         cell: "nonexistent".into(),
     }).unwrap();
 

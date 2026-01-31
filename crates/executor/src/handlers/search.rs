@@ -15,12 +15,12 @@ use crate::{Output, Result};
 /// Handle Search command: cross-primitive search
 pub fn search(
     p: &Arc<Primitives>,
-    run: BranchId,
+    branch: BranchId,
     query: String,
     k: Option<u64>,
     primitives: Option<Vec<String>>,
 ) -> Result<Output> {
-    let core_run_id = to_core_branch_id(&run)?;
+    let branch_id = to_core_branch_id(&branch)?;
 
     // Build primitive filter from string names
     let primitive_filter = primitives.map(|names| {
@@ -31,14 +31,14 @@ pub fn search(
                 "json" => Some(PrimitiveType::Json),
                 "event" => Some(PrimitiveType::Event),
                 "state" => Some(PrimitiveType::State),
-                "run" => Some(PrimitiveType::Branch),
+                "branch" => Some(PrimitiveType::Branch),
                 "vector" => Some(PrimitiveType::Vector),
                 _ => None,
             })
             .collect::<Vec<_>>()
     });
 
-    let mut req = SearchRequest::new(core_run_id, &query);
+    let mut req = SearchRequest::new(branch_id, &query);
     if let Some(top_k) = k {
         req = req.with_k(top_k as usize);
     }
@@ -90,7 +90,7 @@ fn format_entity_ref(doc_ref: &strata_engine::search::EntityRef) -> (String, Str
         }
         strata_engine::search::EntityRef::Branch { branch_id } => {
             let uuid = uuid::Uuid::from_bytes(*branch_id.as_bytes());
-            (uuid.to_string(), "run".to_string())
+            (uuid.to_string(), "branch".to_string())
         }
         strata_engine::search::EntityRef::Vector { key, .. } => {
             (key.clone(), "vector".to_string())

@@ -12,11 +12,11 @@
 //! let mut session = Session::new(db.clone());
 //!
 //! // Begin a transaction
-//! session.execute(Command::TxnBegin { run: None, options: None })?;
+//! session.execute(Command::TxnBegin { branch: None, options: None })?;
 //!
 //! // Data commands route through the transaction
-//! session.execute(Command::KvPut { run: None, key: "k".into(), value: Value::Int(1) })?;
-//! let out = session.execute(Command::KvGet { run: None, key: "k".into() })?;
+//! session.execute(Command::KvPut { branch: None, key: "k".into(), value: Value::Int(1) })?;
+//! let out = session.execute(Command::KvGet { branch: None, key: "k".into() })?;
 //!
 //! // Commit
 //! session.execute(Command::TxnCommit)?;
@@ -44,7 +44,7 @@ pub struct Session {
     executor: Executor,
     db: Arc<Database>,
     txn_ctx: Option<TransactionContext>,
-    txn_run_id: Option<strata_core::types::BranchId>,
+    txn_branch_id: Option<strata_core::types::BranchId>,
 }
 
 impl Session {
@@ -54,7 +54,7 @@ impl Session {
             executor: Executor::new(db.clone()),
             db,
             txn_ctx: None,
-            txn_run_id: None,
+            txn_branch_id: None,
         }
     }
 
@@ -121,22 +121,22 @@ impl Session {
             return Err(Error::TransactionAlreadyActive);
         }
 
-        let run = match cmd {
-            Command::TxnBegin { run, .. } => run.clone().unwrap_or_else(BranchId::default),
+        let branch = match cmd {
+            Command::TxnBegin { branch, .. } => branch.clone().unwrap_or_else(BranchId::default),
             _ => unreachable!(),
         };
 
-        let core_run_id = to_core_branch_id(&run)?;
-        let ctx = self.db.begin_transaction(core_run_id);
+        let core_branch_id = to_core_branch_id(&branch)?;
+        let ctx = self.db.begin_transaction(core_branch_id);
         self.txn_ctx = Some(ctx);
-        self.txn_run_id = Some(core_run_id);
+        self.txn_branch_id = Some(core_branch_id);
 
         Ok(Output::TxnBegun)
     }
 
     fn handle_commit(&mut self) -> Result<Output> {
         let mut ctx = self.txn_ctx.take().ok_or(Error::TransactionNotActive)?;
-        self.txn_run_id = None;
+        self.txn_branch_id = None;
 
         match self.db.commit_transaction(&mut ctx) {
             Ok(version) => {
@@ -155,7 +155,7 @@ impl Session {
 
     fn handle_abort(&mut self) -> Result<Output> {
         let ctx = self.txn_ctx.take().ok_or(Error::TransactionNotActive)?;
-        self.txn_run_id = None;
+        self.txn_branch_id = None;
         self.db.end_transaction(ctx);
         Ok(Output::TxnAborted)
     }
@@ -177,7 +177,7 @@ impl Session {
     // =========================================================================
 
     fn execute_in_txn(&mut self, cmd: Command) -> Result<Output> {
-        let branch_id = self.txn_run_id.expect("txn_run_id set when txn_ctx is Some");
+        let branch_id = self.txn_branch_id.expect("txn_branch_id set when txn_ctx is Some");
         let ns = Namespace::for_branch(branch_id);
 
         // Temporarily take the context to create a Transaction
