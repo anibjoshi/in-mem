@@ -164,8 +164,14 @@ impl VectorStore {
         // Validate name
         validate_collection_name(name)?;
 
-        // Validate config (dimension must be > 0)
+        // Validate config (dimension must be > 0 and <= MAX_DIMENSION)
+        const MAX_DIMENSION: usize = 65536;
         if config.dimension == 0 {
+            return Err(VectorError::InvalidDimension {
+                dimension: config.dimension,
+            });
+        }
+        if config.dimension > MAX_DIMENSION {
             return Err(VectorError::InvalidDimension {
                 dimension: config.dimension,
             });
@@ -386,6 +392,13 @@ impl VectorStore {
         // Validate key
         validate_vector_key(key)?;
 
+        // Validate embedding values (reject NaN and Infinity)
+        if embedding.iter().any(|v| v.is_nan() || v.is_infinite()) {
+            return Err(VectorError::InvalidEmbedding {
+                reason: "embedding contains NaN or Infinity values".to_string(),
+            });
+        }
+
         // Ensure collection is loaded
         self.ensure_collection_loaded(branch_id, collection)?;
 
@@ -407,10 +420,23 @@ impl VectorStore {
             .transpose()
             .map_err(|e| VectorError::Serialization(e.to_string()))?;
 
-        // Check if vector already exists
         let kv_key = Key::new_vector(Namespace::for_branch(branch_id), collection, key);
+
+        // Hold write lock for the entire check-then-insert sequence to prevent
+        // TOCTOU race (fixes #936). Also commit KV before updating backend so
+        // a KV commit failure doesn't leave the backend in an inconsistent
+        // state (fixes #937).
+        let state = self.state();
+        let mut backends = state.backends.write();
+        let backend =
+            backends
+                .get_mut(&collection_id)
+                .ok_or_else(|| VectorError::CollectionNotFound {
+                    name: collection.to_string(),
+                })?;
+
+        // Check existence under write lock
         let existing = self.get_vector_record_by_key(&kv_key)?;
-        let is_update = existing.is_some();
 
         let (vector_id, record) = if let Some(existing_record) = existing {
             // Update existing: keep the same VectorId
@@ -419,35 +445,12 @@ impl VectorStore {
             (VectorId(updated.vector_id), updated)
         } else {
             // New vector: allocate VectorId from backend's per-collection counter
-            let state = self.state();
-            let mut backends = state.backends.write();
-            let backend = backends.get_mut(&collection_id).ok_or_else(|| {
-                VectorError::CollectionNotFound {
-                    name: collection.to_string(),
-                }
-            })?;
-
-            // Allocate new ID from backend's per-collection counter (deterministic)
             let vector_id = backend.allocate_id();
             let record = VectorRecord::new(vector_id, embedding.to_vec(), metadata);
-
-            // Insert into backend
-            backend.insert(vector_id, embedding)?;
-
-            drop(backends);
             (vector_id, record)
         };
 
-        // For updates, update the backend
-        if is_update {
-            let state = self.state();
-            let mut backends = state.backends.write();
-            if let Some(backend) = backends.get_mut(&collection_id) {
-                backend.insert(vector_id, embedding)?;
-            }
-        }
-
-        // Store record in KV (includes embedding for history support)
+        // Commit to KV FIRST (durability before in-memory update)
         let record_version = record.version;
         let record_bytes = record.to_bytes()?;
         self.db
@@ -455,6 +458,11 @@ impl VectorStore {
                 txn.put(kv_key.clone(), Value::Bytes(record_bytes.clone()))
             })
             .map_err(|e| VectorError::Storage(e.to_string()))?;
+
+        // Only update backend AFTER KV commit succeeds
+        backend.insert(vector_id, embedding)?;
+
+        drop(backends);
 
         Ok(Version::counter(record_version))
     }
@@ -516,7 +524,7 @@ impl VectorStore {
             embedding: embedding.to_vec(),
             metadata: record.metadata,
             vector_id,
-            version: Version::txn(record.version),
+            version: Version::counter(record.version),
             source_ref: record.source_ref,
         };
 

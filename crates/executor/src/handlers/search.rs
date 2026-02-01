@@ -50,9 +50,7 @@ pub fn search(
     }
 
     let hybrid = HybridSearch::new(p.db.clone());
-    let response = hybrid.search(&req).map_err(|e| crate::Error::Internal {
-        reason: e.to_string(),
-    })?;
+    let response = hybrid.search(&req).map_err(crate::Error::from)?;
 
     // Convert SearchResponse hits to SearchResultHit
     let results: Vec<SearchResultHit> = response

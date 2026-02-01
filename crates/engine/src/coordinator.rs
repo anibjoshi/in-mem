@@ -202,6 +202,14 @@ impl TransactionCoordinator {
         self.manager.next_txn_id()
     }
 
+    /// Remove the per-branch commit lock for a deleted branch.
+    ///
+    /// Delegates to `TransactionManager::remove_branch_lock` to prevent
+    /// unbounded growth of the commit_locks map when branches are deleted.
+    pub fn remove_branch_lock(&self, branch_id: &BranchId) {
+        self.manager.remove_branch_lock(branch_id);
+    }
+
     /// Get transaction metrics
     ///
     /// Returns current snapshot of transaction statistics.

@@ -378,10 +378,10 @@ fn branch_create_and_get() {
         .unwrap();
 
     match output {
-        Output::BranchInfoVersioned(versioned) => {
+        Output::MaybeBranchInfo(Some(versioned)) => {
             assert_eq!(versioned.info.id.as_str(), "main");
         }
-        _ => panic!("Expected BranchInfoVersioned output"),
+        _ => panic!("Expected MaybeBranchInfo(Some(...)) output"),
     }
 }
 

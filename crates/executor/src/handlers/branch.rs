@@ -37,6 +37,39 @@ fn versioned_to_branch_info(v: strata_core::Versioned<BranchMetadata>) -> Versio
     }
 }
 
+/// Validate a branch name.
+///
+/// Rejects empty names, whitespace-only names, and names containing
+/// control characters or NUL bytes.
+fn validate_branch_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        return Err(Error::InvalidInput {
+            reason: "Branch name must not be empty".to_string(),
+        });
+    }
+    if name.trim().is_empty() {
+        return Err(Error::InvalidInput {
+            reason: "Branch name must not be whitespace-only".to_string(),
+        });
+    }
+    if name.contains('\0') {
+        return Err(Error::InvalidInput {
+            reason: "Branch name must not contain NUL bytes".to_string(),
+        });
+    }
+    if name.chars().any(|c| c.is_control()) {
+        return Err(Error::InvalidInput {
+            reason: "Branch name must not contain control characters".to_string(),
+        });
+    }
+    if name.len() > 255 {
+        return Err(Error::InvalidInput {
+            reason: "Branch name must not exceed 255 bytes".to_string(),
+        });
+    }
+    Ok(())
+}
+
 /// Guard: reject operations on the default branch that would delete it.
 fn reject_default_branch(branch: &BranchId, operation: &str) -> Result<()> {
     if branch.is_default() {
@@ -60,7 +93,10 @@ pub fn branch_create(
     // Users can provide any string as a branch name (like git branch names).
     // If not provided, generate a UUID for anonymous branches.
     let branch_str = match &branch_id {
-        Some(s) => s.clone(),
+        Some(s) => {
+            validate_branch_name(s)?;
+            s.clone()
+        }
         None => uuid::Uuid::new_v4().to_string(),
     };
 
@@ -77,8 +113,8 @@ pub fn branch_create(
 pub fn branch_get(p: &Arc<Primitives>, branch: BranchId) -> Result<Output> {
     let result = convert_result(p.branch.get_branch(branch.as_str()))?;
     match result {
-        Some(v) => Ok(Output::BranchInfoVersioned(versioned_to_branch_info(v))),
-        None => Ok(Output::Maybe(None)),
+        Some(v) => Ok(Output::MaybeBranchInfo(Some(versioned_to_branch_info(v)))),
+        None => Ok(Output::MaybeBranchInfo(None)),
     }
 }
 
@@ -115,9 +151,29 @@ pub fn branch_exists(p: &Arc<Primitives>, branch: BranchId) -> Result<Output> {
 }
 
 /// Handle BranchDelete command.
+///
+/// After deleting the branch metadata, performs cleanup:
+/// - Removes the per-branch commit lock to prevent unbounded growth (#944)
+/// - Deletes all vector collections for the branch to free memory (#946)
 pub fn branch_delete(p: &Arc<Primitives>, branch: BranchId) -> Result<Output> {
     reject_default_branch(&branch, "delete")?;
     convert_result(p.branch.delete_branch(branch.as_str()))?;
+
+    // Cleanup: remove per-branch commit lock (#944)
+    // Convert the executor BranchId to core BranchId for the lock cleanup
+    if let Ok(core_branch_id) = crate::bridge::to_core_branch_id(&branch) {
+        p.db.remove_branch_lock(&core_branch_id);
+
+        // Cleanup: delete all vector collections for this branch (#946)
+        // Best-effort: silently continue if vector cleanup fails, since the
+        // branch metadata is already deleted and data will be orphaned but harmless.
+        if let Ok(collections) = p.vector.list_collections(core_branch_id) {
+            for collection in collections {
+                let _ = p.vector.delete_collection(core_branch_id, &collection.name);
+            }
+        }
+    }
+
     Ok(Output::Unit)
 }
 

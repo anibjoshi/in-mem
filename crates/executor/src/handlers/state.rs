@@ -13,7 +13,25 @@ use strata_core::{Value, Version};
 use crate::bridge::{self, Primitives};
 use crate::convert::convert_result;
 use crate::types::BranchId;
-use crate::{Output, Result};
+use crate::{Error, Output, Result};
+
+/// Validate that a branch exists before performing a write operation (#951).
+///
+/// The default branch is always allowed (it is implicit and not stored in BranchIndex).
+/// For all other branches, checks `BranchIndex::exists()` and returns
+/// `Error::BranchNotFound` if the branch does not exist.
+fn require_branch_exists(p: &Arc<Primitives>, branch: &BranchId) -> Result<()> {
+    if branch.is_default() {
+        return Ok(());
+    }
+    let exists = convert_result(p.branch.exists(branch.as_str()))?;
+    if !exists {
+        return Err(Error::BranchNotFound {
+            branch: branch.as_str().to_string(),
+        });
+    }
+    Ok(())
+}
 
 /// Handle StateReadv command — get full version history for a state cell.
 pub fn state_readv(p: &Arc<Primitives>, branch: BranchId, cell: String) -> Result<Output> {
@@ -41,6 +59,7 @@ pub fn state_set(
     cell: String,
     value: Value,
 ) -> Result<Output> {
+    require_branch_exists(p, &branch)?;
     let branch_id = bridge::to_core_branch_id(&branch)?;
     convert_result(bridge::validate_key(&cell))?;
     let versioned = convert_result(p.state.set(&branch_id, &cell, value))?;
@@ -63,6 +82,7 @@ pub fn state_cas(
     expected_counter: Option<u64>,
     value: Value,
 ) -> Result<Output> {
+    require_branch_exists(p, &branch)?;
     let branch_id = bridge::to_core_branch_id(&branch)?;
     convert_result(bridge::validate_key(&cell))?;
     match expected_counter {
@@ -76,7 +96,15 @@ pub fn state_cas(
                 Ok(versioned) => Ok(Output::MaybeVersion(Some(bridge::extract_version(
                     &versioned.version,
                 )))),
-                Err(_) => Ok(Output::MaybeVersion(None)),
+                Err(e) => {
+                    let err = crate::Error::from(e);
+                    match err {
+                        crate::Error::VersionConflict { .. } | crate::Error::Conflict { .. } => {
+                            Ok(Output::MaybeVersion(None))
+                        }
+                        other => Err(other),
+                    }
+                }
             }
         }
         Some(expected) => {
@@ -87,7 +115,15 @@ pub fn state_cas(
                 Ok(versioned) => Ok(Output::MaybeVersion(Some(bridge::extract_version(
                     &versioned.version,
                 )))),
-                Err(_) => Ok(Output::MaybeVersion(None)),
+                Err(e) => {
+                    let err = crate::Error::from(e);
+                    match err {
+                        crate::Error::VersionConflict { .. } | crate::Error::Conflict { .. } => {
+                            Ok(Output::MaybeVersion(None))
+                        }
+                        other => Err(other),
+                    }
+                }
             }
         }
     }
@@ -100,6 +136,7 @@ pub fn state_init(
     cell: String,
     value: Value,
 ) -> Result<Output> {
+    require_branch_exists(p, &branch)?;
     let branch_id = bridge::to_core_branch_id(&branch)?;
     convert_result(bridge::validate_key(&cell))?;
     let versioned = convert_result(p.state.init(&branch_id, &cell, value))?;

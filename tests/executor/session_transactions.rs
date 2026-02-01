@@ -419,7 +419,7 @@ fn branch_commands_bypass_transaction() {
         })
         .unwrap();
 
-    assert!(matches!(output, Output::BranchInfoVersioned(_)));
+    assert!(matches!(output, Output::MaybeBranchInfo(Some(_))));
 }
 
 #[test]

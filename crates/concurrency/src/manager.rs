@@ -115,8 +115,14 @@ impl TransactionManager {
     }
 
     /// Allocate next transaction ID
+    ///
+    /// # Panics
+    ///
+    /// Panics if the transaction ID counter reaches `u64::MAX` (overflow).
     pub fn next_txn_id(&self) -> u64 {
-        self.next_txn_id.fetch_add(1, Ordering::SeqCst)
+        self.next_txn_id
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| v.checked_add(1))
+            .expect("transaction ID overflow: u64::MAX reached")
     }
 
     /// Allocate next commit version (increment global version)
@@ -133,8 +139,15 @@ impl TransactionManager {
     /// This is by design - version allocation is atomic and non-blocking,
     /// while failure handling during commit does not attempt to "return"
     /// the allocated version.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the version counter reaches `u64::MAX` (overflow).
     pub fn allocate_version(&self) -> u64 {
-        self.version.fetch_add(1, Ordering::SeqCst) + 1
+        self.version
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| v.checked_add(1))
+            .expect("version counter overflow: u64::MAX reached")
+            + 1
     }
 
     /// Commit a transaction atomically
@@ -257,6 +270,21 @@ impl TransactionManager {
 
         // Step 5: Return commit version
         Ok(commit_version)
+    }
+
+    /// Remove the per-branch commit lock for a deleted branch.
+    ///
+    /// Called during branch deletion to prevent unbounded growth of the
+    /// `commit_locks` map. Safe to call even if no lock exists for the branch.
+    ///
+    /// # Safety
+    ///
+    /// This should only be called after the branch has been fully deleted
+    /// and no further transactions will target it. If a concurrent transaction
+    /// is in-flight for this branch, the lock will be lazily re-created on
+    /// next commit (via `or_insert_with` in `commit()`).
+    pub fn remove_branch_lock(&self, branch_id: &BranchId) {
+        self.commit_locks.remove(branch_id);
     }
 }
 
