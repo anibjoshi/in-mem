@@ -30,6 +30,7 @@ impl Strata {
             branch: self.branch_id(),
             cell: cell.to_string(),
         })? {
+            Output::MaybeVersioned(v) => Ok(v.map(|vv| vv.value)),
             Output::Maybe(v) => Ok(v),
             _ => Err(Error::Internal {
                 reason: "Unexpected output for StateRead".into(),

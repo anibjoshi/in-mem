@@ -93,22 +93,22 @@ fn test_execute_many_preserves_order() {
 
     // Verify order is preserved
     match &get_results[0] {
-        Ok(Output::Maybe(Some(v))) => {
-            assert_eq!(v, &Value::Int(3));
+        Ok(Output::MaybeVersioned(Some(vv))) => {
+            assert_eq!(vv.value, Value::Int(3));
         }
         _ => panic!("Expected Int(3) for key3"),
     }
 
     match &get_results[1] {
-        Ok(Output::Maybe(Some(v))) => {
-            assert_eq!(v, &Value::Int(1));
+        Ok(Output::MaybeVersioned(Some(vv))) => {
+            assert_eq!(vv.value, Value::Int(1));
         }
         _ => panic!("Expected Int(1) for key1"),
     }
 
     match &get_results[2] {
-        Ok(Output::Maybe(Some(v))) => {
-            assert_eq!(v, &Value::Int(2));
+        Ok(Output::MaybeVersioned(Some(vv))) => {
+            assert_eq!(vv.value, Value::Int(2));
         }
         _ => panic!("Expected Int(2) for key2"),
     }
@@ -170,7 +170,7 @@ fn test_execute_many_mixed_operations() {
 
     // Get should return the value
     match &results[1] {
-        Ok(Output::Maybe(Some(v))) => assert_eq!(v, &Value::Int(10)),
+        Ok(Output::MaybeVersioned(Some(vv))) => assert_eq!(&vv.value, &Value::Int(10)),
         _ => panic!("Expected Maybe(Some(Int(10)))"),
     }
 
@@ -182,7 +182,7 @@ fn test_execute_many_mixed_operations() {
 
     // Get after delete should return None
     match &results[3] {
-        Ok(Output::Maybe(None)) => {}
+        Ok(Output::MaybeVersioned(None)) | Ok(Output::Maybe(None)) => {}
         _ => panic!("Expected Maybe(None) after delete"),
     }
 }

@@ -55,10 +55,16 @@ fn issue_934_executor_execute_resolves_none_branch() {
         .unwrap();
 
     match get_result {
+        Output::MaybeVersioned(Some(vv)) => {
+            assert_eq!(vv.value, Value::Int(42));
+        }
         Output::Maybe(Some(v)) => {
             assert_eq!(v, Value::Int(42));
         }
-        other => panic!("Expected Maybe(Some), got: {:?}", other),
+        other => panic!(
+            "Expected MaybeVersioned(Some) or Maybe(Some), got: {:?}",
+            other
+        ),
     }
 }
 
@@ -89,6 +95,8 @@ fn issue_934_expect_message_is_consistent() {
         Command::KvList {
             branch: None,
             prefix: None,
+            cursor: None,
+            limit: None,
         },
         Command::EventLen { branch: None },
         Command::VectorListCollections { branch: None },

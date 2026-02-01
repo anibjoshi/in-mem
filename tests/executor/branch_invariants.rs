@@ -63,7 +63,7 @@ fn branch_data_is_isolated() {
         })
         .unwrap();
     assert!(
-        matches!(output, Output::Maybe(None)),
+        matches!(output, Output::MaybeVersioned(None) | Output::Maybe(None)),
         "Branch B should not see Branch A's KV data"
     );
 
@@ -74,7 +74,7 @@ fn branch_data_is_isolated() {
         })
         .unwrap();
     assert!(
-        matches!(output, Output::Maybe(None)),
+        matches!(output, Output::MaybeVersioned(None) | Output::Maybe(None)),
         "Branch B should not see Branch A's state data"
     );
 
@@ -86,7 +86,8 @@ fn branch_data_is_isolated() {
         })
         .unwrap();
     match output {
-        Output::Maybe(Some(val)) => {
+        Output::MaybeVersioned(Some(vv)) => {
+            let val = vv.value;
             assert_eq!(val, Value::String("branch_a_secret".into()));
         }
         _ => panic!("Branch A should see its own data"),
@@ -145,7 +146,10 @@ fn branch_delete_removes_all_data() {
             key: "key1".into(),
         })
         .unwrap();
-    assert!(matches!(output, Output::Maybe(Some(_))));
+    assert!(matches!(
+        output,
+        Output::MaybeVersioned(Some(_)) | Output::Maybe(Some(_))
+    ));
 
     // Delete the branch
     executor
@@ -179,7 +183,7 @@ fn branch_delete_removes_all_data() {
         })
         .unwrap();
     assert!(
-        matches!(output, Output::Maybe(None)),
+        matches!(output, Output::MaybeVersioned(None) | Output::Maybe(None)),
         "Data should not persist after branch deletion and recreation"
     );
 }
@@ -233,7 +237,7 @@ fn branch_delete_cleans_up_data() {
         .unwrap();
 
     assert!(
-        matches!(output, Output::Maybe(None)),
+        matches!(output, Output::MaybeVersioned(None) | Output::Maybe(None)),
         "Data should not persist after branch deletion (issue #781)"
     );
 }
@@ -264,7 +268,8 @@ fn default_branch_always_works() {
         })
         .unwrap();
     match output {
-        Output::Maybe(Some(val)) => {
+        Output::MaybeVersioned(Some(vv)) => {
+            let val = vv.value;
             assert_eq!(val, Value::String("default_value".into()));
         }
         _ => panic!("Default branch should work"),
@@ -278,7 +283,8 @@ fn default_branch_always_works() {
         })
         .unwrap();
     match output {
-        Output::Maybe(Some(val)) => {
+        Output::MaybeVersioned(Some(vv)) => {
+            let val = vv.value;
             assert_eq!(val, Value::String("default_value".into()));
         }
         _ => panic!("Explicit 'default' branch should work"),

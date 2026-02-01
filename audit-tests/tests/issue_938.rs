@@ -1,34 +1,34 @@
 //! Audit test for issue #938: Vector writes bypass session transaction
-//! Verdict: CONFIRMED BUG
+//! Verdict: FIXED
 //!
-//! Session routes VectorUpsert, VectorGet, VectorDelete, VectorSearch,
-//! VectorCreateCollection, VectorDeleteCollection, and VectorListCollections
-//! through the executor directly, bypassing any active transaction.
+//! Previously, Session routed VectorUpsert, VectorDelete, etc. through the
+//! executor directly, bypassing any active transaction. This meant vector
+//! writes during a transaction were immediately committed and NOT rolled
+//! back on TxnRollback.
 //!
-//! From session.rs:87-93:
-//! ```ignore
-//! Command::VectorUpsert { .. }
-//! | Command::VectorGet { .. }
-//! | Command::VectorDelete { .. }
-//! | Command::VectorSearch { .. }
-//! | Command::VectorCreateCollection { .. }
-//! | Command::VectorDeleteCollection { .. }
-//! | Command::VectorListCollections { .. } => self.executor.execute(cmd),
-//! ```
-//!
-//! This means vector writes during a transaction are immediately committed
-//! (not buffered in the transaction) and are NOT rolled back on TxnRollback.
+//! The fix blocks vector write operations inside transactions, returning
+//! an InvalidInput error. Vector read operations (VectorGet, VectorSearch,
+//! VectorListCollections) still work inside transactions.
 
 use strata_engine::database::Database;
-use strata_executor::{BranchId, Command, Output, Session};
+use strata_executor::{BranchId, Command, DistanceMetric, Error, Session};
 
-/// Demonstrates that vector upsert inside a transaction bypasses the
-/// transaction and persists even after rollback.
+/// Verifies that vector upsert is now blocked inside a transaction.
 #[test]
 fn issue_938_vector_writes_bypass_transaction() {
     let db = Database::ephemeral().unwrap();
     let mut session = Session::new(db);
     let branch = BranchId::from("default");
+
+    // Create collection outside transaction
+    session
+        .execute(Command::VectorCreateCollection {
+            branch: Some(branch.clone()),
+            collection: "test_col".into(),
+            dimension: 3,
+            metric: DistanceMetric::Cosine,
+        })
+        .unwrap();
 
     // Begin transaction
     session
@@ -38,7 +38,7 @@ fn issue_938_vector_writes_bypass_transaction() {
         })
         .unwrap();
 
-    // Vector upsert goes through even in transaction (bypasses txn)
+    // Vector upsert should now be BLOCKED inside a transaction
     let result = session.execute(Command::VectorUpsert {
         branch: Some(branch.clone()),
         collection: "test_col".into(),
@@ -46,50 +46,44 @@ fn issue_938_vector_writes_bypass_transaction() {
         vector: vec![1.0, 0.0, 0.0],
         metadata: None,
     });
-    // This succeeds because it bypasses the transaction entirely
+
+    // BUG FIXED: Vector writes are now blocked inside transactions
     assert!(
-        result.is_ok(),
-        "Vector upsert should succeed (it bypasses txn)"
+        result.is_err(),
+        "Vector upsert should be blocked inside a transaction"
     );
-
-    // Rollback transaction
-    session.execute(Command::TxnRollback).unwrap();
-
-    // Vector data persists despite rollback — BUG
-    let get_result = session
-        .execute(Command::VectorGet {
-            branch: Some(branch.clone()),
-            collection: "test_col".into(),
-            key: "v1".into(),
-        })
-        .unwrap();
-
-    // The vector is still there even though we rolled back
-    match get_result {
-        Output::VectorData(Some(data)) => {
-            // BUG CONFIRMED: Vector data persists after rollback
-            assert_eq!(
-                data.data.embedding,
-                vec![1.0, 0.0, 0.0],
-                "Vector persists after rollback because it bypassed the transaction"
+    match result {
+        Err(Error::InvalidInput { reason }) => {
+            assert!(
+                reason.contains("not supported inside a transaction"),
+                "Error should explain operation is not supported in transaction, got: {}",
+                reason
             );
         }
-        Output::VectorData(None) => {
-            // If this happens, the bug is fixed — vector was correctly rolled back
-            panic!("Vector data was correctly rolled back - bug may be fixed");
-        }
-        other => panic!("Expected VectorData, got: {:?}", other),
+        Err(other) => panic!("Expected InvalidInput, got: {:?}", other),
+        Ok(_) => unreachable!(),
     }
+
+    session.execute(Command::TxnRollback).unwrap();
 }
 
-/// Demonstrates that vector delete also bypasses the transaction.
+/// Verifies that vector delete is now blocked inside a transaction.
 #[test]
 fn issue_938_vector_delete_bypasses_transaction() {
     let db = Database::ephemeral().unwrap();
     let mut session = Session::new(db);
     let branch = BranchId::from("default");
 
-    // Create a vector outside any transaction
+    // Create collection and vector outside transaction
+    session
+        .execute(Command::VectorCreateCollection {
+            branch: Some(branch.clone()),
+            collection: "col2".into(),
+            dimension: 3,
+            metric: DistanceMetric::Cosine,
+        })
+        .unwrap();
+
     session
         .execute(Command::VectorUpsert {
             branch: Some(branch.clone()),
@@ -108,39 +102,18 @@ fn issue_938_vector_delete_bypasses_transaction() {
         })
         .unwrap();
 
-    // Delete the vector inside the transaction — this bypasses the txn
-    let del_result = session
-        .execute(Command::VectorDelete {
-            branch: Some(branch.clone()),
-            collection: "col2".into(),
-            key: "v1".into(),
-        })
-        .unwrap();
+    // Delete the vector inside the transaction — should now be BLOCKED
+    let del_result = session.execute(Command::VectorDelete {
+        branch: Some(branch.clone()),
+        collection: "col2".into(),
+        key: "v1".into(),
+    });
+
+    // BUG FIXED: Vector deletes are now blocked inside transactions
     assert!(
-        matches!(del_result, Output::Bool(true)),
-        "Vector delete should succeed"
+        del_result.is_err(),
+        "Vector delete should be blocked inside a transaction"
     );
 
-    // Rollback the transaction
     session.execute(Command::TxnRollback).unwrap();
-
-    // The vector is STILL deleted despite rollback — BUG
-    let get_result = session
-        .execute(Command::VectorGet {
-            branch: Some(branch.clone()),
-            collection: "col2".into(),
-            key: "v1".into(),
-        })
-        .unwrap();
-
-    match get_result {
-        Output::VectorData(None) => {
-            // BUG CONFIRMED: Delete was not rolled back
-        }
-        Output::VectorData(Some(_)) => {
-            // If this happens, the bug is fixed
-            panic!("Vector delete was correctly rolled back - bug may be fixed");
-        }
-        other => panic!("Expected VectorData, got: {:?}", other),
-    }
 }

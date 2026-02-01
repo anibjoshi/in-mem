@@ -63,6 +63,8 @@ fn issue_943_event_read_by_type_version_extraction_inconsistency() {
         .execute(Command::EventReadByType {
             branch: Some(branch.clone()),
             event_type: "user.created".into(),
+            limit: None,
+            after_sequence: None,
         })
         .unwrap();
 
@@ -169,6 +171,8 @@ fn issue_943_documents_fragile_version_pattern() {
         .execute(Command::EventReadByType {
             branch: Some(branch.clone()),
             event_type: "test.type".into(),
+            limit: None,
+            after_sequence: None,
         })
         .unwrap();
 

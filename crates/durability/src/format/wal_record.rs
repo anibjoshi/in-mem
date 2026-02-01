@@ -37,19 +37,25 @@ use std::path::{Path, PathBuf};
 /// Magic bytes identifying a WAL segment file: "STRA"
 pub const SEGMENT_MAGIC: [u8; 4] = *b"STRA";
 
-/// Current segment format version
-pub const SEGMENT_FORMAT_VERSION: u32 = 1;
+/// Current segment format version (v2 adds header CRC)
+pub const SEGMENT_FORMAT_VERSION: u32 = 2;
 
-/// Size of segment header in bytes
+/// Size of v1 segment header in bytes (without CRC)
 pub const SEGMENT_HEADER_SIZE: usize = 32;
+
+/// Size of v2 segment header in bytes (with CRC32)
+pub const SEGMENT_HEADER_SIZE_V2: usize = 36;
 
 /// Current WAL record format version
 pub const WAL_RECORD_FORMAT_VERSION: u8 = 1;
 
-/// WAL segment header (32 bytes).
+/// WAL segment header (32 bytes for v1, 36 bytes for v2).
 ///
 /// The header is written at the beginning of each segment file and contains
 /// metadata for validation and compatibility checking.
+///
+/// v2 (format_version=2) adds a CRC32 checksum of the first 32 bytes,
+/// appended as 4 bytes after the base header. v1 headers are still readable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 pub struct SegmentHeader {
@@ -64,37 +70,90 @@ pub struct SegmentHeader {
 
     /// Database UUID (for integrity checking across segments)
     pub database_uuid: [u8; 16],
+
+    /// CRC32 of the first 32 header bytes (v2+ only, 0 for v1)
+    pub header_crc: u32,
 }
 
 impl SegmentHeader {
-    /// Create a new segment header.
+    /// Create a new segment header (always creates v2 with CRC).
     pub fn new(segment_number: u64, database_uuid: [u8; 16]) -> Self {
-        SegmentHeader {
+        let mut header = SegmentHeader {
             magic: SEGMENT_MAGIC,
             format_version: SEGMENT_FORMAT_VERSION,
             segment_number,
             database_uuid,
-        }
+            header_crc: 0,
+        };
+        // Compute CRC of the base 32 bytes
+        header.header_crc = header.compute_crc();
+        header
     }
 
-    /// Serialize header to bytes.
-    pub fn to_bytes(&self) -> [u8; SEGMENT_HEADER_SIZE] {
-        let mut bytes = [0u8; SEGMENT_HEADER_SIZE];
+    /// Compute CRC32 of the first 32 header bytes.
+    fn compute_crc(&self) -> u32 {
+        let mut base = [0u8; SEGMENT_HEADER_SIZE];
+        base[0..4].copy_from_slice(&self.magic);
+        base[4..8].copy_from_slice(&self.format_version.to_le_bytes());
+        base[8..16].copy_from_slice(&self.segment_number.to_le_bytes());
+        base[16..32].copy_from_slice(&self.database_uuid);
+        let mut hasher = Hasher::new();
+        hasher.update(&base);
+        hasher.finalize()
+    }
+
+    /// Serialize header to bytes (v2: 36 bytes).
+    pub fn to_bytes(&self) -> [u8; SEGMENT_HEADER_SIZE_V2] {
+        let mut bytes = [0u8; SEGMENT_HEADER_SIZE_V2];
         bytes[0..4].copy_from_slice(&self.magic);
         bytes[4..8].copy_from_slice(&self.format_version.to_le_bytes());
         bytes[8..16].copy_from_slice(&self.segment_number.to_le_bytes());
         bytes[16..32].copy_from_slice(&self.database_uuid);
+        bytes[32..36].copy_from_slice(&self.header_crc.to_le_bytes());
         bytes
     }
 
-    /// Deserialize header from bytes.
-    pub fn from_bytes(bytes: &[u8; SEGMENT_HEADER_SIZE]) -> Option<Self> {
+    /// Deserialize header from a byte slice.
+    ///
+    /// Accepts both v1 (32-byte) and v2 (36-byte) headers.
+    /// For v2, validates the CRC; for v1, CRC is set to 0.
+    pub fn from_bytes_slice(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < SEGMENT_HEADER_SIZE {
+            return None;
+        }
+
+        let magic: [u8; 4] = bytes[0..4].try_into().ok()?;
+        let format_version = u32::from_le_bytes(bytes[4..8].try_into().ok()?);
+        let segment_number = u64::from_le_bytes(bytes[8..16].try_into().ok()?);
+        let database_uuid: [u8; 16] = bytes[16..32].try_into().ok()?;
+
+        let header_crc = if format_version >= 2 && bytes.len() >= SEGMENT_HEADER_SIZE_V2 {
+            let stored_crc = u32::from_le_bytes(bytes[32..36].try_into().ok()?);
+
+            // Verify CRC
+            let mut hasher = Hasher::new();
+            hasher.update(&bytes[0..SEGMENT_HEADER_SIZE]);
+            let computed_crc = hasher.finalize();
+            if stored_crc != computed_crc {
+                return None; // CRC mismatch — header corrupted
+            }
+            stored_crc
+        } else {
+            0 // v1 header, no CRC
+        };
+
         Some(SegmentHeader {
-            magic: bytes[0..4].try_into().ok()?,
-            format_version: u32::from_le_bytes(bytes[4..8].try_into().ok()?),
-            segment_number: u64::from_le_bytes(bytes[8..16].try_into().ok()?),
-            database_uuid: bytes[16..32].try_into().ok()?,
+            magic,
+            format_version,
+            segment_number,
+            database_uuid,
+            header_crc,
         })
+    }
+
+    /// Deserialize header from a fixed-size v1 byte array (backward compat).
+    pub fn from_bytes(bytes: &[u8; SEGMENT_HEADER_SIZE]) -> Option<Self> {
+        Self::from_bytes_slice(bytes)
     }
 
     /// Validate the header has correct magic bytes.
@@ -125,12 +184,15 @@ pub struct WalSegment {
 
     /// Database UUID for this segment
     database_uuid: [u8; 16],
+
+    /// Actual header size in bytes (32 for v1, 36 for v2)
+    header_size: usize,
 }
 
 impl WalSegment {
     /// Create a new WAL segment.
     ///
-    /// Creates a new segment file and writes the header.
+    /// Creates a new segment file and writes the v2 header (36 bytes with CRC).
     pub fn create(
         dir: &Path,
         segment_number: u64,
@@ -144,35 +206,61 @@ impl WalSegment {
             .read(true)
             .open(&path)?;
 
-        // Write header
+        // Write v2 header (36 bytes)
         let header = SegmentHeader::new(segment_number, database_uuid);
         file.write_all(&header.to_bytes())?;
 
         Ok(WalSegment {
             file,
             segment_number,
-            write_position: SEGMENT_HEADER_SIZE as u64,
+            write_position: SEGMENT_HEADER_SIZE_V2 as u64,
             path,
             closed: false,
             database_uuid,
+            header_size: SEGMENT_HEADER_SIZE_V2,
         })
     }
 
     /// Open an existing WAL segment for reading.
     ///
     /// Validates the header and positions at the end for size calculation.
+    /// Handles both v1 (32-byte) and v2 (36-byte) headers.
     pub fn open_read(dir: &Path, segment_number: u64) -> std::io::Result<Self> {
         let path = Self::segment_path(dir, segment_number);
 
         let mut file = OpenOptions::new().read(true).open(&path)?;
 
-        // Read and validate header
-        let mut header_bytes = [0u8; SEGMENT_HEADER_SIZE];
-        file.read_exact(&mut header_bytes)?;
+        // Try reading v2 header (36 bytes); fall back to v1 (32 bytes) if file is too small
+        let mut header_buf = [0u8; SEGMENT_HEADER_SIZE_V2];
+        let bytes_read = {
+            let mut total = 0;
+            loop {
+                match file.read(&mut header_buf[total..]) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        total += n;
+                        if total >= SEGMENT_HEADER_SIZE_V2 {
+                            break;
+                        }
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(e) => return Err(e),
+                }
+            }
+            total
+        };
 
-        let header = SegmentHeader::from_bytes(&header_bytes).ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid segment header")
-        })?;
+        if bytes_read < SEGMENT_HEADER_SIZE {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Segment file too small for header",
+            ));
+        }
+
+        let header =
+            SegmentHeader::from_bytes_slice(&header_buf[..bytes_read]).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid segment header")
+            })?;
 
         if !header.is_valid() {
             return Err(std::io::Error::new(
@@ -191,6 +279,12 @@ impl WalSegment {
             ));
         }
 
+        let actual_header_size = if header.format_version >= 2 {
+            SEGMENT_HEADER_SIZE_V2
+        } else {
+            SEGMENT_HEADER_SIZE
+        };
+
         let write_position = file.seek(SeekFrom::End(0))?;
 
         Ok(WalSegment {
@@ -200,24 +294,50 @@ impl WalSegment {
             path,
             closed: true, // Opened for reading = treat as closed
             database_uuid: header.database_uuid,
+            header_size: actual_header_size,
         })
     }
 
     /// Open an existing WAL segment for appending.
     ///
     /// Used when resuming writes to an existing active segment.
+    /// Handles both v1 (32-byte) and v2 (36-byte) headers.
     pub fn open_append(dir: &Path, segment_number: u64) -> std::io::Result<Self> {
         let path = Self::segment_path(dir, segment_number);
 
         let mut file = OpenOptions::new().read(true).write(true).open(&path)?;
 
-        // Read and validate header
-        let mut header_bytes = [0u8; SEGMENT_HEADER_SIZE];
-        file.read_exact(&mut header_bytes)?;
+        // Try reading v2 header (36 bytes); fall back to v1 (32 bytes) if file is too small
+        let mut header_buf = [0u8; SEGMENT_HEADER_SIZE_V2];
+        let bytes_read = {
+            let mut total = 0;
+            loop {
+                match file.read(&mut header_buf[total..]) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        total += n;
+                        if total >= SEGMENT_HEADER_SIZE_V2 {
+                            break;
+                        }
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(e) => return Err(e),
+                }
+            }
+            total
+        };
 
-        let header = SegmentHeader::from_bytes(&header_bytes).ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid segment header")
-        })?;
+        if bytes_read < SEGMENT_HEADER_SIZE {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Segment file too small for header",
+            ));
+        }
+
+        let header =
+            SegmentHeader::from_bytes_slice(&header_buf[..bytes_read]).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid segment header")
+            })?;
 
         if !header.is_valid() {
             return Err(std::io::Error::new(
@@ -225,6 +345,12 @@ impl WalSegment {
                 "Invalid segment magic bytes",
             ));
         }
+
+        let actual_header_size = if header.format_version >= 2 {
+            SEGMENT_HEADER_SIZE_V2
+        } else {
+            SEGMENT_HEADER_SIZE
+        };
 
         // Seek to end for appending
         let write_position = file.seek(SeekFrom::End(0))?;
@@ -236,6 +362,7 @@ impl WalSegment {
             path,
             closed: false,
             database_uuid: header.database_uuid,
+            header_size: actual_header_size,
         })
     }
 
@@ -264,6 +391,11 @@ impl WalSegment {
     /// Get database UUID.
     pub fn database_uuid(&self) -> [u8; 16] {
         self.database_uuid
+    }
+
+    /// Get the actual header size in bytes (32 for v1, 36 for v2).
+    pub fn header_size(&self) -> usize {
+        self.header_size
     }
 
     /// Write bytes to segment and update write position.
@@ -522,13 +654,15 @@ mod tests {
         let header = SegmentHeader::new(12345, [0xAB; 16]);
 
         let bytes = header.to_bytes();
-        let parsed = SegmentHeader::from_bytes(&bytes).unwrap();
+        assert_eq!(bytes.len(), SEGMENT_HEADER_SIZE_V2);
+        let parsed = SegmentHeader::from_bytes_slice(&bytes).unwrap();
 
         assert_eq!(parsed.magic, SEGMENT_MAGIC);
         assert_eq!(parsed.format_version, SEGMENT_FORMAT_VERSION);
         assert_eq!(parsed.segment_number, 12345);
         assert_eq!(parsed.database_uuid, [0xAB; 16]);
         assert!(parsed.is_valid());
+        assert_ne!(parsed.header_crc, 0);
     }
 
     #[test]
@@ -556,10 +690,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let uuid = [1u8; 16];
 
-        // Create segment
+        // Create segment (v2 with 36-byte header)
         let segment = WalSegment::create(dir.path(), 1, uuid).unwrap();
         assert_eq!(segment.segment_number(), 1);
-        assert_eq!(segment.size(), SEGMENT_HEADER_SIZE as u64);
+        assert_eq!(segment.size(), SEGMENT_HEADER_SIZE_V2 as u64);
         assert!(!segment.is_closed());
         assert_eq!(segment.database_uuid(), uuid);
         drop(segment);

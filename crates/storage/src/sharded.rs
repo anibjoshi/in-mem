@@ -99,17 +99,20 @@ impl VersionChain {
     }
 
     /// Remove versions older than min_version (garbage collection)
-    /// Keeps at least one version
-    pub fn gc(&mut self, min_version: u64) {
+    /// Keeps at least one version.
+    /// Returns the number of pruned versions.
+    pub fn gc(&mut self, min_version: u64) -> usize {
         if self.versions.len() <= 1 {
-            return;
+            return 0;
         }
+        let mut pruned = 0;
         // Keep versions >= min_version, but always keep at least the latest
         // Versions are newest-first, so pop from back (oldest)
         while self.versions.len() > 1 {
             if let Some(oldest) = self.versions.back() {
                 if oldest.version().as_u64() < min_version {
                     self.versions.pop_back();
+                    pruned += 1;
                 } else {
                     break;
                 }
@@ -117,6 +120,7 @@ impl VersionChain {
                 break;
             }
         }
+        pruned
     }
 
     /// Number of versions stored
@@ -490,6 +494,20 @@ impl ShardedStore {
             .get(branch_id)
             .map(|shard| shard.len())
             .unwrap_or(0)
+    }
+
+    /// Garbage-collect old versions from all entries for a given branch.
+    ///
+    /// Calls `VersionChain::gc(min_version)` on each entry in the branch's shard.
+    /// Returns the total number of pruned versions.
+    pub fn gc_branch(&self, branch_id: BranchId, min_version: u64) -> usize {
+        let mut pruned = 0;
+        if let Some(mut shard) = self.shards.get_mut(&branch_id) {
+            for chain in shard.data.values_mut() {
+                pruned += chain.gc(min_version);
+            }
+        }
+        pruned
     }
 
     // ========================================================================

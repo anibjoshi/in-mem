@@ -48,3 +48,32 @@ pub fn extract_bool(output: &Output) -> bool {
         _ => panic!("Expected Output::Bool, got {:?}", output),
     }
 }
+
+/// Extract value from Output::Maybe or Output::MaybeVersioned.
+/// Returns Option<Value> regardless of which variant is used.
+#[allow(dead_code)]
+pub fn extract_maybe_value(output: Output) -> Option<strata_core::Value> {
+    match output {
+        Output::MaybeVersioned(v) => v.map(|vv| vv.value),
+        Output::Maybe(v) => v,
+        _ => panic!(
+            "Expected Output::Maybe or Output::MaybeVersioned, got {:?}",
+            output
+        ),
+    }
+}
+
+/// Returns true if the output is a Some value (either Maybe or MaybeVersioned).
+#[allow(dead_code)]
+pub fn is_some_value(output: &Output) -> bool {
+    matches!(
+        output,
+        Output::Maybe(Some(_)) | Output::MaybeVersioned(Some(_))
+    )
+}
+
+/// Returns true if the output is None (either Maybe or MaybeVersioned).
+#[allow(dead_code)]
+pub fn is_none_value(output: &Output) -> bool {
+    matches!(output, Output::Maybe(None) | Output::MaybeVersioned(None))
+}

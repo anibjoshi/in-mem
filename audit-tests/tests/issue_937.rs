@@ -19,7 +19,7 @@
 //! - A KV commit failure after backend update (requires error injection)
 
 use strata_engine::database::Database;
-use strata_executor::{BranchId, Command, Executor, Output};
+use strata_executor::{BranchId, Command, DistanceMetric, Executor, Output};
 
 /// Documents the ordering issue: backend is updated before KV commit.
 /// In the normal (non-crash) case, this works correctly because both
@@ -30,6 +30,16 @@ fn issue_937_normal_case_backend_and_kv_consistent() {
     let executor = Executor::new(db);
 
     let branch = BranchId::from("default");
+
+    // Create collection first (auto-create was removed in #923)
+    executor
+        .execute(Command::VectorCreateCollection {
+            branch: Some(branch.clone()),
+            collection: "col".into(),
+            dimension: 3,
+            metric: DistanceMetric::Cosine,
+        })
+        .unwrap();
 
     // Insert a vector — both backend and KV are updated
     executor

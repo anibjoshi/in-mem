@@ -1,28 +1,19 @@
 //! Audit test for issue #939: Branch writes bypass session transaction
-//! Verdict: CONFIRMED BUG
+//! Verdict: FIXED
 //!
-//! Session routes BranchCreate, BranchGet, BranchList, BranchExists, and
-//! BranchDelete through the executor directly, bypassing any active
-//! transaction.
+//! Previously, Session routed BranchCreate, BranchDelete, etc. through the
+//! executor directly, bypassing any active transaction. This meant branch
+//! creation/deletion during a transaction was immediately committed and
+//! NOT rolled back on TxnRollback.
 //!
-//! From session.rs:82-86:
-//! ```ignore
-//! Command::BranchCreate { .. }
-//! | Command::BranchGet { .. }
-//! | Command::BranchList { .. }
-//! | Command::BranchExists { .. }
-//! | Command::BranchDelete { .. } => self.executor.execute(cmd),
-//! ```
-//!
-//! This means branch creation/deletion during a transaction is immediately
-//! committed and is NOT rolled back on TxnRollback. A user who creates a
-//! branch inside a transaction and then rolls back will find the branch
-//! still exists.
+//! The fix blocks branch create/delete operations inside transactions,
+//! returning an InvalidInput error. Branch read operations (BranchGet,
+//! BranchList, BranchExists) still work inside transactions.
 
 use strata_engine::database::Database;
-use strata_executor::{BranchId, Command, Output, Session};
+use strata_executor::{BranchId, Command, Error, Session};
 
-/// Demonstrates that BranchCreate inside a transaction persists after rollback.
+/// Verifies that BranchCreate is now blocked inside a transaction.
 #[test]
 fn issue_939_branch_create_bypasses_transaction() {
     let db = Database::ephemeral().unwrap();
@@ -37,54 +28,33 @@ fn issue_939_branch_create_bypasses_transaction() {
         })
         .unwrap();
 
-    // Create a new branch inside the transaction
-    let create_result = session
-        .execute(Command::BranchCreate {
-            branch_id: Some("test-branch-939".into()),
-            metadata: None,
-        })
-        .unwrap();
+    // Create a new branch inside the transaction - should now be BLOCKED
+    let create_result = session.execute(Command::BranchCreate {
+        branch_id: Some("test-branch-939".into()),
+        metadata: None,
+    });
 
+    // BUG FIXED: Branch create is now blocked inside transactions
     assert!(
-        matches!(create_result, Output::BranchWithVersion { .. }),
-        "BranchCreate should succeed"
+        create_result.is_err(),
+        "BranchCreate should be blocked inside a transaction"
     );
-
-    // Verify branch exists (still inside transaction)
-    let exists_result = session
-        .execute(Command::BranchExists {
-            branch: BranchId::from("test-branch-939"),
-        })
-        .unwrap();
-    assert!(
-        matches!(exists_result, Output::Bool(true)),
-        "Branch should exist during transaction"
-    );
-
-    // Rollback the transaction
-    session.execute(Command::TxnRollback).unwrap();
-
-    // BUG: Branch still exists after rollback because BranchCreate
-    // bypassed the transaction entirely
-    let exists_after = session
-        .execute(Command::BranchExists {
-            branch: BranchId::from("test-branch-939"),
-        })
-        .unwrap();
-
-    match exists_after {
-        Output::Bool(true) => {
-            // BUG CONFIRMED: Branch persists after rollback
+    match create_result {
+        Err(Error::InvalidInput { reason }) => {
+            assert!(
+                reason.contains("not supported inside a transaction"),
+                "Error should explain operation is not supported in transaction, got: {}",
+                reason
+            );
         }
-        Output::Bool(false) => {
-            // If this happens, the bug is fixed
-            panic!("Branch was correctly rolled back - bug may be fixed");
-        }
-        other => panic!("Expected Bool, got: {:?}", other),
+        Err(other) => panic!("Expected InvalidInput, got: {:?}", other),
+        Ok(_) => unreachable!(),
     }
+
+    session.execute(Command::TxnRollback).unwrap();
 }
 
-/// Demonstrates that BranchDelete inside a transaction is also permanent.
+/// Verifies that BranchDelete is now blocked inside a transaction.
 #[test]
 fn issue_939_branch_delete_bypasses_transaction() {
     let db = Database::ephemeral().unwrap();
@@ -107,30 +77,28 @@ fn issue_939_branch_delete_bypasses_transaction() {
         })
         .unwrap();
 
-    // Delete the branch inside the transaction — bypasses txn
-    session
-        .execute(Command::BranchDelete {
-            branch: BranchId::from("to-delete-939"),
-        })
-        .unwrap();
+    // Delete the branch inside the transaction — should now be BLOCKED
+    let del_result = session.execute(Command::BranchDelete {
+        branch: BranchId::from("to-delete-939"),
+    });
 
-    // Rollback the transaction
+    // BUG FIXED: Branch delete is now blocked inside transactions
+    assert!(
+        del_result.is_err(),
+        "BranchDelete should be blocked inside a transaction"
+    );
+
     session.execute(Command::TxnRollback).unwrap();
 
-    // BUG: Branch is STILL deleted despite rollback
+    // Branch should still exist since delete was blocked
     let exists_after = session
         .execute(Command::BranchExists {
             branch: BranchId::from("to-delete-939"),
         })
         .unwrap();
 
-    match exists_after {
-        Output::Bool(false) => {
-            // BUG CONFIRMED: Delete was not rolled back
-        }
-        Output::Bool(true) => {
-            panic!("Branch delete was correctly rolled back - bug may be fixed");
-        }
-        other => panic!("Expected Bool, got: {:?}", other),
-    }
+    assert!(
+        matches!(exists_after, strata_executor::Output::Bool(true)),
+        "Branch should still exist since delete was blocked by transaction"
+    );
 }

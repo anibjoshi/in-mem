@@ -4,7 +4,7 @@
 
 use crate::common::*;
 use strata_core::Value;
-use strata_executor::{BranchId, Command, DistanceMetric, Error};
+use strata_executor::{BranchId, Command, DistanceMetric, Error, Output};
 
 // ============================================================================
 // Vector Errors
@@ -22,13 +22,19 @@ fn vector_upsert_to_nonexistent_collection_behavior() {
         metadata: None,
     });
 
-    // Note: Current behavior allows upsert to create collection implicitly
-    // This is a design choice - documenting current behavior
-    // If this changes to require explicit collection creation, update this test
-    assert!(
-        result.is_ok(),
-        "Vector upsert should implicitly create collection"
-    );
+    // Vector auto-create was removed (#923) - upsert to nonexistent collection
+    // should now fail with CollectionNotFound
+    match result {
+        Err(Error::CollectionNotFound { collection }) => {
+            assert!(
+                collection.contains("nonexistent"),
+                "Error should reference 'nonexistent', got: {}",
+                collection
+            );
+        }
+        Err(_) => {} // Other errors also acceptable
+        Ok(_) => panic!("Expected error for upsert to nonexistent collection"),
+    }
 }
 
 #[test]
@@ -253,7 +259,7 @@ fn json_get_nonexistent_returns_none() {
         .unwrap();
 
     match result {
-        strata_executor::Output::Maybe(None) => {}
+        Output::MaybeVersioned(None) | Output::Maybe(None) => {}
         _ => panic!("Expected None for nonexistent document"),
     }
 }
@@ -330,7 +336,7 @@ fn state_read_nonexistent_returns_none() {
         .unwrap();
 
     match result {
-        strata_executor::Output::Maybe(None) => {}
+        Output::MaybeVersioned(None) | Output::Maybe(None) => {}
         _ => panic!("Expected None for nonexistent cell"),
     }
 }

@@ -5,7 +5,7 @@
 
 use super::DurabilityMode;
 use crate::codec::StorageCodec;
-use crate::format::{WalRecord, WalSegment, SEGMENT_HEADER_SIZE};
+use crate::format::{WalRecord, WalSegment, SEGMENT_HEADER_SIZE_V2};
 use crate::wal::config::WalConfig;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -281,7 +281,7 @@ impl WalWriter {
         self.segment
             .as_ref()
             .map(|s: &WalSegment| s.size())
-            .unwrap_or(SEGMENT_HEADER_SIZE as u64)
+            .unwrap_or(SEGMENT_HEADER_SIZE_V2 as u64)
     }
 
     /// Get the WAL directory path.
@@ -510,6 +510,6 @@ mod tests {
         }
 
         // Segment should have data
-        assert!(writer.current_segment_size() > SEGMENT_HEADER_SIZE as u64);
+        assert!(writer.current_segment_size() > SEGMENT_HEADER_SIZE_V2 as u64);
     }
 }

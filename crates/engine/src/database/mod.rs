@@ -280,7 +280,16 @@ impl Database {
         // Use RecoveryCoordinator for proper transaction-aware recovery
         // This reads all WalRecords from the segmented WAL directory
         let recovery = RecoveryCoordinator::new(wal_dir.clone());
-        let result = recovery.recover()?;
+        let result = match recovery.recover() {
+            Ok(result) => result,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Recovery failed — starting with empty state. Data from WAL may be lost."
+                );
+                strata_concurrency::RecoveryResult::empty()
+            }
+        };
 
         info!(
             txns_replayed = result.stats.txns_replayed,
@@ -481,6 +490,22 @@ impl Database {
     // ========================================================================
     // Branch Lifecycle Cleanup
     // ========================================================================
+
+    /// Garbage-collect old versions before the given version number.
+    ///
+    /// Removes old versions from version chains across all entries in the branch.
+    /// Returns the number of pruned versions.
+    pub fn gc_versions_before(&self, branch_id: BranchId, min_version: u64) -> usize {
+        self.storage.gc_branch(branch_id, min_version)
+    }
+
+    /// Get the current global version from the coordinator.
+    ///
+    /// This is the highest version allocated so far and serves as
+    /// a safe GC boundary when no active snapshots need older versions.
+    pub fn current_version(&self) -> u64 {
+        self.coordinator.current_version()
+    }
 
     /// Remove the per-branch commit lock after a branch is deleted.
     ///

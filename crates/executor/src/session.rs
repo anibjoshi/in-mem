@@ -25,7 +25,9 @@
 use std::sync::Arc;
 
 use strata_core::types::{Key, Namespace, TypeTag};
-use strata_engine::{Database, Transaction, TransactionContext, TransactionOps};
+use strata_engine::{
+    extensions::StateCellExt, Database, Transaction, TransactionContext, TransactionOps,
+};
 
 use crate::bridge::{
     extract_version, json_to_value, parse_path, to_core_branch_id, to_versioned_value,
@@ -143,6 +145,9 @@ impl Session {
             // prefix scan, which is non-trivial. It reads from the committed
             // store even during an active transaction.
             | Command::JsonList { .. }
+            // StateList enumerates keys via storage-layer scan. Like JsonList,
+            // it reads from the committed store even during an active transaction.
+            | Command::StateList { .. }
             // EventReadByType filters events by type tag at the storage layer.
             // The transaction write-set does not maintain per-type indexes, so
             // this always reads from the committed store even during an active
@@ -277,7 +282,12 @@ impl Session {
                 let result = ctx.get(&full_key).map_err(Error::from)?;
                 Ok(Output::Maybe(result))
             }
-            Command::KvList { prefix, .. } => {
+            Command::KvList {
+                prefix,
+                cursor,
+                limit,
+                ..
+            } => {
                 let prefix_key = match prefix {
                     Some(ref p) => Key::new_kv(ns.clone(), p),
                     None => Key::new(ns.clone(), TypeTag::KV, vec![]),
@@ -287,7 +297,17 @@ impl Session {
                     .into_iter()
                     .filter_map(|(k, _)| k.user_key_string())
                     .collect();
-                Ok(Output::Keys(keys))
+                if let Some(lim) = limit {
+                    let start_idx = if let Some(ref cur) = cursor {
+                        keys.iter().position(|k| k > cur).unwrap_or(keys.len())
+                    } else {
+                        0
+                    };
+                    let end_idx = std::cmp::min(start_idx + lim as usize, keys.len());
+                    Ok(Output::Keys(keys[start_idx..end_idx].to_vec()))
+                } else {
+                    Ok(Output::Keys(keys))
+                }
             }
 
             // === State reads — via ctx for snapshot fallback ===
@@ -361,6 +381,14 @@ impl Session {
                 Ok(Output::Bool(existed))
             }
 
+            // === State delete — via ctx ===
+            Command::StateDelete { cell, .. } => {
+                let full_key = Key::new_state(ns, &cell);
+                let existed = ctx.exists(&full_key).map_err(Error::from)?;
+                ctx.delete(full_key).map_err(Error::from)?;
+                Ok(Output::Bool(existed))
+            }
+
             // === Event operations — use Transaction for hash chaining ===
             Command::EventAppend {
                 event_type,
@@ -408,6 +436,10 @@ impl Session {
                 };
                 let version = txn.state_cas(&cell, expected, value).map_err(Error::from)?;
                 Ok(Output::MaybeVersion(Some(extract_version(&version))))
+            }
+            Command::StateSet { cell, value, .. } => {
+                let version = ctx.state_set(&cell, value).map_err(Error::from)?;
+                Ok(Output::Version(extract_version(&version)))
             }
 
             // === JSON writes — use Transaction ===

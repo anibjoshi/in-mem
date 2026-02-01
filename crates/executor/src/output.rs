@@ -33,12 +33,6 @@ pub enum Output {
     /// No return value (delete, flush, compact)
     Unit,
 
-    /// Single value without version info
-    Value(Value),
-
-    /// Value with version metadata
-    Versioned(VersionedValue),
-
     /// Optional value (for get operations that may not find a key)
     Maybe(Option<Value>),
 
@@ -54,19 +48,10 @@ pub enum Output {
     /// Boolean result
     Bool(bool),
 
-    /// Signed integer result (for incr operations)
-    Int(i64),
-
     /// Unsigned integer result (for count operations)
     Uint(u64),
 
-    /// Float result (for json_increment)
-    Float(f64),
-
     // ==================== Collections ====================
-    /// Multiple optional versioned values (mget operations)
-    Values(Vec<Option<VersionedValue>>),
-
     /// List of versioned values (history operations)
     VersionedValues(Vec<VersionedValue>),
 
@@ -74,22 +59,10 @@ pub enum Output {
     /// None if the key/cell/document doesn't exist.
     VersionHistory(Option<Vec<VersionedValue>>),
 
-    /// List of versions
-    Versions(Vec<u64>),
-
     /// List of keys
     Keys(Vec<String>),
 
-    /// List of strings (tags, stream names, etc.)
-    Strings(Vec<String>),
-
     // ==================== Scan Results ====================
-    /// KV scan result with cursor
-    KvScanResult {
-        entries: Vec<(String, VersionedValue)>,
-        cursor: Option<String>,
-    },
-
     /// JSON list result with cursor
     JsonListResult {
         keys: Vec<String>,
@@ -97,17 +70,8 @@ pub enum Output {
     },
 
     // ==================== Search Results ====================
-    /// JSON search hits
-    JsonSearchHits(Vec<JsonSearchHit>),
-
     /// Vector search matches
     VectorMatches(Vec<VectorMatch>),
-
-    /// Vector search with budget exhaustion flag
-    VectorMatchesWithExhausted {
-        matches: Vec<VectorMatch>,
-        exhausted: bool,
-    },
 
     // ==================== Vector-specific ====================
     /// Single vector data
@@ -117,12 +81,6 @@ pub enum Output {
     VectorCollectionList(Vec<CollectionInfo>),
 
     // ==================== Branch-specific ====================
-    /// Single branch info (unversioned)
-    BranchInfo(BranchInfo),
-
-    /// Versioned branch info
-    BranchInfoVersioned(VersionedBranchInfo),
-
     /// Optional versioned branch info (for branch_get which may not find a branch)
     MaybeBranchInfo(Option<VersionedBranchInfo>),
 
@@ -132,13 +90,7 @@ pub enum Output {
     /// Branch creation result (info + version)
     BranchWithVersion { info: BranchInfo, version: u64 },
 
-    /// Optional branch ID (for parent lookup)
-    MaybeBranchId(Option<BranchId>),
-
     // ==================== Transaction-specific ====================
-    /// Transaction ID
-    TxnId(String),
-
     /// Transaction info
     TxnInfo(Option<TransactionInfo>),
 
@@ -150,13 +102,6 @@ pub enum Output {
 
     /// Transaction aborted
     TxnAborted,
-
-    // ==================== Retention-specific ====================
-    /// Retention version info
-    RetentionVersion(Option<RetentionVersionInfo>),
-
-    /// Retention policy
-    RetentionPolicy(RetentionPolicyInfo),
 
     // ==================== Database-specific ====================
     /// Database info

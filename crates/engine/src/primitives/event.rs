@@ -66,6 +66,9 @@ pub struct StreamMeta {
     pub first_timestamp: u64,
     /// Timestamp of last event in stream (microseconds since epoch)
     pub last_timestamp: u64,
+    /// All sequence numbers for this type (for indexed lookups)
+    #[serde(default)]
+    pub sequences: Vec<u64>,
 }
 
 impl StreamMeta {
@@ -76,6 +79,7 @@ impl StreamMeta {
             last_sequence: sequence,
             first_timestamp: timestamp,
             last_timestamp: timestamp,
+            sequences: vec![sequence],
         }
     }
 
@@ -83,6 +87,7 @@ impl StreamMeta {
         self.count += 1;
         self.last_sequence = sequence;
         self.last_timestamp = timestamp;
+        self.sequences.push(sequence);
     }
 }
 
@@ -313,7 +318,7 @@ impl EventLog {
         // With N concurrent threads, worst case needs N retries per append
         // 200 retries with fast backoff handles 100+ concurrent threads reliably
         let retry_config = RetryConfig::default()
-            .with_max_retries(200)
+            .with_max_retries(50)
             .with_base_delay_ms(1)
             .with_max_delay_ms(50);
 
@@ -461,6 +466,28 @@ impl EventLog {
                 None => return Ok(Vec::new()),
             };
 
+            // Use per-type sequence index if available
+            if let Some(stream_meta) = meta.streams.get(event_type) {
+                if !stream_meta.sequences.is_empty() {
+                    let mut results = Vec::with_capacity(stream_meta.sequences.len());
+                    for &seq in &stream_meta.sequences {
+                        let event_key = Key::new_event(ns.clone(), seq);
+                        if let Some(v) = txn.get(&event_key)? {
+                            let event: Event = from_stored_value(&v).map_err(|e| {
+                                strata_core::StrataError::serialization(e.to_string())
+                            })?;
+                            results.push(Versioned::with_timestamp(
+                                event.clone(),
+                                Version::Sequence(seq),
+                                Timestamp::from_micros(event.timestamp),
+                            ));
+                        }
+                    }
+                    return Ok(results);
+                }
+            }
+
+            // Fallback: O(N) scan for old metadata without sequences index
             let mut filtered = Vec::new();
             for seq in 0..meta.next_sequence {
                 let event_key = Key::new_event(ns.clone(), seq);

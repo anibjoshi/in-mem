@@ -148,6 +148,21 @@ pub struct RecoveryResult {
     pub stats: RecoveryStats,
 }
 
+impl RecoveryResult {
+    /// Create an empty recovery result with fresh storage and zero stats.
+    ///
+    /// Used as a fallback when recovery fails (e.g., corrupted snapshot or
+    /// unreadable WAL), allowing the database to start with a clean state
+    /// rather than refusing to open.
+    pub fn empty() -> Self {
+        RecoveryResult {
+            storage: ShardedStore::new(),
+            txn_manager: TransactionManager::new(0),
+            stats: RecoveryStats::default(),
+        }
+    }
+}
+
 /// Statistics from recovery
 ///
 /// Provides detailed information about what happened during recovery,

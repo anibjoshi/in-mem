@@ -95,6 +95,8 @@ fn test_command_kv_list() {
     test_command_round_trip(Command::KvList {
         branch: Some(BranchId::from("default")),
         prefix: Some("user:".to_string()),
+        cursor: None,
+        limit: None,
     });
 }
 
@@ -151,6 +153,8 @@ fn test_command_event_read_by_type() {
     test_command_round_trip(Command::EventReadByType {
         branch: Some(BranchId::from("default")),
         event_type: "events".to_string(),
+        limit: None,
+        after_sequence: None,
     });
 }
 
@@ -288,33 +292,13 @@ fn test_output_bool() {
 }
 
 #[test]
-fn test_output_int() {
-    test_output_round_trip(Output::Int(42));
-    test_output_round_trip(Output::Int(-100));
-}
-
-#[test]
 fn test_output_uint() {
     test_output_round_trip(Output::Uint(12345));
 }
 
 #[test]
-fn test_output_float() {
-    test_output_round_trip(Output::Float(3.14159));
-}
-
-#[test]
 fn test_output_version() {
     test_output_round_trip(Output::Version(42));
-}
-
-#[test]
-fn test_output_versioned() {
-    test_output_round_trip(Output::Versioned(VersionedValue {
-        value: Value::String("test".to_string()),
-        version: 1,
-        timestamp: 1000000,
-    }));
 }
 
 #[test]
@@ -337,19 +321,6 @@ fn test_output_keys() {
 }
 
 #[test]
-fn test_output_strings() {
-    test_output_round_trip(Output::Strings(vec![
-        "stream1".to_string(),
-        "stream2".to_string(),
-    ]));
-}
-
-#[test]
-fn test_output_versions() {
-    test_output_round_trip(Output::Versions(vec![1, 2, 3, 4, 5]));
-}
-
-#[test]
 fn test_output_versioned_values() {
     test_output_round_trip(Output::VersionedValues(vec![
         VersionedValue {
@@ -363,21 +334,6 @@ fn test_output_versioned_values() {
             timestamp: 2000,
         },
     ]));
-}
-
-#[test]
-fn test_output_kv_scan_result() {
-    test_output_round_trip(Output::KvScanResult {
-        entries: vec![(
-            "key1".to_string(),
-            VersionedValue {
-                value: Value::String("value1".to_string()),
-                version: 1,
-                timestamp: 1000,
-            },
-        )],
-        cursor: Some("next-cursor".to_string()),
-    });
 }
 
 #[test]

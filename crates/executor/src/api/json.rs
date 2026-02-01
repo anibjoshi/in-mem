@@ -94,6 +94,7 @@ impl Strata {
             key: key.to_string(),
             path: path.to_string(),
         })? {
+            Output::MaybeVersioned(v) => Ok(v.map(|vv| vv.value)),
             Output::Maybe(v) => Ok(v),
             _ => Err(Error::Internal {
                 reason: "Unexpected output for JsonGet".into(),

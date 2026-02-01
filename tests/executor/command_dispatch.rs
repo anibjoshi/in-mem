@@ -99,7 +99,8 @@ fn kv_get_returns_maybe_versioned() {
         .unwrap();
 
     match output {
-        Output::Maybe(Some(val)) => {
+        Output::MaybeVersioned(Some(vv)) => {
+            let val = vv.value;
             assert_eq!(val, Value::Int(42));
         }
         _ => panic!("Expected Maybe(Some) output"),
@@ -117,7 +118,10 @@ fn kv_get_missing_returns_none() {
         })
         .unwrap();
 
-    assert!(matches!(output, Output::Maybe(None)));
+    assert!(matches!(
+        output,
+        Output::MaybeVersioned(None) | Output::Maybe(None)
+    ));
 }
 
 #[test]
@@ -221,7 +225,8 @@ fn state_set_read_cycle() {
         .unwrap();
 
     match output {
-        Output::Maybe(Some(v)) => {
+        Output::MaybeVersioned(Some(vv)) => {
+            let v = vv.value;
             assert_eq!(v, Value::String("active".into()));
         }
         _ => panic!("Expected Maybe(Some) output"),
@@ -541,7 +546,8 @@ fn commands_with_none_branch_use_default() {
 
     // Should find the value
     match output {
-        Output::Maybe(Some(val)) => {
+        Output::MaybeVersioned(Some(vv)) => {
+            let val = vv.value;
             assert_eq!(val, Value::String("value".into()));
         }
         _ => panic!("Expected to find value in default branch"),
@@ -602,7 +608,8 @@ fn different_branches_are_isolated() {
         .unwrap();
 
     match output {
-        Output::Maybe(Some(val)) => {
+        Output::MaybeVersioned(Some(vv)) => {
+            let val = vv.value;
             assert_eq!(val, Value::String("branch_a_value".into()));
         }
         _ => panic!("Expected branch A value"),
@@ -617,7 +624,8 @@ fn different_branches_are_isolated() {
         .unwrap();
 
     match output {
-        Output::Maybe(Some(val)) => {
+        Output::MaybeVersioned(Some(vv)) => {
+            let val = vv.value;
             assert_eq!(val, Value::String("branch_b_value".into()));
         }
         _ => panic!("Expected branch B value"),

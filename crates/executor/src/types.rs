@@ -169,20 +169,6 @@ pub struct CollectionInfo {
 }
 
 // =============================================================================
-// Event Types
-// =============================================================================
-// JSON Types
-// =============================================================================
-
-/// JSON search hit
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct JsonSearchHit {
-    pub key: String,
-    pub score: f32,
-    pub highlights: Vec<String>,
-}
-
-// =============================================================================
 // Transaction Types
 // =============================================================================
 
@@ -207,32 +193,6 @@ pub enum TxnStatus {
     Active,
     Committed,
     RolledBack,
-}
-
-// =============================================================================
-// Retention Types
-// =============================================================================
-
-/// Retention policy
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RetentionPolicyInfo {
-    KeepAll,
-    KeepLast { count: u64 },
-    KeepFor { duration_secs: u64 },
-}
-
-impl Default for RetentionPolicyInfo {
-    fn default() -> Self {
-        RetentionPolicyInfo::KeepAll
-    }
-}
-
-/// Retention version information
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RetentionVersionInfo {
-    pub policy: RetentionPolicyInfo,
-    pub version: u64,
 }
 
 // =============================================================================

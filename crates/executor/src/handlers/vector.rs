@@ -77,18 +77,6 @@ pub fn vector_upsert(
     convert_result(validate_key(&key))?;
     convert_result(validate_not_internal_collection(&collection))?;
 
-    // Auto-create collection on first upsert (only ignore AlreadyExists)
-    let dim = vector.len();
-    let config = convert_result(strata_core::primitives::VectorConfig::new(
-        dim,
-        strata_engine::DistanceMetric::Cosine,
-    ))?;
-    match p.vector.create_collection(branch_id, &collection, config) {
-        Ok(_) => {}
-        Err(strata_engine::VectorError::CollectionAlreadyExists { .. }) => {}
-        Err(e) => return Err(StrataError::from(e).into()),
-    }
-
     let json_metadata = metadata
         .map(value_to_serde_json_public)
         .transpose()

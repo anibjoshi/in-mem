@@ -1,40 +1,25 @@
 //! Audit test for issue #945: VersionChain GC never invoked
-//! Verdict: ARCHITECTURAL CHOICE
+//! Verdict: FIXED
 //!
-//! The `VersionChain` type in `strata-storage` has a public `gc(min_version: u64)` method
-//! that removes all versions older than `min_version`. However, this method is never
-//! called in production code.
+//! Previously, the `VersionChain::gc()` method was never called in production
+//! code, and the `RetentionApply` command returned "not yet implemented".
 //!
-//! Evidence:
-//! - `VersionChain::gc()` is defined and tested in strata-storage
-//! - No production code path calls gc() on any VersionChain
-//! - The RetentionApply command returns "not yet implemented"
-//! - There is no background GC thread or compaction process
-//!
-//! This means version chains grow unboundedly for the lifetime of the database.
-//! Every write to a key appends a new version, and old versions are never reclaimed.
-//!
-//! Impact:
-//! - Memory usage grows linearly with the number of writes (not just unique keys)
-//! - A key written 1 million times will have 1 million versions in its chain
-//! - This is acceptable for short-lived ephemeral databases but problematic for
-//!   long-running persistent databases
-//!
-//! The fix requires implementing a GC trigger (e.g., RetentionApply command,
-//! background thread, or write-count threshold) and integrating it with the
-//! snapshot pinning mechanism (see issue #903).
+//! The fix implements `RetentionApply` to call `gc_versions_before()` on the
+//! database, which prunes version chains for all keys on the specified branch.
+//! The GC boundary is set to the current version, meaning all superseded
+//! versions are pruned.
 
 use strata_core::value::Value;
 use strata_engine::database::Database;
 use strata_executor::BranchId;
 use strata_executor::{Command, Executor, Output};
 
-/// Demonstrates that version chains grow without bound because GC is never invoked.
+/// Verifies that RetentionApply now works and can trigger GC.
 ///
-/// We write to the same key many times and verify that:
+/// We write to the same key many times, run RetentionApply, and verify:
 /// 1. Each write creates a new version (version numbers increase)
-/// 2. The version history is available (old versions are retained)
-/// 3. There is no mechanism to trigger GC through the public API
+/// 2. RetentionApply succeeds (no longer returns "not yet implemented")
+/// 3. The latest value is still accessible after GC
 #[test]
 fn issue_945_version_chain_gc_never_invoked() {
     let db = Database::ephemeral().unwrap();
@@ -67,38 +52,40 @@ fn issue_945_version_chain_gc_never_invoked() {
         );
     }
 
-    // RetentionApply (which would trigger GC) is not implemented
+    // BUG FIXED: RetentionApply now succeeds
     let retention_result = executor.execute(Command::RetentionApply {
         branch: Some(branch.clone()),
     });
 
     assert!(
-        retention_result.is_err(),
-        "RetentionApply should return 'not yet implemented' error, \
-         confirming that GC cannot be triggered through the public API"
+        retention_result.is_ok(),
+        "RetentionApply should now succeed (was previously unimplemented). Got: {:?}",
+        retention_result
     );
 
-    // The version history should contain all versions (nothing was GC'd)
-    let history_result = executor
-        .execute(Command::KvGetv {
+    // The latest value should still be accessible after GC
+    let get_result = executor
+        .execute(Command::KvGet {
             branch: Some(branch.clone()),
             key: "frequently_updated".into(),
         })
         .unwrap();
 
-    match history_result {
-        Output::VersionHistory(Some(history)) => {
-            // All versions should be present since GC never runs
-            assert!(
-                history.len() >= 2,
-                "Version history should contain multiple versions (GC never runs). \
-                 Got {} versions.",
-                history.len()
+    match get_result {
+        Output::MaybeVersioned(Some(vv)) => {
+            assert_eq!(
+                vv.value,
+                Value::Int(num_writes - 1),
+                "Latest value should still be accessible after GC"
             );
         }
-        Output::VersionHistory(None) => {
-            panic!("Key should exist and have version history");
+        Output::Maybe(Some(val)) => {
+            assert_eq!(
+                val,
+                Value::Int(num_writes - 1),
+                "Latest value should still be accessible after GC"
+            );
         }
-        other => panic!("Expected VersionHistory, got {:?}", other),
+        other => panic!("Expected value after GC, got {:?}", other),
     }
 }

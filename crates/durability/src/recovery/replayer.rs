@@ -95,10 +95,12 @@ impl WalReplayer {
         stats.segments_read = segments.len();
 
         for segment_number in segments {
-            let (records, _valid_end, _stop_reason) = self
+            let (records, _valid_end, _stop_reason, skipped_corrupted) = self
                 .reader
                 .read_segment(&self.wal_dir, segment_number)
                 .map_err(WalReplayError::from)?;
+
+            stats.records_skipped_corrupted += skipped_corrupted;
 
             for record in records {
                 stats.records_read += 1;
@@ -114,6 +116,13 @@ impl WalReplayer {
                 apply_fn(&record)?;
                 stats.records_applied += 1;
             }
+        }
+
+        if stats.records_skipped_corrupted > 0 {
+            tracing::warn!(
+                skipped = stats.records_skipped_corrupted,
+                "Skipped corrupted WAL records during recovery"
+            );
         }
 
         Ok(stats)
@@ -161,6 +170,8 @@ pub struct ReplayStats {
     pub records_skipped: usize,
     /// Records successfully applied
     pub records_applied: usize,
+    /// Records skipped due to corruption (checksum mismatch)
+    pub records_skipped_corrupted: usize,
 }
 
 impl ReplayStats {
@@ -454,6 +465,7 @@ mod tests {
             records_read: 100,
             records_skipped: 30,
             records_applied: 70,
+            records_skipped_corrupted: 0,
         };
 
         assert!(stats.has_records());

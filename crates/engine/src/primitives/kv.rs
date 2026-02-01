@@ -89,6 +89,21 @@ impl KVStore {
         })
     }
 
+    /// Get a value with its version metadata.
+    ///
+    /// Reads directly from the committed store (non-transactional) to
+    /// retrieve the latest value together with its version and timestamp.
+    /// Returns `None` if the key doesn't exist.
+    pub fn get_versioned(
+        &self,
+        branch_id: &BranchId,
+        key: &str,
+    ) -> StrataResult<Option<strata_core::VersionedValue>> {
+        let storage_key = self.key_for(branch_id, key);
+        use strata_core::Storage;
+        self.db.storage().get(&storage_key)
+    }
+
     /// Get full version history for a key.
     ///
     /// Returns `None` if the key doesn't exist. Index with `[0]` = latest,

@@ -69,7 +69,10 @@ fn issue_927_state_set_bypasses_transaction_but_kv_put_does_not() {
         })
         .unwrap();
     assert!(
-        matches!(kv_result, Output::Maybe(None)),
+        matches!(
+            kv_result,
+            Output::MaybeVersioned(None) | Output::Maybe(None)
+        ),
         "KvPut should be rolled back, got: {:?}",
         kv_result
     );
@@ -85,13 +88,13 @@ fn issue_927_state_set_bypasses_transaction_but_kv_put_does_not() {
     // ARCHITECTURAL CHOICE: StateSet goes through executor directly,
     // so it persists regardless of transaction rollback
     match state_result {
-        Output::Maybe(Some(_)) => {
+        Output::MaybeVersioned(Some(_)) | Output::Maybe(Some(_)) => {
             // StateSet bypassed transaction — write persists after rollback
         }
-        Output::Maybe(None) => {
+        Output::MaybeVersioned(None) | Output::Maybe(None) => {
             // If this happens, StateSet was somehow rolled back (unlikely)
         }
-        other => panic!("Expected Maybe, got: {:?}", other),
+        other => panic!("Expected MaybeVersioned or Maybe, got: {:?}", other),
     }
 }
 
