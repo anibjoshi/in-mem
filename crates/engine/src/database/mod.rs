@@ -479,6 +479,20 @@ impl Database {
     }
 
     // ========================================================================
+    // Branch Lifecycle Cleanup
+    // ========================================================================
+
+    /// Remove the per-branch commit lock after a branch is deleted.
+    ///
+    /// This prevents unbounded growth of the commit_locks map in the
+    /// TransactionManager when branches are repeatedly created and deleted.
+    ///
+    /// Should be called after `BranchIndex::delete_branch()` succeeds.
+    pub fn remove_branch_lock(&self, branch_id: &BranchId) {
+        self.coordinator.remove_branch_lock(branch_id);
+    }
+
+    // ========================================================================
     // Flush
     // ========================================================================
 

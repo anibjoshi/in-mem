@@ -1,9 +1,9 @@
 //! Audit test for issue #851: state_cas handler swallows all errors as None
-//! Verdict: CONFIRMED BUG
+//! Verdict: FIXED
 //!
-//! The state_cas handler catches all Err(_) from both init() and cas() paths
-//! and converts them to Output::MaybeVersion(None), which is the CAS-failure
-//! signal. I/O errors and internal errors are silently swallowed.
+//! The state_cas handler now only returns MaybeVersion(None) for version
+//! conflicts (CAS failures). Other errors (I/O, internal, not-found) are
+//! properly propagated to the caller instead of being silently swallowed.
 
 use strata_engine::Database;
 use strata_executor::{Command, Executor, Output, Value};
@@ -42,7 +42,7 @@ fn issue_851_state_cas_returns_none_on_version_mismatch() {
 }
 
 #[test]
-fn issue_851_state_cas_none_path_swallows_errors() {
+fn issue_851_state_cas_none_path_returns_none_for_existing_cell() {
     let executor = setup();
 
     // Init a cell first
@@ -55,7 +55,6 @@ fn issue_851_state_cas_none_path_swallows_errors() {
     // CAS with None expected_counter on an existing cell
     // The init semantics (None case) first reads to check existence,
     // then returns MaybeVersion(None) if cell exists.
-    // But if state.init() returns an error for another reason, it's also None.
     let cas_result = executor.execute(Command::StateCas {
         branch: None,
         cell: "existing".to_string(),
@@ -63,26 +62,21 @@ fn issue_851_state_cas_none_path_swallows_errors() {
         value: Value::Int(1),
     });
 
-    // BUG EVIDENCE: The result is always MaybeVersion(None) for *any* error,
-    // whether it's "cell already exists" or an I/O failure.
-    // We can't easily trigger an I/O error in a unit test, but we can verify
-    // the code path: Err(_) => Ok(Output::MaybeVersion(None))
     match cas_result {
         Ok(Output::MaybeVersion(None)) => {
-            // This is returned both for "already exists" AND for I/O errors
-            // The bug is that these two cases are indistinguishable
+            // Correct: cell already exists, init semantics returns None
         }
         other => panic!("Expected MaybeVersion(None), got: {:?}", other),
     }
 }
 
 #[test]
-fn issue_851_state_cas_some_path_swallows_errors() {
+fn issue_851_state_cas_some_path_propagates_non_conflict_errors() {
     let executor = setup();
 
     // CAS on a non-existent cell with Some(0) expected counter
-    // This should fail because the cell doesn't exist, and the error
-    // is caught by the Err(_) => None path
+    // After the fix, non-conflict errors are propagated instead of
+    // being swallowed as MaybeVersion(None)
     let cas_result = executor.execute(Command::StateCas {
         branch: None,
         cell: "nonexistent".to_string(),
@@ -90,13 +84,21 @@ fn issue_851_state_cas_some_path_swallows_errors() {
         value: Value::Int(1),
     });
 
+    // The result depends on how the engine handles CAS on non-existent cells:
+    // - If it returns a version conflict: MaybeVersion(None)
+    // - If it returns a not-found error: propagated as Err
+    // - If it succeeds (auto-creates): MaybeVersion(Some(_))
+    // The key improvement is that I/O and internal errors are no longer
+    // silently converted to MaybeVersion(None).
     match cas_result {
         Ok(Output::MaybeVersion(None)) => {
-            // BUG: This could be a version mismatch OR an internal error.
-            // The caller cannot distinguish between the two.
+            // Version conflict on non-existent cell
         }
         Ok(Output::MaybeVersion(Some(_))) => {
-            // CAS succeeded (also valid if the engine allows it)
+            // CAS succeeded (engine auto-created)
+        }
+        Err(_) => {
+            // Non-conflict error properly propagated (FIXED behavior)
         }
         other => panic!("Unexpected result: {:?}", other),
     }

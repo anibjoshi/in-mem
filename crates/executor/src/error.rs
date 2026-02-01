@@ -88,8 +88,13 @@ pub enum Error {
 
     // ==================== Concurrency Errors ====================
     /// Version conflict (CAS failure)
-    #[error("version conflict: expected {expected}, got {actual}")]
-    VersionConflict { expected: u64, actual: u64 },
+    #[error("version conflict: expected {expected_type}:{expected}, got {actual_type}:{actual}")]
+    VersionConflict {
+        expected: u64,
+        actual: u64,
+        expected_type: String,
+        actual_type: String,
+    },
 
     /// State transition failed (expected value mismatch)
     #[error("transition failed: expected {expected}, got {actual}")]

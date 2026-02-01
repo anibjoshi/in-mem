@@ -8,8 +8,8 @@ use strata_core::{StrataError, Value};
 
 use crate::bridge::{
     extract_version, from_engine_metric, is_internal_collection, serde_json_to_value_public,
-    to_core_branch_id, to_engine_filter, to_engine_metric, validate_not_internal_collection,
-    value_to_serde_json_public, Primitives,
+    to_core_branch_id, to_engine_filter, to_engine_metric, validate_key,
+    validate_not_internal_collection, value_to_serde_json_public, Primitives,
 };
 use crate::convert::convert_result;
 use crate::types::{
@@ -74,16 +74,20 @@ pub fn vector_upsert(
     metadata: Option<Value>,
 ) -> Result<Output> {
     let branch_id = to_core_branch_id(&branch)?;
+    convert_result(validate_key(&key))?;
     convert_result(validate_not_internal_collection(&collection))?;
 
-    // Auto-create collection on first upsert (ignore AlreadyExists error)
+    // Auto-create collection on first upsert (only ignore AlreadyExists)
     let dim = vector.len();
     let config = convert_result(strata_core::primitives::VectorConfig::new(
         dim,
         strata_engine::DistanceMetric::Cosine,
     ))?;
-    // Try to create - if already exists, that's fine
-    let _ = p.vector.create_collection(branch_id, &collection, config);
+    match p.vector.create_collection(branch_id, &collection, config) {
+        Ok(_) => {}
+        Err(strata_engine::VectorError::CollectionAlreadyExists { .. }) => {}
+        Err(e) => return Err(StrataError::from(e).into()),
+    }
 
     let json_metadata = metadata
         .map(value_to_serde_json_public)
@@ -107,6 +111,7 @@ pub fn vector_get(
     key: String,
 ) -> Result<Output> {
     let branch_id = to_core_branch_id(&branch)?;
+    convert_result(validate_key(&key))?;
     convert_result(validate_not_internal_collection(&collection))?;
 
     let result = convert_vector_result(p.vector.get(branch_id, &collection, &key))?;
@@ -129,6 +134,7 @@ pub fn vector_delete(
     key: String,
 ) -> Result<Output> {
     let branch_id = to_core_branch_id(&branch)?;
+    convert_result(validate_key(&key))?;
     convert_result(validate_not_internal_collection(&collection))?;
     let existed = convert_vector_result(p.vector.delete(branch_id, &collection, &key))?;
     Ok(Output::Bool(existed))

@@ -43,8 +43,7 @@ impl Strata {
         match self.executor.execute(Command::BranchGet {
             branch: BranchId::from(name),
         })? {
-            Output::BranchInfoVersioned(info) => Ok(Some(info)),
-            Output::Maybe(None) => Ok(None),
+            Output::MaybeBranchInfo(info) => Ok(info),
             _ => Err(Error::Internal {
                 reason: "Unexpected output for BranchGet".into(),
             }),

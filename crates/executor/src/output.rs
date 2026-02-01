@@ -22,9 +22,9 @@ use crate::types::*;
 /// let result = executor.execute(Command::KvGet { branch, key })?;
 ///
 /// match result {
-///     Output::MaybeVersioned(Some(v)) => println!("Found: {:?}", v.value),
-///     Output::MaybeVersioned(None) => println!("Not found"),
-///     _ => unreachable!("KvGet always returns MaybeVersioned"),
+///     Output::Maybe(Some(v)) => println!("Found: {:?}", v),
+///     Output::Maybe(None) => println!("Not found"),
+///     _ => unreachable!("KvGet always returns Maybe"),
 /// }
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -122,6 +122,9 @@ pub enum Output {
 
     /// Versioned branch info
     BranchInfoVersioned(VersionedBranchInfo),
+
+    /// Optional versioned branch info (for branch_get which may not find a branch)
+    MaybeBranchInfo(Option<VersionedBranchInfo>),
 
     /// List of versioned branch infos
     BranchInfoList(Vec<VersionedBranchInfo>),

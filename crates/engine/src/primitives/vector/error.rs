@@ -47,6 +47,13 @@ pub enum VectorError {
     #[error("Empty embedding")]
     EmptyEmbedding,
 
+    /// Embedding contains invalid float values (NaN or Infinity)
+    #[error("Invalid embedding: {reason}")]
+    InvalidEmbedding {
+        /// Reason the embedding is invalid
+        reason: String,
+    },
+
     /// Collection name is invalid
     #[error("Invalid collection name: {name} ({reason})")]
     InvalidCollectionName {
@@ -124,6 +131,7 @@ impl VectorError {
             VectorError::DimensionMismatch { .. }
                 | VectorError::InvalidDimension { .. }
                 | VectorError::EmptyEmbedding
+                | VectorError::InvalidEmbedding { .. }
                 | VectorError::InvalidCollectionName { .. }
                 | VectorError::InvalidKey { .. }
                 | VectorError::ConfigMismatch { .. }
@@ -162,6 +170,9 @@ impl From<VectorError> for StrataError {
             },
             VectorError::EmptyEmbedding => StrataError::InvalidInput {
                 message: "Empty embedding".to_string(),
+            },
+            VectorError::InvalidEmbedding { reason } => StrataError::InvalidInput {
+                message: format!("Invalid embedding: {}", reason),
             },
             VectorError::InvalidCollectionName { name, reason } => StrataError::InvalidInput {
                 message: format!("Invalid collection name '{}': {}", name, reason),

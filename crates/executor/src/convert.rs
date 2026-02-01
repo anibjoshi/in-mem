@@ -4,7 +4,7 @@
 //! the executor's [`Error`] type.
 
 use crate::Error;
-use strata_core::StrataError;
+use strata_core::{EntityRef, StrataError};
 
 /// Convert a StrataError to an executor Error.
 ///
@@ -13,26 +13,19 @@ use strata_core::StrataError;
 impl From<StrataError> for Error {
     fn from(err: StrataError) -> Self {
         match err {
-            // Not Found errors
+            // Not Found errors — use typed EntityRef matching
             StrataError::NotFound { entity_ref } => {
-                // Parse entity ref to determine the right error type
                 let entity_str = entity_ref.to_string();
-                if entity_str.starts_with("kv:") || entity_str.starts_with("json:") {
-                    Error::KeyNotFound { key: entity_str }
-                } else if entity_str.starts_with("branch:") {
-                    Error::BranchNotFound { branch: entity_str }
-                } else if entity_str.starts_with("collection:") || entity_str.starts_with("vector:")
-                {
-                    Error::CollectionNotFound {
-                        collection: entity_str,
+                match &entity_ref {
+                    EntityRef::Kv { .. } | EntityRef::Json { .. } => {
+                        Error::KeyNotFound { key: entity_str }
                     }
-                } else if entity_str.starts_with("stream:") || entity_str.starts_with("event:") {
-                    Error::StreamNotFound { stream: entity_str }
-                } else if entity_str.starts_with("state:") || entity_str.starts_with("cell:") {
-                    Error::CellNotFound { cell: entity_str }
-                } else {
-                    // Generic not found
-                    Error::KeyNotFound { key: entity_str }
+                    EntityRef::Branch { .. } => Error::BranchNotFound { branch: entity_str },
+                    EntityRef::Vector { .. } => Error::CollectionNotFound {
+                        collection: entity_str,
+                    },
+                    EntityRef::Event { .. } => Error::StreamNotFound { stream: entity_str },
+                    EntityRef::State { .. } => Error::CellNotFound { cell: entity_str },
                 }
             }
 
@@ -54,6 +47,8 @@ impl From<StrataError> for Error {
                 Error::VersionConflict {
                     expected: expected_num,
                     actual: actual_num,
+                    expected_type: version_type_name(&expected).to_string(),
+                    actual_type: version_type_name(&actual).to_string(),
                 }
             }
 
@@ -114,7 +109,14 @@ impl From<StrataError> for Error {
             },
 
             // System errors
-            StrataError::Storage { message, .. } => Error::Io { reason: message },
+            StrataError::Storage { message, source } => {
+                let reason = if let Some(ref src) = source {
+                    format!("{}: {}", message, src)
+                } else {
+                    message
+                };
+                Error::Io { reason }
+            }
 
             StrataError::Serialization { message } => Error::Serialization { reason: message },
 
@@ -138,6 +140,15 @@ fn version_to_u64(version: &strata_core::Version) -> u64 {
         strata_core::Version::Txn(n) => *n,
         strata_core::Version::Sequence(n) => *n,
         strata_core::Version::Counter(n) => *n,
+    }
+}
+
+/// Get a human-readable name for the Version variant type.
+fn version_type_name(version: &strata_core::Version) -> &'static str {
+    match version {
+        strata_core::Version::Txn(_) => "Txn",
+        strata_core::Version::Sequence(_) => "Sequence",
+        strata_core::Version::Counter(_) => "Counter",
     }
 }
 
@@ -168,9 +179,16 @@ mod tests {
         );
         let converted: Error = err.into();
         match converted {
-            Error::VersionConflict { expected, actual } => {
+            Error::VersionConflict {
+                expected,
+                actual,
+                expected_type,
+                actual_type,
+            } => {
                 assert_eq!(expected, 5);
                 assert_eq!(actual, 6);
+                assert_eq!(expected_type, "Txn");
+                assert_eq!(actual_type, "Txn");
             }
             _ => panic!("Expected VersionConflict"),
         }

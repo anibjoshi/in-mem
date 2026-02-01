@@ -136,11 +136,24 @@ impl Version {
     /// Increment the version, returning a new version
     ///
     /// Preserves the variant type.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the version value is `u64::MAX` (overflow).
     pub const fn increment(&self) -> Self {
         match self {
-            Version::Txn(v) => Version::Txn(*v + 1),
-            Version::Sequence(v) => Version::Sequence(*v + 1),
-            Version::Counter(v) => Version::Counter(*v + 1),
+            Version::Txn(v) => match v.checked_add(1) {
+                Some(n) => Version::Txn(n),
+                None => panic!("version overflow: Txn version at u64::MAX"),
+            },
+            Version::Sequence(v) => match v.checked_add(1) {
+                Some(n) => Version::Sequence(n),
+                None => panic!("version overflow: Sequence version at u64::MAX"),
+            },
+            Version::Counter(v) => match v.checked_add(1) {
+                Some(n) => Version::Counter(n),
+                None => panic!("version overflow: Counter version at u64::MAX"),
+            },
         }
     }
 

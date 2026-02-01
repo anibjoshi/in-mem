@@ -12,7 +12,25 @@ use crate::bridge::{
 };
 use crate::convert::convert_result;
 use crate::types::BranchId;
-use crate::{Output, Result};
+use crate::{Error, Output, Result};
+
+/// Validate that a branch exists before performing a write operation (#951).
+///
+/// The default branch is always allowed (it is implicit and not stored in BranchIndex).
+/// For all other branches, checks `BranchIndex::exists()` and returns
+/// `Error::BranchNotFound` if the branch does not exist.
+fn require_branch_exists(p: &Arc<Primitives>, branch: &BranchId) -> Result<()> {
+    if branch.is_default() {
+        return Ok(());
+    }
+    let exists = convert_result(p.branch.exists(branch.as_str()))?;
+    if !exists {
+        return Err(Error::BranchNotFound {
+            branch: branch.as_str().to_string(),
+        });
+    }
+    Ok(())
+}
 
 /// Handle KvGetv command — get full version history for a key.
 pub fn kv_getv(p: &Arc<Primitives>, branch: BranchId, key: String) -> Result<Output> {
@@ -35,6 +53,7 @@ pub fn kv_getv(p: &Arc<Primitives>, branch: BranchId, key: String) -> Result<Out
 
 /// Handle KvPut command.
 pub fn kv_put(p: &Arc<Primitives>, branch: BranchId, key: String, value: Value) -> Result<Output> {
+    require_branch_exists(p, &branch)?;
     let branch_id = to_core_branch_id(&branch)?;
     convert_result(validate_key(&key))?;
     let version = convert_result(p.kv.put(&branch_id, &key, value))?;
@@ -51,6 +70,7 @@ pub fn kv_get(p: &Arc<Primitives>, branch: BranchId, key: String) -> Result<Outp
 
 /// Handle KvDelete command.
 pub fn kv_delete(p: &Arc<Primitives>, branch: BranchId, key: String) -> Result<Output> {
+    require_branch_exists(p, &branch)?;
     let branch_id = to_core_branch_id(&branch)?;
     convert_result(validate_key(&key))?;
     let existed = convert_result(p.kv.delete(&branch_id, &key))?;

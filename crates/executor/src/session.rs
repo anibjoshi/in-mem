@@ -78,12 +78,41 @@ impl Session {
             Command::TxnInfo => self.handle_txn_info(),
             Command::TxnIsActive => Ok(Output::Bool(self.in_transaction())),
 
-            // Non-transactional commands always go to executor
+            // Vector write commands are not supported inside a transaction
+            // because the engine's vector store is not transactional.
+            Command::VectorUpsert { .. }
+            | Command::VectorDelete { .. }
+            | Command::VectorCreateCollection { .. }
+            | Command::VectorDeleteCollection { .. }
+                if self.txn_ctx.is_some() =>
+            {
+                Err(Error::InvalidInput {
+                    reason: "Vector write operations are not supported inside a transaction"
+                        .to_string(),
+                })
+            }
+
+            // Branch create/delete modify global state outside the transaction
+            // scope and are not supported inside a transaction.
+            Command::BranchCreate { .. } | Command::BranchDelete { .. }
+                if self.txn_ctx.is_some() =>
+            {
+                Err(Error::InvalidInput {
+                    reason: "Branch create/delete operations are not supported inside a transaction"
+                        .to_string(),
+                })
+            }
+
+            // Non-transactional commands always go to executor.
+            // Branch read commands (Get, List, Exists) are safe to delegate
+            // regardless of transaction state since they only read metadata.
             Command::BranchCreate { .. }
             | Command::BranchGet { .. }
             | Command::BranchList { .. }
             | Command::BranchExists { .. }
             | Command::BranchDelete { .. }
+            // Vector commands: writes delegate to executor outside txn,
+            // reads are always safe to delegate.
             | Command::VectorUpsert { .. }
             | Command::VectorGet { .. }
             | Command::VectorDelete { .. }
@@ -98,13 +127,26 @@ impl Session {
             | Command::RetentionApply { .. }
             | Command::RetentionStats { .. }
             | Command::RetentionPreview { .. }
-            // Version history commands require storage-layer version chains
-            // which are not available through the transaction context.
-            // These read directly from the committed store.
+            | Command::BranchExport { .. }
+            | Command::BranchImport { .. }
+            | Command::BranchBundleValidate { .. }
+            | Command::Search { .. }
+            // Version history commands (KvGetv, StateReadv, JsonGetv) require
+            // storage-layer version chains which are not available through the
+            // transaction context. These always read from the committed store,
+            // even during an active transaction.
             | Command::KvGetv { .. }
             | Command::StateReadv { .. }
             | Command::JsonGetv { .. }
+            // JsonList enumerates keys via storage-layer scan. Making it
+            // txn-aware would require merging the write-set with a committed
+            // prefix scan, which is non-trivial. It reads from the committed
+            // store even during an active transaction.
             | Command::JsonList { .. }
+            // EventReadByType filters events by type tag at the storage layer.
+            // The transaction write-set does not maintain per-type indexes, so
+            // this always reads from the committed store even during an active
+            // transaction.
             | Command::EventReadByType { .. } => self.executor.execute(cmd),
 
             // Data commands: route through txn if active, else delegate
@@ -157,9 +199,26 @@ impl Session {
             Err(e) => {
                 // Return context to pool even on failure
                 self.db.end_transaction(ctx);
-                Err(Error::TransactionConflict {
-                    reason: e.to_string(),
-                })
+                // Discriminate error types: only OCC validation failures
+                // become TransactionConflict; storage/WAL errors become Io;
+                // other errors become Internal.
+                match &e {
+                    strata_core::StrataError::TransactionAborted { .. }
+                    | strata_core::StrataError::Conflict { .. }
+                    | strata_core::StrataError::VersionConflict { .. }
+                    | strata_core::StrataError::WriteConflict { .. } => {
+                        Err(Error::TransactionConflict {
+                            reason: e.to_string(),
+                        })
+                    }
+                    strata_core::StrataError::Storage { .. }
+                    | strata_core::StrataError::Corruption { .. } => Err(Error::Io {
+                        reason: e.to_string(),
+                    }),
+                    _ => Err(Error::Internal {
+                        reason: e.to_string(),
+                    }),
+                }
             }
         }
     }
@@ -238,7 +297,7 @@ impl Session {
                 match result {
                     Some(strata_core::value::Value::String(s)) => {
                         let state: strata_core::State =
-                            serde_json::from_str(&s).map_err(|e| Error::Internal {
+                            serde_json::from_str(&s).map_err(|e| Error::Serialization {
                                 reason: e.to_string(),
                             })?;
                         Ok(Output::Maybe(Some(state.value)))
@@ -256,8 +315,17 @@ impl Session {
                     match result {
                         Some(strata_core::value::Value::String(s)) => {
                             let jv: strata_core::JsonValue =
-                                serde_json::from_str(&s).map_err(|e| Error::Internal {
+                                serde_json::from_str(&s).map_err(|e| Error::Serialization {
                                     reason: e.to_string(),
+                                })?;
+                            let val = convert_result(json_to_value(jv))?;
+                            Ok(Output::Maybe(Some(val)))
+                        }
+                        Some(strata_core::value::Value::Bytes(b)) => {
+                            // JSON documents are stored as MessagePack-encoded bytes
+                            let jv: strata_core::JsonValue =
+                                rmp_serde::from_slice(&b).map_err(|e| Error::Serialization {
+                                    reason: format!("Failed to deserialize JSON document: {}", e),
                                 })?;
                             let val = convert_result(json_to_value(jv))?;
                             Ok(Output::Maybe(Some(val)))

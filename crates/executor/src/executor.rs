@@ -90,23 +90,33 @@ impl Executor {
 
             // KV commands (MVP: 4 commands)
             Command::KvPut { branch, key, value } => {
-                let branch = branch.expect("resolved by resolve_default_branch");
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
                 crate::handlers::kv::kv_put(&self.primitives, branch, key, value)
             }
             Command::KvGet { branch, key } => {
-                let branch = branch.expect("resolved by resolve_default_branch");
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
                 crate::handlers::kv::kv_get(&self.primitives, branch, key)
             }
             Command::KvDelete { branch, key } => {
-                let branch = branch.expect("resolved by resolve_default_branch");
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
                 crate::handlers::kv::kv_delete(&self.primitives, branch, key)
             }
             Command::KvList { branch, prefix } => {
-                let branch = branch.expect("resolved by resolve_default_branch");
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
                 crate::handlers::kv::kv_list(&self.primitives, branch, prefix)
             }
             Command::KvGetv { branch, key } => {
-                let branch = branch.expect("resolved by resolve_default_branch");
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
                 crate::handlers::kv::kv_getv(&self.primitives, branch, key)
             }
 
@@ -117,19 +127,27 @@ impl Executor {
                 path,
                 value,
             } => {
-                let branch = branch.expect("resolved by resolve_default_branch");
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
                 crate::handlers::json::json_set(&self.primitives, branch, key, path, value)
             }
             Command::JsonGet { branch, key, path } => {
-                let branch = branch.expect("resolved by resolve_default_branch");
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
                 crate::handlers::json::json_get(&self.primitives, branch, key, path)
             }
             Command::JsonGetv { branch, key } => {
-                let branch = branch.expect("resolved by resolve_default_branch");
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
                 crate::handlers::json::json_getv(&self.primitives, branch, key)
             }
             Command::JsonDelete { branch, key, path } => {
-                let branch = branch.expect("resolved by resolve_default_branch");
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
                 crate::handlers::json::json_delete(&self.primitives, branch, key, path)
             }
             Command::JsonList {
@@ -138,7 +156,9 @@ impl Executor {
                 cursor,
                 limit,
             } => {
-                let branch = branch.expect("resolved by resolve_default_branch");
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
                 crate::handlers::json::json_list(&self.primitives, branch, prefix, cursor, limit)
             }
 
@@ -148,19 +168,27 @@ impl Executor {
                 event_type,
                 payload,
             } => {
-                let branch = branch.expect("resolved by resolve_default_branch");
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
                 crate::handlers::event::event_append(&self.primitives, branch, event_type, payload)
             }
             Command::EventRead { branch, sequence } => {
-                let branch = branch.expect("resolved by resolve_default_branch");
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
                 crate::handlers::event::event_read(&self.primitives, branch, sequence)
             }
             Command::EventReadByType { branch, event_type } => {
-                let branch = branch.expect("resolved by resolve_default_branch");
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
                 crate::handlers::event::event_read_by_type(&self.primitives, branch, event_type)
             }
             Command::EventLen { branch } => {
-                let branch = branch.expect("resolved by resolve_default_branch");
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
                 crate::handlers::event::event_len(&self.primitives, branch)
             }
 
@@ -170,15 +198,21 @@ impl Executor {
                 cell,
                 value,
             } => {
-                let branch = branch.expect("resolved by resolve_default_branch");
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
                 crate::handlers::state::state_set(&self.primitives, branch, cell, value)
             }
             Command::StateRead { branch, cell } => {
-                let branch = branch.expect("resolved by resolve_default_branch");
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
                 crate::handlers::state::state_read(&self.primitives, branch, cell)
             }
             Command::StateReadv { branch, cell } => {
-                let branch = branch.expect("resolved by resolve_default_branch");
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
                 crate::handlers::state::state_readv(&self.primitives, branch, cell)
             }
             Command::StateCas {
@@ -187,7 +221,9 @@ impl Executor {
                 expected_counter,
                 value,
             } => {
-                let branch = branch.expect("resolved by resolve_default_branch");
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
                 crate::handlers::state::state_cas(
                     &self.primitives,
                     branch,
@@ -201,7 +237,9 @@ impl Executor {
                 cell,
                 value,
             } => {
-                let branch = branch.expect("resolved by resolve_default_branch");
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
                 crate::handlers::state::state_init(&self.primitives, branch, cell, value)
             }
 
@@ -213,7 +251,9 @@ impl Executor {
                 vector,
                 metadata,
             } => {
-                let branch = branch.expect("resolved by resolve_default_branch");
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
                 crate::handlers::vector::vector_upsert(
                     &self.primitives,
                     branch,
@@ -228,7 +268,9 @@ impl Executor {
                 collection,
                 key,
             } => {
-                let branch = branch.expect("resolved by resolve_default_branch");
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
                 crate::handlers::vector::vector_get(&self.primitives, branch, collection, key)
             }
             Command::VectorDelete {
@@ -236,7 +278,9 @@ impl Executor {
                 collection,
                 key,
             } => {
-                let branch = branch.expect("resolved by resolve_default_branch");
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
                 crate::handlers::vector::vector_delete(&self.primitives, branch, collection, key)
             }
             Command::VectorSearch {
@@ -247,7 +291,9 @@ impl Executor {
                 filter,
                 metric,
             } => {
-                let branch = branch.expect("resolved by resolve_default_branch");
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
                 crate::handlers::vector::vector_search(
                     &self.primitives,
                     branch,
@@ -264,7 +310,9 @@ impl Executor {
                 dimension,
                 metric,
             } => {
-                let branch = branch.expect("resolved by resolve_default_branch");
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
                 crate::handlers::vector::vector_create_collection(
                     &self.primitives,
                     branch,
@@ -274,7 +322,9 @@ impl Executor {
                 )
             }
             Command::VectorDeleteCollection { branch, collection } => {
-                let branch = branch.expect("resolved by resolve_default_branch");
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
                 crate::handlers::vector::vector_delete_collection(
                     &self.primitives,
                     branch,
@@ -282,7 +332,9 @@ impl Executor {
                 )
             }
             Command::VectorListCollections { branch } => {
-                let branch = branch.expect("resolved by resolve_default_branch");
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
                 crate::handlers::vector::vector_list_collections(&self.primitives, branch)
             }
 
@@ -340,7 +392,9 @@ impl Executor {
                 k,
                 primitives,
             } => {
-                let branch = branch.expect("resolved by resolve_default_branch");
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
                 crate::handlers::search::search(&self.primitives, branch, query, k, primitives)
             }
         }

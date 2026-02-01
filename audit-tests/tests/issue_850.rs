@@ -1,8 +1,9 @@
 //! Audit test for issue #850: Vector handler does not validate key format
-//! Verdict: CONFIRMED BUG
+//! Verdict: FIXED
 //!
-//! Vector operations accept keys with NUL bytes, empty keys, reserved-prefix keys,
-//! and keys exceeding 1024 bytes -- all of which are rejected by KV/State handlers.
+//! Vector operations now validate keys using the same `validate_key()` function
+//! as KV/State handlers. Empty keys, reserved-prefix keys, and keys with NUL
+//! bytes are all rejected.
 
 use strata_engine::Database;
 use strata_executor::{Command, Executor, Value};
@@ -13,7 +14,7 @@ fn setup() -> Executor {
 }
 
 #[test]
-fn issue_850_vector_upsert_accepts_empty_key() {
+fn issue_850_vector_upsert_rejects_empty_key() {
     let executor = setup();
 
     // KV put correctly rejects empty key
@@ -24,7 +25,7 @@ fn issue_850_vector_upsert_accepts_empty_key() {
     });
     assert!(kv_result.is_err(), "KV put should reject empty key");
 
-    // Vector upsert should also reject empty key but doesn't
+    // Vector upsert now also rejects empty key (FIXED)
     let vec_result = executor.execute(Command::VectorUpsert {
         branch: None,
         collection: "test_coll".to_string(),
@@ -32,16 +33,11 @@ fn issue_850_vector_upsert_accepts_empty_key() {
         vector: vec![1.0, 2.0, 3.0],
         metadata: None,
     });
-    // BUG: This succeeds instead of failing
-    // When fixed, this should be: assert!(vec_result.is_err())
-    assert!(
-        vec_result.is_ok(),
-        "BUG CONFIRMED: Vector upsert accepts empty key (should be rejected)"
-    );
+    assert!(vec_result.is_err(), "Vector upsert should reject empty key");
 }
 
 #[test]
-fn issue_850_vector_upsert_accepts_nul_bytes_in_key() {
+fn issue_850_vector_upsert_rejects_nul_bytes_in_key() {
     let executor = setup();
 
     // KV put correctly rejects key with NUL bytes
@@ -55,9 +51,7 @@ fn issue_850_vector_upsert_accepts_nul_bytes_in_key() {
         "KV put should reject key with NUL bytes"
     );
 
-    // Vector upsert also rejects NUL bytes, but this is incidental --
-    // the rejection comes from a lower layer (engine/collection), not from
-    // validate_key() in the handler. The handler still lacks the explicit check.
+    // Vector upsert now also rejects NUL bytes via validate_key() (FIXED)
     let vec_result = executor.execute(Command::VectorUpsert {
         branch: None,
         collection: "test_coll".to_string(),
@@ -65,14 +59,14 @@ fn issue_850_vector_upsert_accepts_nul_bytes_in_key() {
         vector: vec![1.0, 2.0, 3.0],
         metadata: None,
     });
-    // NUL bytes happen to be caught at a lower layer (engine), but the handler
-    // doesn't call validate_key() explicitly. Empty keys and reserved prefixes
-    // demonstrate the missing validation more clearly.
-    let _ = vec_result;
+    assert!(
+        vec_result.is_err(),
+        "Vector upsert should reject key with NUL bytes"
+    );
 }
 
 #[test]
-fn issue_850_vector_upsert_accepts_reserved_prefix_key() {
+fn issue_850_vector_upsert_rejects_reserved_prefix_key() {
     let executor = setup();
 
     // KV put correctly rejects reserved prefix
@@ -86,7 +80,7 @@ fn issue_850_vector_upsert_accepts_reserved_prefix_key() {
         "KV put should reject reserved prefix key"
     );
 
-    // Vector upsert should also reject reserved prefix but doesn't
+    // Vector upsert now also rejects reserved prefix (FIXED)
     let vec_result = executor.execute(Command::VectorUpsert {
         branch: None,
         collection: "test_coll".to_string(),
@@ -94,9 +88,8 @@ fn issue_850_vector_upsert_accepts_reserved_prefix_key() {
         vector: vec![1.0, 2.0, 3.0],
         metadata: None,
     });
-    // BUG: This succeeds instead of failing
     assert!(
-        vec_result.is_ok(),
-        "BUG CONFIRMED: Vector upsert accepts reserved prefix key (should be rejected)"
+        vec_result.is_err(),
+        "Vector upsert should reject reserved prefix key"
     );
 }

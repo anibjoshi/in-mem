@@ -4,12 +4,28 @@
 
 use std::sync::Arc;
 
-use strata_core::Version;
-
 use crate::bridge::{self, Primitives};
 use crate::convert::convert_result;
 use crate::types::{BranchId, VersionedValue};
-use crate::{Output, Result};
+use crate::{Error, Output, Result};
+
+/// Validate that a branch exists before performing a write operation (#951).
+///
+/// The default branch is always allowed (it is implicit and not stored in BranchIndex).
+/// For all other branches, checks `BranchIndex::exists()` and returns
+/// `Error::BranchNotFound` if the branch does not exist.
+fn require_branch_exists(p: &Arc<Primitives>, branch: &BranchId) -> Result<()> {
+    if branch.is_default() {
+        return Ok(());
+    }
+    let exists = convert_result(p.branch.exists(branch.as_str()))?;
+    if !exists {
+        return Err(Error::BranchNotFound {
+            branch: branch.as_str().to_string(),
+        });
+    }
+    Ok(())
+}
 
 // =============================================================================
 // Individual Handlers (4 MVP)
@@ -22,6 +38,7 @@ pub fn event_append(
     event_type: String,
     payload: strata_core::Value,
 ) -> Result<Output> {
+    require_branch_exists(p, &branch)?;
     let core_branch_id = bridge::to_core_branch_id(&branch)?;
     let version = convert_result(p.event.append(&core_branch_id, &event_type, payload))?;
     Ok(Output::Version(bridge::extract_version(&version)))
@@ -54,10 +71,7 @@ pub fn event_read_by_type(
         .into_iter()
         .map(|e| VersionedValue {
             value: e.value.payload.clone(),
-            version: match e.version {
-                Version::Sequence(s) => s,
-                _ => 0,
-            },
+            version: bridge::extract_version(&e.version),
             timestamp: strata_core::Timestamp::from_micros(e.value.timestamp).into(),
         })
         .collect();
@@ -75,6 +89,7 @@ pub fn event_len(p: &Arc<Primitives>, branch: BranchId) -> Result<Output> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use strata_core::Version;
 
     #[test]
     fn test_bridge_extract_version() {

@@ -118,9 +118,9 @@ fn branch_get_nonexistent_returns_none() {
         branch: BranchId::from("nonexistent-branch"),
     });
 
-    // BranchGet on nonexistent branch should either return Maybe(None) or error
+    // BranchGet on nonexistent branch should return MaybeBranchInfo(None) or error
     match result {
-        Ok(strata_executor::Output::Maybe(None)) => {}
+        Ok(strata_executor::Output::MaybeBranchInfo(None)) => {}
         Err(_) => {} // Also acceptable
         _ => panic!("Unexpected output: {:?}", result),
     }

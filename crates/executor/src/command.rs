@@ -311,7 +311,7 @@ pub enum Command {
     },
 
     /// Get branch info.
-    /// Returns: `Output::BranchInfoVersioned` or `Output::Maybe(None)`
+    /// Returns: `Output::MaybeBranchInfo`
     BranchGet { branch: BranchId },
 
     /// List all branches.
