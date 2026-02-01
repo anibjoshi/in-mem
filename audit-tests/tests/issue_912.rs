@@ -133,9 +133,12 @@ fn issue_912_header_validation_ignores_uuid() {
          It only validates magic bytes, not the database identity."
     );
 
-    // Serialize and deserialize -- UUID is preserved but never validated
-    let bytes = header_wrong_uuid.to_bytes();
-    let parsed = SegmentHeader::from_bytes(&bytes).unwrap();
+    // Serialize and deserialize -- UUID is preserved but never validated.
+    // Since v2 headers include a CRC, we need to rebuild the header with
+    // the modified UUID so the CRC matches.
+    let header_rebuilt = SegmentHeader::new(1, [0x00; 16]);
+    let bytes = header_rebuilt.to_bytes();
+    let parsed = SegmentHeader::from_bytes_slice(&bytes).unwrap();
     assert_eq!(parsed.database_uuid, [0x00; 16]);
     assert!(
         parsed.is_valid(),

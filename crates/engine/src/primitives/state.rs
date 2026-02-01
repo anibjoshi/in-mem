@@ -15,7 +15,7 @@
 //! - TypeTag: State (0x03)
 //! - Key format: `<namespace>:<TypeTag::State>:<cell_name>`
 
-use crate::database::Database;
+use crate::database::{Database, RetryConfig};
 use crate::primitives::extensions::StateCellExt;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -143,6 +143,32 @@ impl StateCell {
         })
     }
 
+    /// Read current state value with version metadata.
+    ///
+    /// Reads directly from the committed store (non-transactional) to
+    /// retrieve the user value together with its counter version and timestamp.
+    /// Returns `None` if the cell doesn't exist.
+    pub fn read_versioned(
+        &self,
+        branch_id: &BranchId,
+        name: &str,
+    ) -> StrataResult<Option<Versioned<Value>>> {
+        let key = self.key_for(branch_id, name);
+        use strata_core::Storage;
+        match self.db.storage().get(&key)? {
+            Some(vv) => {
+                let state: State = from_stored_value(&vv.value)
+                    .map_err(|e| strata_core::StrataError::serialization(e.to_string()))?;
+                Ok(Some(Versioned::with_timestamp(
+                    state.value,
+                    state.version,
+                    Timestamp::from_micros(state.updated_at),
+                )))
+            }
+            None => Ok(None),
+        }
+    }
+
     /// Get full version history for a state cell.
     ///
     /// Returns `None` if the cell doesn't exist. Index with `[0]` = latest,
@@ -186,37 +212,42 @@ impl StateCell {
         expected_version: Version,
         new_value: Value,
     ) -> StrataResult<Versioned<Version>> {
-        self.db.transaction(*branch_id, |txn| {
-            let key = self.key_for(branch_id, name);
+        let retry_config = RetryConfig::default()
+            .with_max_retries(50)
+            .with_base_delay_ms(1)
+            .with_max_delay_ms(50);
+        self.db
+            .transaction_with_retry(*branch_id, retry_config, |txn| {
+                let key = self.key_for(branch_id, name);
 
-            let current: State = match txn.get(&key)? {
-                Some(v) => from_stored_value(&v)
-                    .map_err(|e| strata_core::StrataError::serialization(e.to_string()))?,
-                None => {
-                    return Err(strata_core::StrataError::invalid_input(format!(
-                        "StateCell '{}' not found",
-                        name
-                    )))
+                let current: State = match txn.get(&key)? {
+                    Some(v) => from_stored_value(&v)
+                        .map_err(|e| strata_core::StrataError::serialization(e.to_string()))?,
+                    None => {
+                        return Err(strata_core::StrataError::invalid_input(format!(
+                            "StateCell '{}' not found",
+                            name
+                        )))
+                    }
+                };
+
+                if current.version != expected_version {
+                    return Err(strata_core::StrataError::conflict(format!(
+                        "Version mismatch: expected {:?}, got {:?}",
+                        expected_version, current.version
+                    )));
                 }
-            };
 
-            if current.version != expected_version {
-                return Err(strata_core::StrataError::conflict(format!(
-                    "Version mismatch: expected {:?}, got {:?}",
-                    expected_version, current.version
-                )));
-            }
+                let new_version = current.version.increment();
+                let new_state = State {
+                    value: new_value.clone(),
+                    version: new_version,
+                    updated_at: State::now(),
+                };
 
-            let new_version = current.version.increment();
-            let new_state = State {
-                value: new_value,
-                version: new_version,
-                updated_at: State::now(),
-            };
-
-            txn.put(key, to_stored_value(&new_state)?)?;
-            Ok(Versioned::new(new_state.version, new_state.version))
-        })
+                txn.put(key, to_stored_value(&new_state)?)?;
+                Ok(Versioned::new(new_state.version, new_state.version))
+            })
     }
 
     /// Unconditional set (force write)
@@ -231,28 +262,34 @@ impl StateCell {
         name: &str,
         value: Value,
     ) -> StrataResult<Versioned<Version>> {
+        let retry_config = RetryConfig::default()
+            .with_max_retries(50)
+            .with_base_delay_ms(1)
+            .with_max_delay_ms(50);
         let value_for_index = value.clone();
-        let result = self.db.transaction(*branch_id, |txn| {
-            let key = self.key_for(branch_id, name);
+        let result = self
+            .db
+            .transaction_with_retry(*branch_id, retry_config, |txn| {
+                let key = self.key_for(branch_id, name);
 
-            let new_version = match txn.get(&key)? {
-                Some(v) => {
-                    let current: State = from_stored_value(&v)
-                        .map_err(|e| strata_core::StrataError::serialization(e.to_string()))?;
-                    current.version.increment()
-                }
-                None => Version::counter(1),
-            };
+                let new_version = match txn.get(&key)? {
+                    Some(v) => {
+                        let current: State = from_stored_value(&v)
+                            .map_err(|e| strata_core::StrataError::serialization(e.to_string()))?;
+                        current.version.increment()
+                    }
+                    None => Version::counter(1),
+                };
 
-            let new_state = State {
-                value,
-                version: new_version,
-                updated_at: State::now(),
-            };
+                let new_state = State {
+                    value: value.clone(),
+                    version: new_version,
+                    updated_at: State::now(),
+                };
 
-            txn.put(key, to_stored_value(&new_state)?)?;
-            Ok(Versioned::new(new_state.version, new_state.version))
-        })?;
+                txn.put(key, to_stored_value(&new_state)?)?;
+                Ok(Versioned::new(new_state.version, new_state.version))
+            })?;
 
         // Update inverted index (zero overhead when disabled)
         let index = self.db.extension::<crate::search::InvertedIndex>();
@@ -270,6 +307,39 @@ impl StateCell {
         }
 
         Ok(result)
+    }
+
+    // ========== Delete & List Operations ==========
+
+    /// Delete a state cell.
+    ///
+    /// Returns `true` if the cell existed and was deleted, `false` if it didn't exist.
+    pub fn delete(&self, branch_id: &BranchId, name: &str) -> StrataResult<bool> {
+        self.db.transaction(*branch_id, |txn| {
+            let key = self.key_for(branch_id, name);
+            let exists = txn.get(&key)?.is_some();
+            if exists {
+                txn.delete(key)?;
+            }
+            Ok(exists)
+        })
+    }
+
+    /// List state cell names with optional prefix filter.
+    ///
+    /// Returns all cell names matching the prefix (or all cells if prefix is None).
+    pub fn list(&self, branch_id: &BranchId, prefix: Option<&str>) -> StrataResult<Vec<String>> {
+        self.db.transaction(*branch_id, |txn| {
+            let ns = self.namespace_for_branch(branch_id);
+            let scan_prefix = Key::new_state(ns, prefix.unwrap_or(""));
+
+            let results = txn.scan_prefix(&scan_prefix)?;
+
+            Ok(results
+                .into_iter()
+                .filter_map(|(key, _)| key.user_key_string())
+                .collect())
+        })
     }
 }
 

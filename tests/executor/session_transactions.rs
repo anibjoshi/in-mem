@@ -144,6 +144,9 @@ fn read_your_writes_kv() {
         .unwrap();
 
     match output {
+        Output::MaybeVersioned(Some(vv)) => {
+            assert_eq!(vv.value, Value::Int(42));
+        }
         Output::Maybe(Some(val)) => {
             assert_eq!(val, Value::Int(42));
         }
@@ -181,8 +184,11 @@ fn read_your_writes_state() {
         .unwrap();
 
     match output {
-        Output::Maybe(Some(v)) => {
-            assert_eq!(v, Value::String("value".into()));
+        Output::MaybeVersioned(Some(vv)) => {
+            assert_eq!(vv.value, Value::String("value".into()));
+        }
+        Output::Maybe(Some(val)) => {
+            assert_eq!(val, Value::String("value".into()));
         }
         _ => panic!("Expected to read our own write"),
     }
@@ -257,7 +263,10 @@ fn rollback_discards_kv_writes() {
         })
         .unwrap();
 
-    assert!(matches!(output, Output::Maybe(None)));
+    assert!(matches!(
+        output,
+        Output::MaybeVersioned(None) | Output::Maybe(None)
+    ));
 }
 
 #[test]
@@ -292,7 +301,10 @@ fn rollback_discards_state_writes() {
         })
         .unwrap();
 
-    assert!(matches!(output, Output::Maybe(None)));
+    assert!(matches!(
+        output,
+        Output::MaybeVersioned(None) | Output::Maybe(None)
+    ));
 }
 
 // ============================================================================
@@ -331,7 +343,8 @@ fn commit_makes_kv_writes_visible() {
         .unwrap();
 
     match output {
-        Output::Maybe(Some(val)) => {
+        Output::MaybeVersioned(Some(vv)) => {
+            let val = vv.value;
             assert_eq!(val, Value::Int(999));
         }
         _ => panic!("Expected committed value to be visible"),
@@ -385,7 +398,7 @@ fn rollback_without_transaction_fails() {
 // ============================================================================
 
 #[test]
-fn branch_commands_bypass_transaction() {
+fn branch_create_blocked_inside_transaction() {
     let mut session = create_session();
 
     session
@@ -395,35 +408,32 @@ fn branch_commands_bypass_transaction() {
         })
         .unwrap();
 
-    // Run commands should work even in a transaction
-    let output = session
-        .execute(Command::BranchCreate {
-            branch_id: Some("txn-bypass-test".into()),
-            metadata: None,
-        })
-        .unwrap();
+    // Branch create/delete operations are now blocked inside transactions
+    let result = session.execute(Command::BranchCreate {
+        branch_id: Some("txn-bypass-test".into()),
+        metadata: None,
+    });
 
-    match output {
-        Output::BranchWithVersion { info, .. } => {
-            assert_eq!(info.id.as_str(), "txn-bypass-test");
-        }
-        _ => panic!("Expected BranchCreated"),
-    }
+    assert!(
+        result.is_err(),
+        "Branch create should be blocked inside a transaction"
+    );
 
     session.execute(Command::TxnRollback).unwrap();
 
-    // Run should still exist (not rolled back)
+    // Branch read commands should still work outside transaction
     let output = session
         .execute(Command::BranchGet {
             branch: BranchId::from("txn-bypass-test"),
         })
         .unwrap();
 
-    assert!(matches!(output, Output::MaybeBranchInfo(Some(_))));
+    // Branch was never created (blocked), so should not exist
+    assert!(matches!(output, Output::MaybeBranchInfo(None)));
 }
 
 #[test]
-fn vector_commands_bypass_transaction() {
+fn vector_write_blocked_inside_transaction() {
     let mut session = create_session();
 
     session
@@ -433,19 +443,22 @@ fn vector_commands_bypass_transaction() {
         })
         .unwrap();
 
-    // Vector commands should work even in a transaction
-    session
-        .execute(Command::VectorCreateCollection {
-            branch: None,
-            collection: "txn_coll".into(),
-            dimension: 4,
-            metric: DistanceMetric::Cosine,
-        })
-        .unwrap();
+    // Vector write operations are now blocked inside transactions
+    let result = session.execute(Command::VectorCreateCollection {
+        branch: None,
+        collection: "txn_coll".into(),
+        dimension: 4,
+        metric: DistanceMetric::Cosine,
+    });
+
+    assert!(
+        result.is_err(),
+        "Vector create collection should be blocked inside a transaction"
+    );
 
     session.execute(Command::TxnRollback).unwrap();
 
-    // Collection should still exist (not rolled back)
+    // After rollback, collection should not exist (was blocked)
     let output = session
         .execute(Command::VectorListCollections { branch: None })
         .unwrap();
@@ -453,8 +466,8 @@ fn vector_commands_bypass_transaction() {
     match output {
         Output::VectorCollectionList(infos) => {
             assert!(
-                infos.iter().any(|c| c.name == "txn_coll"),
-                "Collection should still exist after rollback"
+                !infos.iter().any(|c| c.name == "txn_coll"),
+                "Collection should not exist since creation was blocked"
             );
         }
         _ => panic!("Expected VectorCollectionList output"),
@@ -516,7 +529,11 @@ fn multiple_kv_operations_in_transaction() {
             .unwrap();
 
         match output {
+            Output::MaybeVersioned(Some(vv)) => {
+                assert_eq!(vv.value, Value::Int(i));
+            }
             Output::Maybe(Some(val)) => {
+                // In-transaction reads may return Maybe instead of MaybeVersioned
                 assert_eq!(val, Value::Int(i));
             }
             _ => panic!("Expected to read key_{}", i),
@@ -535,7 +552,10 @@ fn multiple_kv_operations_in_transaction() {
             })
             .unwrap();
 
-        assert!(matches!(output, Output::Maybe(Some(_))));
+        assert!(matches!(
+            output,
+            Output::MaybeVersioned(Some(_)) | Output::Maybe(Some(_))
+        ));
     }
 }
 
@@ -589,7 +609,10 @@ fn cross_primitive_transaction() {
             key: "kv_key".into(),
         })
         .unwrap();
-    assert!(matches!(kv_out, Output::Maybe(Some(_))));
+    assert!(matches!(
+        kv_out,
+        Output::MaybeVersioned(Some(_)) | Output::Maybe(Some(_))
+    ));
 
     let state_out = executor
         .execute(Command::StateRead {
@@ -597,7 +620,10 @@ fn cross_primitive_transaction() {
             cell: "state_cell".into(),
         })
         .unwrap();
-    assert!(matches!(state_out, Output::Maybe(Some(_))));
+    assert!(matches!(
+        state_out,
+        Output::MaybeVersioned(Some(_)) | Output::Maybe(Some(_))
+    ));
 
     let event_out = executor
         .execute(Command::EventLen { branch: None })
@@ -646,5 +672,8 @@ fn session_drop_cleans_up_transaction() {
         })
         .unwrap();
 
-    assert!(matches!(output, Output::Maybe(None)));
+    assert!(matches!(
+        output,
+        Output::MaybeVersioned(None) | Output::Maybe(None)
+    ));
 }

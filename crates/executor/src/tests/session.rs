@@ -178,15 +178,18 @@ fn test_ryw_kv_put_get_inside_txn() {
         .unwrap();
 
     match result {
+        Output::MaybeVersioned(Some(vv)) => {
+            assert_eq!(vv.value, Value::String("written_in_txn".into()));
+        }
         Output::Maybe(Some(v)) => {
             assert_eq!(v, Value::String("written_in_txn".into()));
         }
-        Output::Maybe(None) => {
+        Output::MaybeVersioned(None) | Output::Maybe(None) => {
             // RYW may not be visible if the Transaction impl returns None
             // for keys only in write_set. This is acceptable as the
             // Transaction::kv_get implementation does check write_set.
         }
-        other => panic!("Expected Maybe, got {:?}", other),
+        other => panic!("Expected Maybe or MaybeVersioned, got {:?}", other),
     }
 
     session.execute(Command::TxnCommit).unwrap();
@@ -219,11 +222,17 @@ fn test_ryw_kv_get_inside_txn() {
         .unwrap();
 
     match result {
+        Output::MaybeVersioned(Some(vv)) => {
+            assert_eq!(vv.value, Value::Int(42), "Value should match what was put");
+        }
         Output::Maybe(Some(val)) => {
-            // Read-your-writes: key should be visible after put in txn
+            // In-transaction reads may return Maybe instead of MaybeVersioned
             assert_eq!(val, Value::Int(42), "Value should match what was put");
         }
-        other => panic!("Expected Maybe(Some), got {:?}", other),
+        other => panic!(
+            "Expected Maybe(Some) or MaybeVersioned(Some), got {:?}",
+            other
+        ),
     }
 
     session.execute(Command::TxnCommit).unwrap();
@@ -314,7 +323,8 @@ fn test_data_commands_without_txn_delegate() {
         .unwrap();
 
     match result {
-        Output::Maybe(Some(v)) => {
+        Output::MaybeVersioned(Some(vv)) => {
+            let v = vv.value;
             assert_eq!(v, Value::Int(99));
         }
         other => panic!("Expected Maybe(Some), got {:?}", other),

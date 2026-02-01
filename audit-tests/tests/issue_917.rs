@@ -136,15 +136,23 @@ fn issue_917_json_get_root_path_outside_transaction_works() {
         .unwrap();
 
     match result {
-        Output::Maybe(Some(val)) => {
+        Output::MaybeVersioned(Some(vv)) => {
             // Outside a transaction, JsonGet goes through the proper handler which
-            // deserializes correctly
+            // deserializes correctly and returns versioned metadata
+            assert!(
+                matches!(&vv.value, strata_core::value::Value::Object(_)),
+                "JsonGet root path outside transaction should return Object. Got: {:?}",
+                vv.value
+            );
+        }
+        Output::Maybe(Some(val)) => {
+            // Fallback for older code paths
             assert!(
                 matches!(&val, strata_core::value::Value::Object(_)),
                 "JsonGet root path outside transaction should return Object. Got: {:?}",
                 val
             );
         }
-        other => panic!("Expected Maybe(Some(Object)), got: {:?}", other),
+        other => panic!("Expected MaybeVersioned(Some(Object)), got: {:?}", other),
     }
 }

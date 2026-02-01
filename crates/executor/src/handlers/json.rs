@@ -98,6 +98,8 @@ pub fn json_set(
 }
 
 /// Handle JsonGet command.
+///
+/// Returns `MaybeVersioned` with value, version, and timestamp metadata.
 pub fn json_get(
     p: &Arc<Primitives>,
     branch: BranchId,
@@ -108,11 +110,18 @@ pub fn json_get(
     convert_result(validate_key(&key))?;
     let json_path = convert_result(parse_path(&path))?;
 
-    let result = convert_result(p.json.get(&branch_id, &key, &json_path))?;
-    let mapped = result
-        .map(|v| convert_result(json_to_value(v)))
-        .transpose()?;
-    Ok(Output::Maybe(mapped))
+    let result = convert_result(p.json.get_versioned(&branch_id, &key, &json_path))?;
+    match result {
+        Some(versioned) => {
+            let value = convert_result(json_to_value(versioned.value))?;
+            Ok(Output::MaybeVersioned(Some(VersionedValue {
+                value,
+                version: extract_version(&versioned.version),
+                timestamp: versioned.timestamp.into(),
+            })))
+        }
+        None => Ok(Output::MaybeVersioned(None)),
+    }
 }
 
 /// Handle JsonDelete command.

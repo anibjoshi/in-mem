@@ -51,6 +51,8 @@ fn issue_940_event_read_by_type_misses_uncommitted() {
         .execute(Command::EventReadByType {
             branch: Some(branch.clone()),
             event_type: "test_event".into(),
+            limit: None,
+            after_sequence: None,
         })
         .unwrap();
 

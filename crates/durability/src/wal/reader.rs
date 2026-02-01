@@ -3,7 +3,7 @@
 //! The reader handles reading WAL records from segments for recovery.
 
 use crate::codec::StorageCodec;
-use crate::format::{WalRecord, WalRecordError, WalSegment, SEGMENT_HEADER_SIZE};
+use crate::format::{WalRecord, WalRecordError, WalSegment};
 use std::io::Read;
 use std::path::Path;
 
@@ -33,7 +33,7 @@ impl WalReader {
         &self,
         wal_dir: &Path,
         segment_number: u64,
-    ) -> Result<(Vec<WalRecord>, u64, ReadStopReason), WalReaderError> {
+    ) -> Result<(Vec<WalRecord>, u64, ReadStopReason, usize), WalReaderError> {
         let mut segment = WalSegment::open_read(wal_dir, segment_number)
             .map_err(|e: std::io::Error| WalReaderError::IoError(e.to_string()))?;
 
@@ -44,14 +44,15 @@ impl WalReader {
     pub fn read_segment_from(
         &self,
         segment: &mut WalSegment,
-    ) -> Result<(Vec<WalRecord>, u64, ReadStopReason), WalReaderError> {
+    ) -> Result<(Vec<WalRecord>, u64, ReadStopReason, usize), WalReaderError> {
         let mut records = Vec::new();
         let mut buffer = Vec::new();
-        let mut valid_end = SEGMENT_HEADER_SIZE as u64;
+        let hdr_size = segment.header_size() as u64;
+        let mut valid_end = hdr_size;
 
-        // Seek to start of records
+        // Seek to start of records (past header)
         segment
-            .seek_to(SEGMENT_HEADER_SIZE as u64)
+            .seek_to(hdr_size)
             .map_err(|e: std::io::Error| WalReaderError::IoError(e.to_string()))?;
 
         // Read entire segment content after header
@@ -62,6 +63,7 @@ impl WalReader {
 
         let mut offset = 0;
         let mut stop_reason = ReadStopReason::EndOfData;
+        let mut skipped_corrupted = 0usize;
 
         while offset < buffer.len() {
             // Try to decode through codec first
@@ -73,7 +75,7 @@ impl WalReader {
                 Ok((record, consumed)) => {
                     records.push(record);
                     offset += consumed;
-                    valid_end = SEGMENT_HEADER_SIZE as u64 + offset as u64;
+                    valid_end = hdr_size + offset as u64;
                 }
                 Err(WalRecordError::InsufficientData) => {
                     // Partial record at end - this is expected for crash recovery
@@ -81,7 +83,25 @@ impl WalReader {
                     break;
                 }
                 Err(WalRecordError::ChecksumMismatch { .. }) => {
-                    // Corrupt data - CRC doesn't match
+                    // Try to skip corrupted record using length field
+                    let remaining = &buffer[offset..];
+                    if remaining.len() >= 4 {
+                        let record_len =
+                            u32::from_le_bytes(remaining[0..4].try_into().unwrap()) as usize;
+                        if record_len > 0
+                            && record_len < 64 * 1024 * 1024
+                            && remaining.len() >= 4 + record_len
+                        {
+                            tracing::warn!(
+                                offset = offset,
+                                "Skipping corrupted WAL record (checksum mismatch)"
+                            );
+                            offset += 4 + record_len;
+                            skipped_corrupted += 1;
+                            continue;
+                        }
+                    }
+                    // Can't determine boundary — stop
                     stop_reason = ReadStopReason::ChecksumMismatch { offset };
                     break;
                 }
@@ -98,7 +118,7 @@ impl WalReader {
             }
         }
 
-        Ok((records, valid_end, stop_reason))
+        Ok((records, valid_end, stop_reason, skipped_corrupted))
     }
 
     /// Read all records from all segments in a WAL directory.
@@ -112,11 +132,14 @@ impl WalReader {
         let mut all_records = Vec::new();
         let mut truncate_info = None;
         let mut last_stop_reason = ReadStopReason::EndOfData;
+        let mut total_skipped_corrupted = 0usize;
 
         for (idx, segment_num) in segments.iter().enumerate() {
-            let (records, valid_end, stop_reason) = self.read_segment(wal_dir, *segment_num)?;
+            let (records, valid_end, stop_reason, skipped) =
+                self.read_segment(wal_dir, *segment_num)?;
             all_records.extend(records);
             last_stop_reason = stop_reason;
+            total_skipped_corrupted += skipped;
 
             // Check if this segment needs truncation (only the last one can)
             if idx == segments.len() - 1 {
@@ -137,6 +160,7 @@ impl WalReader {
             records: all_records,
             truncate_info,
             stop_reason: last_stop_reason,
+            skipped_corrupted: total_skipped_corrupted,
         })
     }
 
@@ -149,7 +173,7 @@ impl WalReader {
         segment_number: u64,
         watermark: u64,
     ) -> Result<Vec<WalRecord>, WalReaderError> {
-        let (records, _, _) = self.read_segment(wal_dir, segment_number)?;
+        let (records, _, _, _) = self.read_segment(wal_dir, segment_number)?;
 
         Ok(records
             .into_iter()
@@ -203,7 +227,7 @@ impl WalReader {
         wal_dir: &Path,
         segment_number: u64,
     ) -> Result<Option<u64>, WalReaderError> {
-        let (records, _, _) = self.read_segment(wal_dir, segment_number)?;
+        let (records, _, _, _) = self.read_segment(wal_dir, segment_number)?;
         Ok(records.iter().map(|r| r.txn_id).max())
     }
 
@@ -248,6 +272,9 @@ pub struct WalReadResult {
 
     /// Why reading stopped (for diagnostics)
     pub stop_reason: ReadStopReason,
+
+    /// Number of corrupted records that were skipped during reading
+    pub skipped_corrupted: usize,
 }
 
 /// Information about a segment that needs truncation.
@@ -326,7 +353,7 @@ mod tests {
         WalSegment::create(&wal_dir, 1, [1u8; 16]).unwrap();
 
         let reader = WalReader::new(make_codec());
-        let (records, _, _) = reader.read_segment(&wal_dir, 1).unwrap();
+        let (records, _, _, _) = reader.read_segment(&wal_dir, 1).unwrap();
 
         assert!(records.is_empty());
     }
@@ -340,7 +367,7 @@ mod tests {
         write_records(&wal_dir, &[record.clone()]);
 
         let reader = WalReader::new(make_codec());
-        let (records, _, _) = reader.read_segment(&wal_dir, 1).unwrap();
+        let (records, _, _, _) = reader.read_segment(&wal_dir, 1).unwrap();
 
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].txn_id, 1);

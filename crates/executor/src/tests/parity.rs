@@ -56,7 +56,8 @@ fn test_kv_put_get_parity() {
 
     assert_eq!(direct_value.unwrap(), Value::String("direct".into()));
     match exec_get {
-        Ok(Output::Maybe(Some(v))) => {
+        Ok(Output::MaybeVersioned(Some(vv))) => {
+            let v = vv.value;
             assert_eq!(v, Value::String("executor".into()));
         }
         _ => panic!("Expected Maybe output"),
@@ -68,7 +69,8 @@ fn test_kv_put_get_parity() {
         key: "key1".to_string(),
     });
     match cross_read_exec {
-        Ok(Output::Maybe(Some(v))) => {
+        Ok(Output::MaybeVersioned(Some(vv))) => {
+            let v = vv.value;
             assert_eq!(v, Value::String("direct".into()));
         }
         _ => panic!("Cross-read failed"),
@@ -117,6 +119,8 @@ fn test_kv_list_parity() {
     let result = executor.execute(Command::KvList {
         branch: None,
         prefix: Some("user:".to_string()),
+        cursor: None,
+        limit: None,
     });
 
     match result {
@@ -132,6 +136,8 @@ fn test_kv_list_parity() {
     let result_all = executor.execute(Command::KvList {
         branch: None,
         prefix: None,
+        cursor: None,
+        limit: None,
     });
 
     match result_all {
@@ -176,7 +182,8 @@ fn test_json_set_get_parity() {
     });
 
     match exec_get {
-        Ok(Output::Maybe(Some(v))) => {
+        Ok(Output::MaybeVersioned(Some(vv))) => {
+            let v = vv.value;
             assert_eq!(v, Value::String("Alice".into()));
         }
         other => panic!("Expected Maybe output, got {:?}", other),
@@ -227,6 +234,8 @@ fn test_event_append_read_by_type_parity() {
     let read_result = executor.execute(Command::EventReadByType {
         branch: None,
         event_type: "events".to_string(),
+        after_sequence: None,
+        limit: None,
     });
 
     match read_result {
@@ -277,7 +286,8 @@ fn test_state_set_get_parity() {
     });
 
     match exec_get {
-        Ok(Output::Maybe(Some(v))) => {
+        Ok(Output::MaybeVersioned(Some(vv))) => {
+            let v = vv.value;
             assert_eq!(v, Value::Int(200));
         }
         _ => panic!("Expected Maybe output"),
@@ -494,7 +504,8 @@ fn test_branch_isolation_parity() {
     });
 
     match result_a {
-        Ok(Output::Maybe(Some(v))) => {
+        Ok(Output::MaybeVersioned(Some(vv))) => {
+            let v = vv.value;
             assert_eq!(v, Value::String("from-a".into()));
         }
         _ => panic!("Expected value from branch-a"),
@@ -507,7 +518,8 @@ fn test_branch_isolation_parity() {
     });
 
     match result_b {
-        Ok(Output::Maybe(Some(v))) => {
+        Ok(Output::MaybeVersioned(Some(vv))) => {
+            let v = vv.value;
             assert_eq!(v, Value::String("from-b".into()));
         }
         _ => panic!("Expected value from branch-b"),

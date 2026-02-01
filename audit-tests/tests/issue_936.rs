@@ -17,7 +17,7 @@
 //! and verifies the basic insert-then-insert behavior.
 
 use strata_engine::database::Database;
-use strata_executor::{BranchId, Command, Executor, Output, Value};
+use strata_executor::{BranchId, Command, DistanceMetric, Executor, Output, Value};
 
 /// Documents the TOCTOU race condition in vector insert.
 /// Two sequential upserts with the same key both succeed — this is
@@ -29,6 +29,16 @@ fn issue_936_sequential_duplicate_upsert_succeeds() {
     let executor = Executor::new(db);
 
     let branch = BranchId::from("default");
+
+    // Create collection first (auto-create was removed in #923)
+    executor
+        .execute(Command::VectorCreateCollection {
+            branch: Some(branch.clone()),
+            collection: "col".into(),
+            dimension: 3,
+            metric: DistanceMetric::Cosine,
+        })
+        .unwrap();
 
     // First upsert
     let r1 = executor

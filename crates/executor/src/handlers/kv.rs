@@ -61,11 +61,13 @@ pub fn kv_put(p: &Arc<Primitives>, branch: BranchId, key: String, value: Value) 
 }
 
 /// Handle KvGet command.
+///
+/// Returns `MaybeVersioned` with value, version, and timestamp metadata.
 pub fn kv_get(p: &Arc<Primitives>, branch: BranchId, key: String) -> Result<Output> {
     let branch_id = to_core_branch_id(&branch)?;
     convert_result(validate_key(&key))?;
-    let result = convert_result(p.kv.get(&branch_id, &key))?;
-    Ok(Output::Maybe(result))
+    let result = convert_result(p.kv.get_versioned(&branch_id, &key))?;
+    Ok(Output::MaybeVersioned(result.map(to_versioned_value)))
 }
 
 /// Handle KvDelete command.
@@ -78,7 +80,13 @@ pub fn kv_delete(p: &Arc<Primitives>, branch: BranchId, key: String) -> Result<O
 }
 
 /// Handle KvList command.
-pub fn kv_list(p: &Arc<Primitives>, branch: BranchId, prefix: Option<String>) -> Result<Output> {
+pub fn kv_list(
+    p: &Arc<Primitives>,
+    branch: BranchId,
+    prefix: Option<String>,
+    cursor: Option<String>,
+    limit: Option<u64>,
+) -> Result<Output> {
     let branch_id = to_core_branch_id(&branch)?;
     if let Some(ref pfx) = prefix {
         if !pfx.is_empty() {
@@ -86,5 +94,18 @@ pub fn kv_list(p: &Arc<Primitives>, branch: BranchId, prefix: Option<String>) ->
         }
     }
     let keys = convert_result(p.kv.list(&branch_id, prefix.as_deref()))?;
-    Ok(Output::Keys(keys))
+
+    // Apply cursor-based pagination if limit is present
+    if let Some(lim) = limit {
+        let start_idx = if let Some(ref cur) = cursor {
+            keys.iter().position(|k| k > cur).unwrap_or(keys.len())
+        } else {
+            0
+        };
+        let end_idx = std::cmp::min(start_idx + lim as usize, keys.len());
+        let page = keys[start_idx..end_idx].to_vec();
+        Ok(Output::Keys(page))
+    } else {
+        Ok(Output::Keys(keys))
+    }
 }

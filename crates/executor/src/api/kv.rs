@@ -51,6 +51,7 @@ impl Strata {
             branch: self.branch_id(),
             key: key.to_string(),
         })? {
+            Output::MaybeVersioned(v) => Ok(v.map(|vv| vv.value)),
             Output::Maybe(v) => Ok(v),
             _ => Err(Error::Internal {
                 reason: "Unexpected output for KvGet".into(),
@@ -111,6 +112,8 @@ impl Strata {
         match self.executor.execute(Command::KvList {
             branch: self.branch_id(),
             prefix: prefix.map(|s| s.to_string()),
+            cursor: None,
+            limit: None,
         })? {
             Output::Keys(keys) => Ok(keys),
             _ => Err(Error::Internal {

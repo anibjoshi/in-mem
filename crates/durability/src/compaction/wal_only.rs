@@ -172,7 +172,7 @@ impl WalOnlyCompactor {
         let segment_path = segment_path(&self.wal_dir, segment_number);
         let file_data = std::fs::read(&segment_path)?;
 
-        // Validate segment header
+        // Validate segment header (need at least v1 header size)
         if file_data.len() < SEGMENT_HEADER_SIZE {
             return Err(CompactionError::internal(format!(
                 "Segment {} too small for header",
@@ -180,13 +180,7 @@ impl WalOnlyCompactor {
             )));
         }
 
-        let header_bytes: [u8; SEGMENT_HEADER_SIZE] = file_data[..SEGMENT_HEADER_SIZE]
-            .try_into()
-            .map_err(|_| {
-            CompactionError::internal(format!("Failed to read segment {} header", segment_number))
-        })?;
-
-        let header = SegmentHeader::from_bytes(&header_bytes).ok_or_else(|| {
+        let header = SegmentHeader::from_bytes_slice(&file_data).ok_or_else(|| {
             CompactionError::internal(format!("Invalid segment {} header", segment_number))
         })?;
 
@@ -197,13 +191,20 @@ impl WalOnlyCompactor {
             )));
         }
 
+        // Determine actual header size based on format version
+        let actual_header_size = if header.format_version >= 2 {
+            crate::format::SEGMENT_HEADER_SIZE_V2
+        } else {
+            SEGMENT_HEADER_SIZE
+        };
+
         // Empty segment (just header) is considered covered
-        if file_data.len() <= SEGMENT_HEADER_SIZE {
+        if file_data.len() <= actual_header_size {
             return Ok(true);
         }
 
         // Find highest txn_id in segment
-        let mut cursor = SEGMENT_HEADER_SIZE;
+        let mut cursor = actual_header_size;
         let mut max_txn_id = 0u64;
 
         while cursor < file_data.len() {

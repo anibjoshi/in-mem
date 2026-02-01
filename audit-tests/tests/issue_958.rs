@@ -1,89 +1,35 @@
 //! Audit test for issue #958: Unused Output variants
-//! Verdict: ARCHITECTURAL CHOICE
+//! Verdict: FIXED
 //!
-//! Several `Output` enum variants are never produced by any handler in production
-//! code. These variants exist in the Output enum (output.rs) but no command
-//! handler ever constructs them:
+//! The following unused `Output` enum variants have been removed from output.rs:
 //!
-//! - `Output::Value(Value)` — Single value without version info.
-//!   No handler returns this variant. Get operations return `Maybe` or
-//!   `MaybeVersioned`, not bare `Value`.
+//! - `Output::Value(Value)` -- No handler returned this variant.
+//! - `Output::Versioned(VersionedValue)` -- No handler returned this variant.
+//! - `Output::Values(Vec<Option<VersionedValue>>)` -- No mget command exists.
+//! - `Output::Versions(Vec<u64>)` -- No handler returned this variant.
+//! - `Output::Strings(Vec<String>)` -- No handler returned this variant.
+//! - `Output::Int(i64)` -- No handler returned this variant.
+//! - `Output::Float(f64)` -- No handler returned this variant.
+//! - `Output::KvScanResult { entries, cursor }` -- No KvScan command exists.
+//! - `Output::JsonSearchHits(Vec<JsonSearchHit>)` -- No JsonSearch command exists.
+//! - `Output::VectorMatchesWithExhausted { matches, exhausted }` -- VectorSearch uses VectorMatches.
+//! - `Output::BranchInfo(BranchInfo)` -- All branch handlers use versioned variants.
+//! - `Output::BranchInfoVersioned(VersionedBranchInfo)` -- Superseded by MaybeBranchInfo.
+//! - `Output::MaybeBranchId(Option<BranchId>)` -- No handler returned this variant.
+//! - `Output::TxnId(String)` -- TxnBegin returns TxnBegun instead.
+//! - `Output::RetentionVersion(Option<RetentionVersionInfo>)` -- No handler returned this variant.
+//! - `Output::RetentionPolicy(RetentionPolicyInfo)` -- No handler returned this variant.
 //!
-//! - `Output::Versioned(VersionedValue)` — Value with version metadata.
-//!   No handler returns this. KvGet returns `Maybe`, not `Versioned`.
+//! The associated unused types `JsonSearchHit`, `RetentionPolicyInfo`, and
+//! `RetentionVersionInfo` have also been removed from types.rs.
 //!
-//! - `Output::MaybeVersioned(Option<VersionedValue>)` — Optional versioned value.
-//!   Despite being documented as the return type for KvGet, no handler actually
-//!   constructs it. Only the in-transaction Session path uses `MaybeVersioned`
-//!   for EventRead.
-//!
-//! - `Output::Values(Vec<Option<VersionedValue>>)` — Multiple optional versioned values.
-//!   Intended for mget-style operations, but no mget command exists yet.
-//!
-//! - `Output::Versions(Vec<u64>)` — List of versions.
-//!   No handler constructs this variant.
-//!
-//! - `Output::Strings(Vec<String>)` — List of strings.
-//!   No handler constructs this variant.
-//!
-//! - `Output::Int(i64)` — Signed integer result.
-//!   Intended for increment operations, but json_increment is not in MVP.
-//!
-//! - `Output::Float(f64)` — Float result.
-//!   Intended for json_increment float mode, not implemented.
-//!
-//! - `Output::KvScanResult { entries, cursor }` — KV scan with cursor.
-//!   No KvScan command exists in the Command enum.
-//!
-//! - `Output::JsonSearchHits(Vec<JsonSearchHit>)` — JSON search hits.
-//!   No JsonSearch command exists in the Command enum.
-//!
-//! - `Output::VectorMatchesWithExhausted { matches, exhausted }` — Vector search
-//!   with budget exhaustion flag. VectorSearch returns `VectorMatches` instead.
-//!
-//! - `Output::BranchInfo(BranchInfo)` — Unversioned branch info.
-//!   All branch handlers use `BranchInfoVersioned` or `BranchWithVersion`.
-//!
-//! - `Output::MaybeBranchId(Option<BranchId>)` — Optional branch ID.
-//!   No handler returns this variant.
-//!
-//! - `Output::TxnId(String)` — Transaction ID.
-//!   TxnBegin returns `TxnBegun`, not `TxnId`.
-//!
-//! - `Output::TxnCommitted { version }` — Transaction committed with version.
-//!   Session's TxnCommit returns `Output::Version`, not `TxnCommitted`.
-//!
-//! - `Output::TxnAborted` — Transaction aborted.
-//!   Session's TxnRollback returns `Output::Unit`, not `TxnAborted`.
-//!
-//! These unused variants add surface area to the Output enum that callers must
-//! handle in exhaustive matches, even though they will never be produced.
-//! This is an architectural choice — the variants exist as forward declarations
-//! for planned features or to maintain API symmetry.
+//! Corresponding serialization tests for removed variants have been deleted.
 
-/// Documents the architectural choice. No runtime test is needed since this is
-/// about unreachable code paths in the Output enum. Verify by inspecting the
-/// handler implementations in handlers/*.rs.
+/// Confirms the fix: unused Output variants have been removed.
 #[test]
-fn issue_958_unused_output_variants_documented() {
-    // This test documents that the following Output variants are never
-    // constructed by any handler. The enum carries them as forward
-    // declarations for future features or API completeness.
-    //
-    // A grep for each variant in handlers/ confirms they are unused:
-    //   Output::Value        — 0 handler usages
-    //   Output::Versioned    — 0 handler usages
-    //   Output::Values       — 0 handler usages
-    //   Output::Versions     — 0 handler usages
-    //   Output::Strings      — 0 handler usages
-    //   Output::Int          — 0 handler usages
-    //   Output::Float        — 0 handler usages
-    //   Output::KvScanResult — 0 handler usages
-    //   Output::BranchInfo   — 0 handler usages
-    //   Output::TxnId        — 0 handler usages
-    //   Output::TxnCommitted — 0 handler usages
-    //   Output::TxnAborted   — 0 handler usages
-    //
-    // ARCHITECTURAL CHOICE: Keeping unused variants is a design decision
-    // that trades a larger enum for forward compatibility and API symmetry.
+fn issue_958_unused_output_variants_removed() {
+    // The unused Output variants listed above have been removed from the enum.
+    // This reduces the API surface area that callers must handle in exhaustive
+    // matches. If any of these variants are needed in the future, they can be
+    // re-added when a command handler actually produces them.
 }

@@ -307,6 +307,37 @@ impl JsonStore {
         })
     }
 
+    /// Get value at path in a document, with version metadata.
+    ///
+    /// Reads directly from the committed store (non-transactional) to
+    /// retrieve the document value together with its version and timestamp.
+    /// Returns `None` if the document doesn't exist or path not found.
+    pub fn get_versioned(
+        &self,
+        branch_id: &BranchId,
+        doc_id: &str,
+        path: &JsonPath,
+    ) -> StrataResult<Option<Versioned<JsonValue>>> {
+        use strata_core::contract::Versioned;
+
+        let key = self.key_for(branch_id, doc_id);
+        use strata_core::Storage;
+        match self.db.storage().get(&key)? {
+            Some(vv) => {
+                let doc = Self::deserialize_doc(&vv.value)?;
+                match get_at_path(&doc.value, path).cloned() {
+                    Some(json_val) => Ok(Some(Versioned::with_timestamp(
+                        json_val,
+                        strata_core::contract::Version::counter(doc.version),
+                        strata_core::contract::Timestamp::from_micros(doc.updated_at),
+                    ))),
+                    None => Ok(None),
+                }
+            }
+            None => Ok(None),
+        }
+    }
+
     /// Get full version history for a JSON document.
     ///
     /// Returns `None` if the document doesn't exist. Index with `[0]` = latest,

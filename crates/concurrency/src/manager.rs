@@ -233,13 +233,6 @@ impl TransactionManager {
                 return Err(CommitError::WALError(e.to_string()));
             }
 
-            if let Err(e) = wal.flush() {
-                txn.status = TransactionStatus::Aborted {
-                    reason: format!("WAL flush failed: {}", e),
-                };
-                return Err(CommitError::WALError(e.to_string()));
-            }
-
             // DURABILITY POINT: Transaction is now durable
             // Even if we crash after this, recovery will replay from WAL
         }

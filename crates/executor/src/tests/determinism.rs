@@ -70,7 +70,7 @@ fn test_kv_get_nonexistent_determinism() {
 
     for result in &results {
         match result {
-            Ok(Output::Maybe(None)) => {}
+            Ok(Output::MaybeVersioned(None)) | Ok(Output::Maybe(None)) => {}
             _ => panic!("Expected Maybe(None) for nonexistent key"),
         }
     }
@@ -105,8 +105,8 @@ fn test_kv_write_read_determinism() {
 
     for result in &results {
         match result {
-            Ok(Output::Maybe(Some(v))) => {
-                assert_eq!(v, &Value::String("test-value".into()));
+            Ok(Output::MaybeVersioned(Some(vv))) => {
+                assert_eq!(vv.value, Value::String("test-value".into()));
             }
             _ => panic!("Expected Maybe(Some) after write"),
         }
@@ -138,8 +138,8 @@ fn test_state_write_read_determinism() {
 
     for result in &results {
         match result {
-            Ok(Output::Maybe(Some(v))) => {
-                assert_eq!(*v, Value::Int(42));
+            Ok(Output::MaybeVersioned(Some(vv))) => {
+                assert_eq!(vv.value, Value::Int(42));
             }
             _ => panic!("Expected Maybe(Some) after write"),
         }
@@ -206,7 +206,8 @@ fn test_sequential_writes_determinism() {
         });
 
         match result {
-            Ok(Output::Maybe(Some(v))) => {
+            Ok(Output::MaybeVersioned(Some(vv))) => {
+                let v = vv.value;
                 assert_eq!(v, Value::Int(i));
             }
             _ => panic!("Expected value at key-{}", i),
@@ -235,6 +236,8 @@ fn test_kv_list_determinism() {
             executor.execute(Command::KvList {
                 branch: Some(BranchId::from("default")),
                 prefix: Some("user:".to_string()),
+                cursor: None,
+                limit: None,
             })
         })
         .collect();
@@ -352,6 +355,8 @@ fn test_event_read_by_type_determinism() {
             executor.execute(Command::EventReadByType {
                 branch: Some(BranchId::from("default")),
                 event_type: "events".to_string(),
+                after_sequence: None,
+                limit: None,
             })
         })
         .collect();
@@ -405,8 +410,8 @@ fn test_json_get_determinism() {
 
     for result in &results {
         match result {
-            Ok(Output::Maybe(Some(v))) => {
-                assert_eq!(*v, Value::String("Alice".into()));
+            Ok(Output::MaybeVersioned(Some(vv))) => {
+                assert_eq!(vv.value, Value::String("Alice".into()));
             }
             _ => panic!("Expected Maybe(Some)"),
         }

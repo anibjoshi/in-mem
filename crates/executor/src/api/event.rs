@@ -43,6 +43,8 @@ impl Strata {
         match self.executor.execute(Command::EventReadByType {
             branch: self.branch_id(),
             event_type: event_type.to_string(),
+            limit: None,
+            after_sequence: None,
         })? {
             Output::VersionedValues(events) => Ok(events),
             _ => Err(Error::Internal {

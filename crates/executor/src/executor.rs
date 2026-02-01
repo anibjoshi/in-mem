@@ -107,11 +107,16 @@ impl Executor {
                 })?;
                 crate::handlers::kv::kv_delete(&self.primitives, branch, key)
             }
-            Command::KvList { branch, prefix } => {
+            Command::KvList {
+                branch,
+                prefix,
+                cursor,
+                limit,
+            } => {
                 let branch = branch.ok_or(Error::InvalidInput {
                     reason: "Branch must be specified or resolved to default".into(),
                 })?;
-                crate::handlers::kv::kv_list(&self.primitives, branch, prefix)
+                crate::handlers::kv::kv_list(&self.primitives, branch, prefix, cursor, limit)
             }
             Command::KvGetv { branch, key } => {
                 let branch = branch.ok_or(Error::InvalidInput {
@@ -179,11 +184,22 @@ impl Executor {
                 })?;
                 crate::handlers::event::event_read(&self.primitives, branch, sequence)
             }
-            Command::EventReadByType { branch, event_type } => {
+            Command::EventReadByType {
+                branch,
+                event_type,
+                limit,
+                after_sequence,
+            } => {
                 let branch = branch.ok_or(Error::InvalidInput {
                     reason: "Branch must be specified or resolved to default".into(),
                 })?;
-                crate::handlers::event::event_read_by_type(&self.primitives, branch, event_type)
+                crate::handlers::event::event_read_by_type(
+                    &self.primitives,
+                    branch,
+                    event_type,
+                    limit,
+                    after_sequence,
+                )
             }
             Command::EventLen { branch } => {
                 let branch = branch.ok_or(Error::InvalidInput {
@@ -241,6 +257,18 @@ impl Executor {
                     reason: "Branch must be specified or resolved to default".into(),
                 })?;
                 crate::handlers::state::state_init(&self.primitives, branch, cell, value)
+            }
+            Command::StateDelete { branch, cell } => {
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
+                crate::handlers::state::state_delete(&self.primitives, branch, cell)
+            }
+            Command::StateList { branch, prefix } => {
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
+                crate::handlers::state::state_list(&self.primitives, branch, prefix)
             }
 
             // Vector commands
@@ -367,12 +395,24 @@ impl Executor {
                 reason: "Transaction commands not yet implemented".to_string(),
             }),
 
-            // Retention commands - will be implemented in Phase 3
-            Command::RetentionApply { .. }
-            | Command::RetentionStats { .. }
-            | Command::RetentionPreview { .. } => Err(Error::Internal {
-                reason: "Retention commands not yet implemented".to_string(),
-            }),
+            // Retention commands
+            Command::RetentionApply { branch } => {
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
+                let branch_id = crate::bridge::to_core_branch_id(&branch)?;
+                // Use the current version as the safe GC boundary:
+                // all versions older than the current version are prunable
+                // since they have been superseded by newer commits.
+                let current = self.primitives.db.current_version();
+                let _pruned = self.primitives.db.gc_versions_before(branch_id, current);
+                Ok(Output::Unit)
+            }
+            Command::RetentionStats { .. } | Command::RetentionPreview { .. } => {
+                Err(Error::Internal {
+                    reason: "Retention commands not yet implemented".to_string(),
+                })
+            }
 
             // Bundle commands
             Command::BranchExport { branch_id, path } => {

@@ -347,29 +347,27 @@ impl BranchIndex {
     fn delete_branch_data_internal(&self, branch_id: BranchId) -> StrataResult<()> {
         let ns = Namespace::for_branch(branch_id);
 
-        // Delete data for each type tag
-        #[allow(deprecated)]
-        for type_tag in [
-            TypeTag::KV,
-            TypeTag::Event,
-            TypeTag::State,
-            TypeTag::Trace, // Deprecated but kept for backwards compatibility
-            TypeTag::Json,
-            TypeTag::Vector,
-        ] {
-            self.db.transaction(branch_id, |txn| {
+        // Single transaction for all type tags — atomic branch delete
+        self.db.transaction(branch_id, |txn| {
+            #[allow(deprecated)]
+            for type_tag in [
+                TypeTag::KV,
+                TypeTag::Event,
+                TypeTag::State,
+                TypeTag::Trace, // Deprecated but kept for backwards compatibility
+                TypeTag::Json,
+                TypeTag::Vector,
+            ] {
                 let prefix = Key::new(ns.clone(), type_tag, vec![]);
                 let entries = txn.scan_prefix(&prefix)?;
 
                 for (key, _) in entries {
                     txn.delete(key)?;
                 }
+            }
 
-                Ok(())
-            })?;
-        }
-
-        Ok(())
+            Ok(())
+        })
     }
 }
 

@@ -97,6 +97,10 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         branch: Option<BranchId>,
         prefix: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u64>,
     },
 
     /// Get full version history for a key.
@@ -179,6 +183,10 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         branch: Option<BranchId>,
         event_type: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after_sequence: Option<u64>,
     },
 
     /// Get the total count of events in the log.
@@ -232,6 +240,22 @@ pub enum Command {
         branch: Option<BranchId>,
         cell: String,
         value: Value,
+    },
+
+    /// Delete a state cell.
+    /// Returns: `Output::Bool` (true if cell existed)
+    StateDelete {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<BranchId>,
+        cell: String,
+    },
+
+    /// List state cell names with optional prefix filter.
+    /// Returns: `Output::Keys`
+    StateList {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<BranchId>,
+        prefix: Option<String>,
     },
 
     // ==================== Vector (7 MVP) ====================
@@ -457,6 +481,8 @@ impl Command {
             | Command::StateReadv { branch, .. }
             | Command::StateCas { branch, .. }
             | Command::StateInit { branch, .. }
+            | Command::StateDelete { branch, .. }
+            | Command::StateList { branch, .. }
             // Vector (7 MVP)
             | Command::VectorUpsert { branch, .. }
             | Command::VectorGet { branch, .. }

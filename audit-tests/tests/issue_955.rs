@@ -1,27 +1,18 @@
 //! Audit test for issue #955: KvGet/StateRead/JsonGet strip version metadata
-//! Verdict: CONFIRMED BUG
+//! Verdict: FIXED
 //!
-//! The get-by-key operations for KV, State, and JSON all return
-//! `Output::Maybe(Option<Value>)` instead of `Output::MaybeVersioned(Option<VersionedValue>)`.
-//! This means the version number and timestamp associated with the stored value
-//! are stripped and lost on read.
-//!
-//! - kv.rs:49     — `Ok(Output::Maybe(result))`
-//! - state.rs:55  — `Ok(Output::Maybe(result))`
-//! - json.rs:94   — `Ok(Output::Maybe(mapped))`
-//!
-//! Meanwhile, KvPut/StateSet/JsonSet all return `Output::Version(...)`, so the
-//! version is available at write time. But after a write, a subsequent read
-//! cannot retrieve that version number. The only way to get versions back is
-//! to use the version-history commands (KvGetv, StateReadv, JsonGetv).
+//! The get-by-key operations for KV, State, and JSON now return
+//! `Output::MaybeVersioned(Option<VersionedValue>)` instead of
+//! `Output::Maybe(Option<Value>)`. This means the version number and
+//! timestamp associated with the stored value are preserved on read.
 
 use strata_core::value::Value;
 use strata_engine::database::Database;
 use strata_executor::{BranchId, Command, Executor, Output};
 
-/// KvGet strips version metadata from the returned value.
+/// KvGet now preserves version metadata.
 #[test]
-fn issue_955_kvget_strips_version() {
+fn issue_955_kvget_preserves_version() {
     let db = Database::ephemeral().unwrap();
     let executor = Executor::new(db);
     let branch = BranchId::from("default");
@@ -34,12 +25,12 @@ fn issue_955_kvget_strips_version() {
             value: Value::Int(42),
         })
         .unwrap();
-    let _version = match put_result {
+    let version = match put_result {
         Output::Version(v) => v,
         other => panic!("KvPut should return Version, got: {:?}", other),
     };
 
-    // Get it back — version is lost
+    // Get it back -- version is now preserved
     let get_result = executor
         .execute(Command::KvGet {
             branch: Some(branch.clone()),
@@ -47,17 +38,22 @@ fn issue_955_kvget_strips_version() {
         })
         .unwrap();
 
-    // BUG: Returns Maybe instead of MaybeVersioned — version metadata stripped
-    assert!(
-        matches!(get_result, Output::Maybe(_)),
-        "KvGet strips version info, returning Maybe instead of MaybeVersioned. Got: {:?}",
-        get_result
-    );
+    // FIXED: Returns MaybeVersioned with version metadata
+    match get_result {
+        Output::MaybeVersioned(Some(vv)) => {
+            assert_eq!(vv.value, Value::Int(42));
+            assert_eq!(
+                vv.version, version,
+                "Version from get should match version from put"
+            );
+        }
+        other => panic!("KvGet should return MaybeVersioned(Some). Got: {:?}", other),
+    }
 }
 
-/// StateRead strips version metadata from the returned value.
+/// StateRead now preserves version metadata.
 #[test]
-fn issue_955_state_read_strips_version() {
+fn issue_955_state_read_preserves_version() {
     let db = Database::ephemeral().unwrap();
     let executor = Executor::new(db);
     let branch = BranchId::from("default");
@@ -75,7 +71,7 @@ fn issue_955_state_read_strips_version() {
         other => panic!("StateInit should return Version, got: {:?}", other),
     };
 
-    // Read the state cell — version is lost
+    // Read the state cell -- version is now preserved
     let state_result = executor
         .execute(Command::StateRead {
             branch: Some(branch.clone()),
@@ -83,17 +79,17 @@ fn issue_955_state_read_strips_version() {
         })
         .unwrap();
 
-    // BUG: Returns Maybe instead of MaybeVersioned
+    // FIXED: Returns MaybeVersioned
     assert!(
-        matches!(state_result, Output::Maybe(_)),
-        "StateRead strips version info, returning Maybe instead of MaybeVersioned. Got: {:?}",
+        matches!(state_result, Output::MaybeVersioned(Some(_))),
+        "StateRead should return MaybeVersioned(Some). Got: {:?}",
         state_result
     );
 }
 
-/// JsonGet strips version metadata from the returned value.
+/// JsonGet now preserves version metadata.
 #[test]
-fn issue_955_json_get_strips_version() {
+fn issue_955_json_get_preserves_version() {
     let db = Database::ephemeral().unwrap();
     let executor = Executor::new(db);
     let branch = BranchId::from("default");
@@ -112,7 +108,7 @@ fn issue_955_json_get_strips_version() {
         other => panic!("JsonSet should return Version, got: {:?}", other),
     };
 
-    // Read the JSON document — version is lost
+    // Read the JSON document -- version is now preserved
     let get_result = executor
         .execute(Command::JsonGet {
             branch: Some(branch.clone()),
@@ -121,10 +117,10 @@ fn issue_955_json_get_strips_version() {
         })
         .unwrap();
 
-    // BUG: Returns Maybe instead of MaybeVersioned
+    // FIXED: Returns MaybeVersioned
     assert!(
-        matches!(get_result, Output::Maybe(_)),
-        "JsonGet strips version info, returning Maybe instead of MaybeVersioned. Got: {:?}",
+        matches!(get_result, Output::MaybeVersioned(Some(_))),
+        "JsonGet should return MaybeVersioned(Some). Got: {:?}",
         get_result
     );
 }

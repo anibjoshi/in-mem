@@ -174,7 +174,10 @@ fn issue_959_json_delete_nonroot_existing_path_returns_one() {
         .unwrap();
 
     assert!(
-        matches!(get_result, Output::Maybe(None)),
+        matches!(
+            get_result,
+            Output::MaybeVersioned(None) | Output::Maybe(None)
+        ),
         "Deleted path should not be retrievable. Got: {:?}",
         get_result
     );

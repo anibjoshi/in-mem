@@ -39,6 +39,9 @@ fn issue_844_kv_get_returns_none_for_preexisting_data() {
         })
         .unwrap();
     match &result {
+        Output::MaybeVersioned(Some(vv)) => {
+            assert_eq!(vv.value, Value::String("hello".into()));
+        }
         Output::Maybe(Some(v)) => {
             assert_eq!(*v, Value::String("hello".into()));
         }
@@ -106,6 +109,9 @@ fn issue_844_state_read_returns_none_for_preexisting_state() {
         })
         .unwrap();
     match &result {
+        Output::MaybeVersioned(Some(vv)) => {
+            assert_eq!(vv.value, Value::Int(0));
+        }
         Output::Maybe(Some(v)) => {
             assert_eq!(*v, Value::Int(0));
         }
@@ -212,6 +218,8 @@ fn issue_844_kv_list_misses_preexisting_keys() {
         .execute(Command::KvList {
             branch: None,
             prefix: None,
+            cursor: None,
+            limit: None,
         })
         .unwrap();
 

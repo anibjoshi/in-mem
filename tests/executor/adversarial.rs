@@ -51,7 +51,7 @@ fn concurrent_sessions_isolated_views() {
         .unwrap();
 
     match output {
-        Output::Maybe(None) => {
+        Output::MaybeVersioned(None) | Output::Maybe(None) => {
             // Correct: uncommitted writes are not visible
         }
         Output::Maybe(Some(_)) => {
@@ -72,7 +72,8 @@ fn concurrent_sessions_isolated_views() {
         .unwrap();
 
     match output {
-        Output::Maybe(Some(val)) => {
+        Output::MaybeVersioned(Some(vv)) => {
+            let val = vv.value;
             assert_eq!(val, Value::String("session_a_value".into()));
         }
         _ => panic!("Committed value should be visible"),
@@ -128,7 +129,7 @@ fn concurrent_session_increments() {
                         branch: None,
                         key: "counter".into(),
                     }) {
-                        Ok(Output::Maybe(Some(val))) => match val {
+                        Ok(Output::MaybeVersioned(Some(vv))) => match vv.value {
                             Value::Int(n) => n,
                             _ => continue,
                         },
@@ -168,7 +169,7 @@ fn concurrent_session_increments() {
         })
         .unwrap()
     {
-        Output::Maybe(Some(val)) => match val {
+        Output::MaybeVersioned(Some(vv)) => match vv.value {
             Value::Int(n) => n,
             _ => panic!("Counter should be Int"),
         },
@@ -223,7 +224,7 @@ fn session_drop_rolls_back_transaction() {
         .unwrap();
 
     assert!(
-        matches!(output, Output::Maybe(None)),
+        matches!(output, Output::MaybeVersioned(None) | Output::Maybe(None)),
         "DROP SAFETY VIOLATION: Uncommitted write persisted after session drop"
     );
 }
@@ -262,7 +263,8 @@ fn session_drop_after_commit_preserves_data() {
         .unwrap();
 
     match output {
-        Output::Maybe(Some(val)) => {
+        Output::MaybeVersioned(Some(vv)) => {
+            let val = vv.value;
             assert_eq!(val, Value::String("should_persist".into()));
         }
         _ => panic!("Committed data should persist after session drop"),
@@ -357,7 +359,10 @@ fn new_transaction_after_commit() {
             key: "txn1".into(),
         })
         .unwrap();
-    assert!(matches!(output, Output::Maybe(Some(_))));
+    assert!(matches!(
+        output,
+        Output::MaybeVersioned(Some(_)) | Output::Maybe(Some(_))
+    ));
 
     let output = session
         .execute(Command::KvGet {
@@ -365,7 +370,10 @@ fn new_transaction_after_commit() {
             key: "txn2".into(),
         })
         .unwrap();
-    assert!(matches!(output, Output::Maybe(Some(_))));
+    assert!(matches!(
+        output,
+        Output::MaybeVersioned(Some(_)) | Output::Maybe(Some(_))
+    ));
 }
 
 /// After rollback, session should allow new transaction
@@ -412,7 +420,10 @@ fn new_transaction_after_rollback() {
             key: "rolled_back".into(),
         })
         .unwrap();
-    assert!(matches!(output, Output::Maybe(None)));
+    assert!(matches!(
+        output,
+        Output::MaybeVersioned(None) | Output::Maybe(None)
+    ));
 
     let output = session
         .execute(Command::KvGet {
@@ -420,7 +431,10 @@ fn new_transaction_after_rollback() {
             key: "committed".into(),
         })
         .unwrap();
-    assert!(matches!(output, Output::Maybe(Some(_))));
+    assert!(matches!(
+        output,
+        Output::MaybeVersioned(Some(_)) | Output::Maybe(Some(_))
+    ));
 }
 
 // ============================================================================
@@ -448,7 +462,8 @@ fn empty_string_preserved() {
         .unwrap();
 
     match output {
-        Output::Maybe(Some(val)) => {
+        Output::MaybeVersioned(Some(vv)) => {
+            let val = vv.value;
             assert_eq!(val, Value::String("".into()));
         }
         _ => panic!("Empty string should be retrievable"),
@@ -476,7 +491,10 @@ fn null_value_is_storable() {
             key: "null_key".into(),
         })
         .unwrap();
-    assert!(matches!(output, Output::Maybe(Some(_))));
+    assert!(matches!(
+        output,
+        Output::MaybeVersioned(Some(_)) | Output::Maybe(Some(_))
+    ));
 
     // Overwrite with null
     executor
@@ -496,7 +514,8 @@ fn null_value_is_storable() {
         .unwrap();
 
     assert!(
-        matches!(output, Output::Maybe(Some(Value::Null))),
+        matches!(output, Output::MaybeVersioned(Some(ref vv)) if vv.value == Value::Null)
+            || matches!(output, Output::Maybe(Some(Value::Null))),
         "Storing Null should preserve the value, not delete the key"
     );
 
@@ -508,7 +527,10 @@ fn null_value_is_storable() {
         })
         .unwrap();
 
-    assert!(matches!(output, Output::Maybe(None)));
+    assert!(matches!(
+        output,
+        Output::MaybeVersioned(None) | Output::Maybe(None)
+    ));
 }
 
 /// Integer boundary values should be preserved
@@ -540,7 +562,8 @@ fn integer_boundaries_preserved() {
             .unwrap();
 
         match output {
-            Output::Maybe(Some(val)) => {
+            Output::MaybeVersioned(Some(vv)) => {
+                let val = vv.value;
                 assert_eq!(
                     val,
                     Value::Int(value),
@@ -575,7 +598,7 @@ fn float_special_values() {
         .unwrap();
 
     match output {
-        Output::Maybe(Some(val)) => match val {
+        Output::MaybeVersioned(Some(vv)) => match vv.value {
             Value::Float(f) => {
                 assert!((f - std::f64::consts::PI).abs() < 1e-10);
             }
@@ -601,7 +624,7 @@ fn float_special_values() {
         .unwrap();
 
     match output {
-        Output::Maybe(Some(val)) => match val {
+        Output::MaybeVersioned(Some(vv)) => match vv.value {
             Value::Float(f) => {
                 assert!(f.is_infinite() && f.is_sign_positive());
             }
@@ -627,7 +650,7 @@ fn float_special_values() {
         .unwrap();
 
     match output {
-        Output::Maybe(Some(val)) => match val {
+        Output::MaybeVersioned(Some(vv)) => match vv.value {
             Value::Float(f) => {
                 assert!(f.is_nan(), "NaN should be preserved");
             }
@@ -671,7 +694,8 @@ fn large_nested_object() {
         .unwrap();
 
     match output {
-        Output::Maybe(Some(val)) => {
+        Output::MaybeVersioned(Some(vv)) => {
+            let val = vv.value;
             assert_eq!(val, Value::Object(outer));
         }
         _ => panic!("Large object should be retrievable"),
@@ -719,7 +743,8 @@ fn concurrent_reads_consistent() {
                         .unwrap();
 
                     match output {
-                        Output::Maybe(Some(val)) => {
+                        Output::MaybeVersioned(Some(vv)) => {
+                            let val = vv.value;
                             assert_eq!(val, Value::Int(42), "Read inconsistency detected!");
                         }
                         _ => panic!("Key should exist"),
@@ -780,7 +805,8 @@ fn concurrent_writes_different_keys() {
                 .unwrap();
 
             match output {
-                Output::Maybe(Some(val)) => {
+                Output::MaybeVersioned(Some(vv)) => {
+                    let val = vv.value;
                     assert_eq!(val, Value::Int((thread_id * 1000 + i) as i64));
                 }
                 _ => panic!(
@@ -851,7 +877,7 @@ fn kv_put_atomic() {
         .unwrap();
 
     match output {
-        Output::Maybe(Some(val)) => match val {
+        Output::MaybeVersioned(Some(vv)) => match vv.value {
             Value::Int(n) => {
                 assert!(
                     n >= 0 && n < num_threads as i64,
@@ -929,13 +955,10 @@ fn executor_branch_isolation() {
         })
         .unwrap();
 
-    match (output_a, output_b) {
-        (Output::Maybe(Some(va)), Output::Maybe(Some(vb))) => {
-            assert_eq!(va, Value::String("value_in_branch_a".into()));
-            assert_eq!(vb, Value::String("value_in_branch_b".into()));
-        }
-        _ => panic!("Both branches should have their own values"),
-    }
+    let va = extract_maybe_value(output_a).expect("Branch A should have a value");
+    let vb = extract_maybe_value(output_b).expect("Branch B should have a value");
+    assert_eq!(va, Value::String("value_in_branch_a".into()));
+    assert_eq!(vb, Value::String("value_in_branch_b".into()));
 }
 
 // ============================================================================
@@ -1016,7 +1039,8 @@ fn error_recovery() {
         .unwrap();
 
     match output {
-        Output::Maybe(Some(val)) => {
+        Output::MaybeVersioned(Some(vv)) => {
+            let val = vv.value;
             assert_eq!(val, Value::Int(123));
         }
         _ => panic!("Executor should recover from errors"),
