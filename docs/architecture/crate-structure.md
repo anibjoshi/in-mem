@@ -1,6 +1,6 @@
 # Crate Structure
 
-StrataDB is a Rust workspace with 7 member crates. Dependencies flow downward — higher-level crates depend on lower-level ones.
+StrataDB is a Rust workspace with 8 member crates. Dependencies flow downward — higher-level crates depend on lower-level ones.
 
 ## Dependency Graph
 
@@ -15,9 +15,11 @@ stratadb (root)
         │     │           └── strata-core
         │     ├── strata-storage
         │     └── strata-durability
-        └── strata-intelligence
-              ├── strata-core
-              └── strata-engine
+        ├── strata-intelligence
+        │     ├── strata-core
+        │     └── strata-engine
+        └── strata-security
+              └── strata-core
 ```
 
 ## Crate Descriptions
@@ -100,6 +102,17 @@ stratadb (root)
 
 **Dependencies:** strata-core, strata-engine, dashmap, serde
 
+### `strata-security`
+
+**Purpose:** Access control and security policies.
+
+**Key responsibilities:**
+- Read-only access mode for database connections
+- Per-connection access control (read-write vs read-only)
+- Future: role-based access control, authentication
+
+**Dependencies:** strata-core
+
 ### `strata-executor`
 
 **Purpose:** Public API and command dispatch. **This is the only crate users import.**
@@ -108,12 +121,12 @@ stratadb (root)
 - `Strata` — the main user-facing API with typed methods
 - `Session` — stateful transaction support
 - `Executor` — command dispatcher
-- `Command` — all operations as enum variants
+- `Command` — all operations as enum variants (47 commands across 11 categories)
 - `Output` — all results as enum variants
 - `Error` — structured error type
 - Re-exports `Value` from strata-core
 
-**Dependencies:** strata-core, strata-engine, strata-intelligence
+**Dependencies:** strata-core, strata-engine, strata-intelligence, strata-security
 
 ## Root Crate: `stratadb`
 

@@ -10,7 +10,7 @@ StrataDB provides **six data primitives** — purpose-built data structures that
 | **[Event Log](../guides/event-log.md)** | Append-only sequence of typed events | Audit trails, tool call history, decision logs |
 | **[State Cell](../guides/state-cell.md)** | Named cell with CAS | Coordination, counters, locks, state machines |
 | **[JSON Store](../guides/json-store.md)** | Key → JSON document with path access | Structured config, conversation history |
-| **[Vector Store](../guides/vector-store.md)** | Collection of keyed embeddings | Similarity search, RAG context, agent memory |
+| **[Vector Store](../guides/vector-store.md)** | Collection of keyed embeddings with pluggable indexing (brute-force or HNSW) | Similarity search, RAG context, agent memory |
 | **[Branch](../guides/branch-management.md)** | Named isolated namespace | Session isolation, experiments, multi-tenancy |
 
 ## Choosing the Right Primitive
@@ -23,7 +23,7 @@ StrataDB provides **six data primitives** — purpose-built data structures that
 
 **"I need a structured document I can update at specific paths"** → JSON Store. You can read and write at JSON paths like `$.config.temperature` without replacing the whole document.
 
-**"I need to store and search embeddings"** → Vector Store. Create collections with a fixed dimension and distance metric, then search by similarity.
+**"I need to store and search embeddings"** → Vector Store. Create collections with a fixed dimension and distance metric, then search by similarity. Supports brute-force (exact) and HNSW (approximate) indexing, batch upsert for bulk loading, and 8 metadata filter operators.
 
 **"I need to isolate data between sessions or experiments"** → Branches. Every other primitive is scoped to a branch.
 

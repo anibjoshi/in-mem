@@ -12,7 +12,7 @@ This reference is primarily for SDK builders and contributors. Most users should
 | JSON | 5 | JSON document operations |
 | Event | 4 | Event log operations |
 | State | 5 | State cell operations |
-| Vector | 7 | Vector store operations |
+| Vector | 9 | Vector store operations |
 | Branch | 5 | Branch lifecycle operations |
 | Transaction | 5 | Transaction control |
 | Retention | 3 | Retention policy |
@@ -66,7 +66,9 @@ This reference is primarily for SDK builders and contributors. Most users should
 | `VectorCreateCollection` | `branch?`, `collection`, `dimension`, `metric` | `Version(u64)` |
 | `VectorDeleteCollection` | `branch?`, `collection` | `Bool(existed)` |
 | `VectorListCollections` | `branch?` | `VectorCollectionList(Vec<CollectionInfo>)` |
+| `VectorCollectionStats` | `branch?`, `collection` | `VectorCollectionList(Vec<CollectionInfo>)` |
 | `VectorUpsert` | `branch?`, `collection`, `key`, `vector`, `metadata?` | `Version(u64)` |
+| `VectorBatchUpsert` | `branch?`, `collection`, `entries` | `Versions(Vec<u64>)` |
 | `VectorGet` | `branch?`, `collection`, `key` | `VectorData(Option<VersionedVectorData>)` |
 | `VectorDelete` | `branch?`, `collection`, `key` | `Bool(existed)` |
 | `VectorSearch` | `branch?`, `collection`, `query`, `k`, `filter?`, `metric?` | `VectorMatches(Vec<VectorMatch>)` |

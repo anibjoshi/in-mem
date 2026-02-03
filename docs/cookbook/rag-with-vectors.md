@@ -13,7 +13,7 @@ This recipe shows how to build a Retrieval-Augmented Generation (RAG) pattern us
 ### Step 1: Index Documents
 
 ```rust
-use stratadb::{Strata, Value, DistanceMetric};
+use stratadb::{Strata, Value, DistanceMetric, BatchVectorEntry};
 
 fn index_documents(db: &Strata, documents: &[(String, String, Vec<f32>)]) -> stratadb::Result<()> {
     // documents: Vec of (id, text, embedding)
@@ -22,14 +22,20 @@ fn index_documents(db: &Strata, documents: &[(String, String, Vec<f32>)]) -> str
     let dimension = documents[0].2.len() as u64;
     db.vector_create_collection("knowledge", dimension, DistanceMetric::Cosine)?;
 
-    for (id, text, embedding) in documents {
-        // Store the embedding with metadata
-        let metadata: Value = serde_json::json!({
-            "text_key": format!("doc:{}", id),
-        }).into();
-        db.vector_upsert("knowledge", id, embedding.clone(), Some(metadata))?;
+    // Batch upsert all embeddings at once (atomic, much faster than individual upserts)
+    let entries: Vec<BatchVectorEntry> = documents.iter()
+        .map(|(id, _text, embedding)| BatchVectorEntry {
+            key: id.clone(),
+            vector: embedding.clone(),
+            metadata: Some(serde_json::json!({
+                "text_key": format!("doc:{}", id),
+            })),
+        })
+        .collect();
+    db.vector_batch_upsert("knowledge", entries)?;
 
-        // Store the full text in KV
+    // Store the full text in KV
+    for (id, text, _embedding) in documents {
         db.kv_put(&format!("doc:{}", id), text.as_str())?;
     }
 
@@ -115,6 +121,16 @@ fn add_document(db: &Strata, id: &str, text: &str, embedding: Vec<f32>) -> strat
     db.kv_put(&format!("doc:{}", id), text)?;
     Ok(())
 }
+```
+
+## Monitoring Collection Health
+
+Use collection statistics to monitor your knowledge base:
+
+```rust
+let stats = db.vector_collection_stats("knowledge")?;
+println!("Knowledge base: {} vectors, {} bytes, index: {}",
+    stats.count, stats.memory_bytes, stats.index_type);
 ```
 
 ## See Also

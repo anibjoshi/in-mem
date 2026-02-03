@@ -69,10 +69,12 @@ Every method on the `Strata` struct, grouped by category.
 | `vector_create_collection` | `(name: &str, dimension: u64, metric: DistanceMetric) -> Result<u64>` | Version | |
 | `vector_delete_collection` | `(name: &str) -> Result<bool>` | Whether it existed | |
 | `vector_list_collections` | `() -> Result<Vec<CollectionInfo>>` | All collections | |
+| `vector_collection_stats` | `(collection: &str) -> Result<CollectionInfo>` | Collection details | Includes `index_type`, `memory_bytes` |
 | `vector_upsert` | `(collection: &str, key: &str, vector: Vec<f32>, metadata: Option<Value>) -> Result<u64>` | Version | |
+| `vector_batch_upsert` | `(collection: &str, entries: Vec<BatchVectorEntry>) -> Result<Vec<u64>>` | Versions | Atomic bulk insert |
 | `vector_get` | `(collection: &str, key: &str) -> Result<Option<VersionedVectorData>>` | Vector data or None | |
 | `vector_delete` | `(collection: &str, key: &str) -> Result<bool>` | Whether it existed | |
-| `vector_search` | `(collection: &str, query: Vec<f32>, k: u64) -> Result<Vec<VectorMatch>>` | Top-k matches | |
+| `vector_search` | `(collection: &str, query: Vec<f32>, k: u64) -> Result<Vec<VectorMatch>>` | Top-k matches | 8 metadata filter operators |
 
 ## Branch Operations (Low-Level)
 
