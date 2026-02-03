@@ -1,78 +1,122 @@
-# StrataDB Roadmap
+# Strata Roadmap
 
-StrataDB is an embedded database designed for AI agents, providing six primitives (KV, Event, State, JSON, Vector, Branch) with ACID transactions, snapshot isolation, and crash-safe durability.
+Other databases store data for AI. Strata *is* AI infrastructure. It doesn't just hold agent memory — it organizes it, understands it, and enables reasoning over it.
 
-**Current release**: v0.1.0 (embedded library)
+The roadmap has three acts:
 
-**Direction**: Embedded-first, with intelligence features, server mode, and multi-language SDKs planned.
+1. **Branches as the unit of agent thought** — fork, explore, diff, merge, replay
+2. **The database that understands itself** — auto-embedding, natural language search, cross-primitive knowledge graph
+3. **Agents that think in branches** — parallel planning, speculative execution, evaluation harness
 
-## Feature milestones
+Each is individually differentiated. Together, they're a paradigm shift.
 
-| Version | Theme | Status |
-|---------|-------|--------|
-| [v0.2](v0.2-branch-operations.md) | Branch operations | Planned |
-| [v0.3](v0.3-storage-efficiency.md) | Storage efficiency | Planned |
-| [v0.4](v0.4-vector-enhancements.md) | Vector search at scale | Planned |
-| [v0.5](v0.5-advanced-queries.md) | Advanced queries | Planned |
-| [v0.6](v0.6-server-mode.md) | Server mode | Planned |
-| [v0.7](v0.7-observability.md) | Observability | Planned |
-| [v1.0](v1.0-stable.md) | Stable release | Planned |
-| [Future](future.md) | Post-1.0 exploration | Planned |
+---
 
-## Cross-cutting initiatives
+## What's Shipped
 
-These are not versioned milestones — they cut across releases and have their own sequencing.
+### v0.1 — Foundation
 
-| Initiative | Summary |
-|------------|---------|
-| [Performance characterization](performance-characterization.md) | Benchmark suite (all primitives x all durability modes) and hardware scaling study (RPi to Xeon) |
-| [Engine & storage optimization](engine-storage-optimization.md) | Data-driven rewrites based on benchmark results |
-| [strata-security](strata-security.md) | Access control crate — read-only/read-write now, per-connection auth for server mode later |
-| [Intelligence: Indexing](intelligence-indexing.md) | Reduce search latency through indexing (index type TBD, tracking SOTA) |
-| [Intelligence: Internal graph](intelligence-graph.md) | Internal graph structure for relationship-aware queries across primitives |
-| [Intelligence: Embedded inference](intelligence-inference.md) | Nano inference runtime — MiniLM for auto-embedding, Qwen3 for natural language search |
-| [SDKs and MCP server](sdks-and-mcp.md) | Python SDK (PyO3), Node SDK (NAPI-RS), MCP server — thin wrappers over Command/Output |
-| [Websites](websites.md) | stratadb.org (docs, benchmarks) and stratadb.ai (live WASM demos) |
+6 primitives (KV, Event, State, JSON, Vector, Branch), OCC transactions, snapshot isolation, 3 durability modes, WAL with crash recovery, branch bundles, hybrid search with BM25 + RRF, 7-crate architecture.
+
+### v0.2–v0.4 — Hardening + Vector Intelligence
+
+HNSW index backend (~95%+ recall, built from scratch), advanced metadata filters (8 operators), batch vector upsert, collection statistics, reserved `_system_*` namespace, read-only access mode (`strata-security` crate), BTreeSet prefix index, transaction fast paths.
+
+---
+
+## Roadmap
+
+| Version | Theme | Depends on |
+|---------|-------|------------|
+| [**v0.5: MVP**](v0.5-mvp.md) | Spaces, branch operations, structured logging, MCP server | Foundation |
+| ↳ v0.5.1 | Spaces + structured logging | |
+| ↳ v0.5.2 | Fork, diff, merge (space-aware) | v0.5.1 |
+| ↳ v0.5.3 | MCP server | v0.5.2 |
+| [**v0.6: Auto-Embedding**](v0.6-auto-embedding.md) | MiniLM auto-embedding pipeline | v0.5 |
+| [**v0.7: SDKs**](v0.7-sdks.md) | Python (PyO3) and Node.js (NAPI-RS) | v0.6 |
+| [**v0.8: Enhanced Hybrid Search**](v0.8-enhanced-hybrid-search.md) | MiniLM vectors in RRF, new retrieval signals, internal knowledge graph | v0.6 |
+| [**v0.9: NL Search (Basic)**](v0.9-nl-search-basic.md) | Qwen3 NL→query decomposition | v0.8 |
+| [**v0.10: NL Search (Advanced)**](v0.10-nl-search-advanced.md) | Query expansion, result summarization, multi-step retrieval | v0.9 |
+| [**v0.11: Advanced Branch Workflows**](v0.11-advanced-branch-workflows.md) | Time-travel, replay, sandboxing | v0.5 |
+| [**v0.12: Sophisticated Intelligence**](v0.12-sophisticated-intelligence.md) | Fine-tuned models, multi-turn context, agentic workflows | v0.10 |
+| [**v1.0: Stable Release**](v1.0-stable.md) | Storage efficiency, engine optimizations, format freeze, semver | v0.5–v0.12 |
+| [**Post-1.0: Scaling**](post-1.0-scaling.md) | Server mode, replication, sharding, agent runtime, WASM | v1.0 |
+
+---
 
 ## Sequencing
 
 ```
-Black-box tests
-    │
-    ▼
-Performance characterization ──→ Engine & storage optimization
-    │
-    ▼
-strata-security (phase 1)
-    │
-    ├──→ Intelligence: Indexing ──→ Intelligence: Graph
-    │                                    │
-    │                                    ▼
-    │                           Intelligence: Inference
-    │
-    ├──→ SDKs and MCP server
-    │
-    └──→ Websites: stratadb.org ──→ WASM build ──→ stratadb.ai
+                     SHIPPED
+            ┌─────────────────────┐
+            │  v0.1 Foundation    │
+            │  v0.2-v0.4 Vector   │
+            │  + Security         │
+            └──────────┬──────────┘
+                       │
+                    v0.5.1
+              Spaces + Logging
+                       │
+                    v0.5.2
+              Branch Operations
+             (fork, diff, merge)
+                       │
+                    v0.5.3
+                  MCP Server
+                       │
+              ┌────────┴────────┐
+              │                 │
+            v0.6              v0.11
+        Auto-Embedding    Advanced Branch
+           (MiniLM)        Workflows
+              │
+         ┌────┴────┐
+         │         │
+       v0.7      v0.8
+       SDKs    Enhanced
+              Hybrid Search
+              + Knowledge Graph
+                   │
+                 v0.9
+             NL Search
+              (Basic)
+                   │
+                v0.10
+             NL Search
+             (Advanced)
+                   │
+                v0.12
+            Sophisticated
+            Intelligence
+                   │
+              ┌────┘
+              │
+            v1.0
+         Stable Release
+              │
+          Post-1.0
+           Scaling
 ```
 
-## What shipped in v0.1.0
+**Critical path**: v0.5 → v0.6 → v0.8 → v0.9 → v0.10 → v0.12 → v1.0
 
-- 6 primitives: KV, Event, State, JSON, Vector, Branch
-- OCC transactions with snapshot isolation
-- 3 durability modes: InMemory, Buffered, Strict
-- WAL with CRC32 checksums and crash recovery
-- Periodic snapshots with bounded recovery time
-- Branch isolation (data separated by branch)
-- Branch bundles (export/import as `.branchbundle.tar.zst`)
-- Hybrid search with BM25 scoring and Reciprocal Rank Fusion
-- 7-crate workspace architecture
+**Independent tracks**: v0.7 (SDKs) and v0.11 (advanced branch workflows) can proceed in parallel once their dependencies are met.
 
-## How to read this roadmap
+---
 
-Each document describes:
-- **Theme**: The unifying goal
-- **Features/Scope**: What will be built, with references to existing code where applicable
-- **Dependencies**: What must ship first
-- **Open questions**: What we don't know yet
+## Design Principles
 
-Milestones are ordered by priority but not committed to specific dates. Features may shift between milestones as development progresses.
+1. **Embedded-first**: Strata runs in-process. Cloud sync is an extension, not a replacement.
+2. **Branches are the primitive**: Every feature composes with branch isolation. If it doesn't work per-branch, it's not designed right.
+3. **Intelligence is opt-in**: Auto-embedding, NL search, and the inference runtime are feature-flagged. Without them, Strata is a fast, correct embedded database with zero model overhead.
+4. **Command/Output protocol**: Every operation is a serializable command in, serializable output out. SDKs are thin, testing is uniform.
+5. **Deterministic by default**: Seeded RNGs, sorted data structures, fixed tie-breaking. Same inputs, same outputs.
+6. **No premature abstraction**: Build what's needed now.
+
+---
+
+## Shipped References
+
+| Document | Description |
+|----------|-------------|
+| [v0.4 Vector Enhancements](v0.4-vector-enhancements.md) | HNSW, advanced filters, batch upsert, collection stats (shipped) |
