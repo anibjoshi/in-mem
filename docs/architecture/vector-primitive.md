@@ -60,11 +60,18 @@ The Vector primitive provides semantic search over embedding vectors organized i
         |
         v
 +------------------------------------------------------------------+
-|  VECTOR INDEX BACKEND (primitives/vector/brute_force.rs)         |
-|  BruteForceBackend:                                              |
-|  - VectorHeap: BTreeMap<VectorId, Vec<f32>>                      |
+|  VECTOR INDEX BACKEND (pluggable)                                |
+|                                                                  |
+|  BruteForceBackend (brute_force.rs):                             |
+|  - VectorHeap: BTreeMap<VectorId, offset>                        |
 |  - O(n) search: compute similarity for all vectors               |
 |  - Sort by (score desc, VectorId asc)                            |
+|                                                                  |
+|  HnswBackend (hnsw.rs):                                         |
+|  - Multi-layer navigable small world graph                       |
+|  - O(log n) approximate nearest neighbor search                  |
+|  - Greedy descent through layers + beam search at layer 0        |
+|  - BTreeMap<VectorId, HnswNode> for deterministic iteration      |
 +------------------------------------------------------------------+
         |
         v
@@ -75,63 +82,87 @@ The Vector primitive provides semantic search over embedding vectors organized i
 +------------------------------------------------------------------+
 ```
 
+## Index Backends
+
+### VectorIndexBackend Trait
+
+All backends implement this trait (`backend.rs`):
+
+```rust
+pub trait VectorIndexBackend: Send + Sync {
+    fn allocate_id(&mut self) -> VectorId;
+    fn insert(&mut self, id: VectorId, embedding: &[f32]) -> Result<(), VectorError>;
+    fn insert_with_id(&mut self, id: VectorId, embedding: &[f32]) -> Result<(), VectorError>;
+    fn delete(&mut self, id: VectorId) -> Result<bool, VectorError>;
+    fn search(&self, query: &[f32], k: usize) -> Vec<(VectorId, f32)>;
+    fn len(&self) -> usize;
+    fn dimension(&self) -> usize;
+    fn metric(&self) -> DistanceMetric;
+    fn config(&self) -> VectorConfig;
+    fn get(&self, id: VectorId) -> Option<&[f32]>;
+    fn contains(&self, id: VectorId) -> bool;
+    fn index_type_name(&self) -> &'static str;    // "brute_force" or "hnsw"
+    fn memory_usage(&self) -> usize;               // Approximate bytes
+    fn rebuild_index(&mut self);                    // Post-recovery graph reconstruction
+    fn vector_ids(&self) -> Vec<VectorId>;
+    fn snapshot_state(&self) -> (u64, Vec<usize>);
+    fn restore_snapshot_state(&mut self, next_id: u64, free_slots: Vec<usize>);
+}
+```
+
+### IndexBackendFactory
+
+```rust
+pub enum IndexBackendFactory {
+    BruteForce,                    // O(n) exact search (default)
+    Hnsw(HnswConfig),             // O(log n) approximate search
+}
+```
+
+### BruteForce Backend
+
+- **Complexity**: O(n) per search
+- **Recall**: 100% (exact)
+- **Structure**: Linear scan over `VectorHeap` contiguous f32 storage
+- **Determinism**: BTreeMap iteration + (score desc, VectorId asc) tie-break
+
+### HNSW Backend
+
+- **Complexity**: O(log n) per search
+- **Recall**: ~95%+ with default parameters
+- **Algorithm**: Hierarchical Navigable Small World (Malkov & Yashunin, 2016)
+- **Structure**: Multi-layer graph with `BTreeMap<VectorId, HnswNode>`
+- **Determinism**: Fixed RNG seed (SplitMix64) + BTreeSet neighbors + BTreeMap nodes
+
+**Key HNSW internals:**
+
+| Component | Purpose |
+|-----------|---------|
+| `HnswConfig` | M, ef_construction, ef_search, ml parameters |
+| `HnswNode` | Per-node neighbors (BTreeSet per layer), max_layer, deleted flag |
+| `ScoredId` | Candidate with score for heap-based beam search |
+| `search_layer()` | Algorithm 2: beam search at a single layer with max-heap candidates |
+| `greedy_search_to_layer()` | Algorithm 5: greedy descent through upper layers |
+| `insert_into_graph()` | Algorithm 1: insert with M-neighbor selection and Mmax pruning |
+| `rebuild_graph()` | Post-recovery reconstruction from heap embeddings |
+| `serialize_graph_state()` | Snapshot: serialize full graph topology |
+| `deserialize_graph_state()` | Snapshot: restore graph from bytes |
+
+### Distance Functions (distance.rs)
+
+Shared by both backends:
+
+| Function | Formula | Range |
+|----------|---------|-------|
+| `cosine_similarity(a, b)` | `dot(a,b) / (||a|| * ||b||)` | [-1, 1] |
+| `euclidean_similarity(a, b)` | `1 / (1 + l2_distance(a,b))` | (0, 1] |
+| `dot_product(a, b)` | `sum(a[i] * b[i])` | unbounded |
+
+All normalized: **higher = more similar** (Invariant R2).
+
 ## Operation Flows
 
 ### VectorUpsert
-
-```
-Client               Handler             Engine (VectorStore)  Backend             Storage
-  |                    |                   |                    |                   |
-  |-- VectorUpsert --->|                   |                    |                   |
-  | {branch,coll,key,  |                   |                    |                   |
-  |  vector,metadata}  |                   |                    |                   |
-  |                    |                   |                    |                   |
-  |                    |-- validate ------>|                    |                   |
-  |                    |   not internal    |                    |                   |
-  |                    |   collection      |                    |                   |
-  |                    |                   |                    |                   |
-  |                    |-- auto-create --->|                    |                   |
-  |                    |   collection      |                    |                   |
-  |                    |   (ignore exists) |                    |                   |
-  |                    |                   |                    |                   |
-  |                    |-- convert meta -->|                    |                   |
-  |                    |   Value->JsonVal  |                    |                   |
-  |                    |                   |                    |                   |
-  |                    |                   |-- validate dim --->|                   |
-  |                    |                   |   embedding.len()  |                   |
-  |                    |                   |   == config.dim    |                   |
-  |                    |                   |                    |                   |
-  |                    |                   |-- ensure loaded -->|                   |
-  |                    |                   |   collection       |                   |
-  |                    |                   |                    |                   |
-  |                    |                   |-- check exists? -->|                   |
-  |                    |                   |   get_vector_      |                   |-- read KV ------->|
-  |                    |                   |   record_by_key    |                   |                   |
-  |                    |                   |                    |                   |                   |
-  |                    |                   |  NEW VECTOR:       |                   |                   |
-  |                    |                   |-- allocate_id ---->|                   |                   |
-  |                    |                   |   (monotonic)      |   VectorId(n)     |                   |
-  |                    |                   |                    |                   |                   |
-  |                    |                   |-- backend.insert ->|                   |                   |
-  |                    |                   |   (id, embedding)  |-- store in heap ->|                   |
-  |                    |                   |                    |   BTreeMap insert  |                   |
-  |                    |                   |                    |                   |                   |
-  |                    |                   |  UPDATE VECTOR:    |                   |                   |
-  |                    |                   |  (keep same id)    |                   |                   |
-  |                    |                   |-- backend.insert ->|-- heap upsert --->|                   |
-  |                    |                   |   (existing id,    |                   |                   |
-  |                    |                   |    new embedding)  |                   |                   |
-  |                    |                   |                    |                   |                   |
-  |                    |                   |-- serialize ------>|                   |                   |
-  |                    |                   |   VectorRecord     |                   |                   |
-  |                    |                   |   to MessagePack   |                   |                   |
-  |                    |                   |                    |                   |                   |
-  |                    |                   |-- db.transaction ->|                   |-- write KV ------>|
-  |                    |                   |   txn.put(kv_key,  |                   |   Value::Bytes    |
-  |                    |                   |     Value::Bytes)  |                   |                   |
-  |                    |                   |                    |                   |                   |
-  |<-- Output::Version |<- extract u64 ----|<- Counter(ver) ----|                   |                   |
-```
 
 **Steps:**
 
@@ -140,183 +171,55 @@ Client               Handler             Engine (VectorStore)  Backend          
    - Validates embedding dimension matches collection config
    - Ensures collection is loaded in memory (`ensure_collection_loaded`)
    - Checks if vector already exists by reading the KV key
-   - **New vector**: Allocates a `VectorId` from the backend's monotonic counter, inserts embedding into in-memory heap
-   - **Update vector**: Keeps the same `VectorId`, updates embedding in heap
+   - **New vector**: Allocates a `VectorId` from the backend's monotonic counter, inserts embedding into in-memory backend
+   - **Update vector**: Keeps the same `VectorId`, updates embedding in backend (HNSW removes old graph connections and re-inserts)
    - Serializes `VectorRecord` to MessagePack, writes to KV storage via `db.transaction()`
-3. **Backend (BruteForceBackend)**: Inserts/updates the embedding in `VectorHeap` (a `BTreeMap<VectorId, Vec<f32>>`)
+3. **Backend**: Inserts/updates the embedding. For HNSW, this also updates the graph structure.
 
-**Key format**: `Key::new_vector(namespace, collection, key)` where `user_key = "{collection}/{key}".as_bytes()`
-
----
-
-### VectorGet
-
-```
-Client               Handler             Engine (VectorStore)  Backend             Storage
-  |                    |                   |                    |                   |
-  |-- VectorGet ------>|                   |                    |                   |
-  | {branch,coll,key}  |                   |                    |                   |
-  |                    |-- validate ------>|                    |                   |
-  |                    |                   |                    |                   |
-  |                    |                   |-- ensure loaded -->|                   |
-  |                    |                   |                    |                   |
-  |                    |                   |-- snapshot.get --->|                   |-- read chain ---->|
-  |                    |                   |   Key::new_vector  |                   |   latest version  |
-  |                    |                   |   (ns, coll, key)  |                   |                   |
-  |                    |                   |                    |                   |                   |
-  |                    |                   |   NOT FOUND:       |                   |                   |
-  |                    |                   |   return None      |                   |                   |
-  |                    |                   |                    |                   |                   |
-  |                    |                   |   FOUND:           |                   |                   |
-  |                    |                   |<- Value::Bytes ----|                   |                   |
-  |                    |                   |                    |                   |                   |
-  |                    |                   |-- deserialize ---->|                   |                   |
-  |                    |                   |   VectorRecord     |                   |                   |
-  |                    |                   |   from MessagePack |                   |                   |
-  |                    |                   |                    |                   |                   |
-  |                    |                   |-- backend.get ---->|                   |                   |
-  |                    |                   |   (vector_id)      |-- read from heap -|                   |
-  |                    |                   |                    |   return &[f32]    |                   |
-  |                    |                   |                    |                   |                   |
-  |                    |                   |-- build entry ---->|                   |                   |
-  |                    |                   |   VectorEntry {    |                   |                   |
-  |                    |                   |     key, embedding,|                   |                   |
-  |                    |                   |     metadata,      |                   |                   |
-  |                    |                   |     vector_id,     |                   |                   |
-  |                    |                   |     version }      |                   |                   |
-  |                    |                   |                    |                   |                   |
-  |                    |<- Versioned -------|                    |                   |                   |
-  |                    |   <VectorEntry>   |                    |                   |                   |
-  |                    |                   |                    |                   |                   |
-  |                    |-- convert to ---->|                    |                   |                   |
-  |                    |   VersionedVector |                    |                   |                   |
-  |                    |   Data            |                    |                   |                   |
-  |                    |                   |                    |                   |                   |
-  |<-- VectorData -----|                   |                    |                   |                   |
-  |  Some({embedding,  |                   |                    |                   |                   |
-  |   metadata,version,|                   |                    |                   |                   |
-  |   timestamp})      |                   |                    |                   |                   |
-```
+### VectorBatchUpsert
 
 **Steps:**
 
-1. **Handler**: Validates collection name. Calls `primitives.vector.get()`. Converts to `VersionedVectorData` containing embedding, metadata, version, timestamp.
-2. **Engine (VectorStore)**: Ensures collection loaded. Creates a snapshot view of storage. Reads the KV key. Deserializes `VectorRecord` from MessagePack. Reads the embedding from the in-memory backend using the `vector_id`. Builds a `VectorEntry` combining both sources.
-
-**Note**: Get reads from **both** KV storage (metadata, version) and in-memory backend (embedding). The `VectorRecord` also stores the embedding for recovery, but the live read comes from the heap.
-
----
-
-### VectorDelete
-
-```
-Client               Handler             Engine (VectorStore)  Backend             Storage
-  |                    |                   |                    |                   |
-  |-- VectorDelete --->|                   |                    |                   |
-  | {branch,coll,key}  |                   |                    |                   |
-  |                    |-- validate ------>|                    |                   |
-  |                    |                   |                    |                   |
-  |                    |                   |-- ensure loaded -->|                   |
-  |                    |                   |                    |                   |
-  |                    |                   |-- get record ----->|                   |-- read KV ------->|
-  |                    |                   |   by kv_key        |                   |                   |
-  |                    |                   |                    |                   |                   |
-  |                    |                   |   NOT FOUND:       |                   |                   |
-  |                    |                   |   return false     |                   |                   |
-  |                    |                   |                    |                   |                   |
-  |                    |                   |   FOUND:           |                   |                   |
-  |                    |                   |   extract vector_id|                   |                   |
-  |                    |                   |                    |                   |                   |
-  |                    |                   |-- backend.delete ->|                   |                   |
-  |                    |                   |   (vector_id)      |-- remove from  -->|                   |
-  |                    |                   |                    |   heap             |                   |
-  |                    |                   |                    |                   |                   |
-  |                    |                   |-- db.transaction ->|                   |-- tombstone ----->|
-  |                    |                   |   txn.delete       |                   |   in KV chain     |
-  |                    |                   |   (kv_key)         |                   |                   |
-  |                    |                   |                    |                   |                   |
-  |<-- Output::Bool ---|<- true -----------|                    |                   |                   |
-```
-
-**Steps:**
-
-1. **Handler**: Validates collection. Calls `primitives.vector.delete()`. Returns `Output::Bool`.
-2. **Engine (VectorStore)**: Ensures collection loaded. Reads the KV record to get the `vector_id`. Deletes from in-memory backend. Deletes from KV storage via `txn.delete()`.
-
-**Dual delete**: Removes from both in-memory heap (immediate effect on search) and persistent KV (durability). Order: backend first, then KV.
-
----
+1. **Handler**: Validates collection. Converts all entries.
+2. **Engine (VectorStore)**:
+   - Validates all entries (dimension, key, embedding) before acquiring write lock
+   - Acquires single write lock for the entire batch
+   - Commits all KV writes in one transaction
+   - Updates backend for each entry
+   - Returns vector of versions
+3. **Atomicity**: If any validation fails, the entire batch is rejected. No partial writes.
 
 ### VectorSearch
 
-```
-Client               Handler             Engine (VectorStore)  Backend             Storage
-  |                    |                   |                    |                   |
-  |-- VectorSearch --->|                   |                    |                   |
-  | {branch,coll,      |                   |                    |                   |
-  |  query,k,filter?,  |                   |                    |                   |
-  |  metric?}          |                   |                    |                   |
-  |                    |-- validate ------>|                    |                   |
-  |                    |   convert filter  |                    |                   |
-  |                    |   (metric IGNORED)|                    |                   |
-  |                    |                   |                    |                   |
-  |                    |                   |-- validate dim --->|                   |
-  |                    |                   |   query.len() ==   |                   |
-  |                    |                   |   config.dim       |                   |
-  |                    |                   |                    |                   |
-  |                    |                   |-- ensure loaded -->|                   |
-  |                    |                   |                    |                   |
-  |                    |                   |-- backend.search ->|                   |
-  |                    |                   |   (query, k)       |                   |
-  |                    |                   |                    |                   |
-  |                    |                   |                    |-- for each vec:   |
-  |                    |                   |                    |   compute         |
-  |                    |                   |                    |   similarity      |
-  |                    |                   |                    |   (cosine/eucl/   |
-  |                    |                   |                    |    dotprod)        |
-  |                    |                   |                    |                   |
-  |                    |                   |                    |-- sort by ------->|
-  |                    |                   |                    |  (score desc,     |
-  |                    |                   |                    |   id asc)         |
-  |                    |                   |                    |                   |
-  |                    |                   |                    |-- truncate(k) --->|
-  |                    |                   |                    |                   |
-  |                    |                   |<- Vec<(VectorId, ->|                   |
-  |                    |                   |    score)>         |                   |
-  |                    |                   |                    |                   |
-  |                    |                   |== FOR EACH RESULT =====================|
-  |                    |                   |                    |                   |
-  |                    |                   |-- load metadata -->|                   |-- read KV ------->|
-  |                    |                   |   from KV by id    |                   |                   |
-  |                    |                   |                    |                   |                   |
-  |                    |                   |-- apply filter --->|                   |                   |
-  |                    |                   |   (if specified)   |                   |                   |
-  |                    |                   |   skip if no match |                   |                   |
-  |                    |                   |                    |                   |                   |
-  |                    |                   |-- resolve key ---->|                   |                   |
-  |                    |                   |   VectorId -> key  |                   |                   |
-  |                    |                   |                    |                   |                   |
-  |                    |                   |== END LOOP ================================|               |
-  |                    |                   |                    |                   |                   |
-  |                    |<- Vec<VectorMatch>-|                    |                   |                   |
-  |                    |  [{key,score,meta}]|                    |                   |                   |
-  |                    |                   |                    |                   |                   |
-  |<-- VectorMatches --|                   |                    |                   |                   |
-```
-
 **Steps:**
 
-1. **Handler**: Validates collection. Converts metadata filter. **Ignores** the `metric` parameter (uses collection's configured metric). Calls `primitives.vector.search()`.
-2. **Engine (VectorStore)**: Validates query dimension matches collection config. Ensures collection loaded. Calls `backend.search(query, k)`.
-3. **Backend (BruteForceBackend)**: Computes similarity for every vector in the collection (O(n)). Sorts by `(score desc, VectorId asc)` for determinism. Truncates to top-k. Returns `Vec<(VectorId, f32)>`.
-4. **Post-search**: For each result, loads metadata from KV storage. Applies metadata filter if specified (post-filter, not pre-filter). Resolves `VectorId` back to user key string.
+1. **Handler**: Validates collection. Converts metadata filter (all 8 FilterOp variants). **Ignores** the `metric` parameter (uses collection's configured metric).
+2. **Engine (VectorStore)**: Validates query dimension. Ensures collection loaded. Calls `backend.search(query, k)`.
+3. **Backend**:
+   - **BruteForce**: Computes similarity for every vector (O(n)). Sorts by (score desc, VectorId asc). Truncates to top-k.
+   - **HNSW**: Greedy descent through upper layers, beam search at layer 0 with ef_search width. Filters deleted nodes from results.
+4. **Post-search**: For each result, loads metadata from KV. Applies metadata filter with adaptive over-fetch (3x -> 6x -> 12x -> all multipliers). Resolves VectorId to user key.
 
-**Distance metrics** (all normalized so higher = more similar):
-- **Cosine**: `dot(a,b) / (||a|| * ||b||)` - range [-1, 1]
-- **Euclidean**: `1 / (1 + distance(a,b))` - range (0, 1]
-- **DotProduct**: `dot(a,b)` - unbounded (assumes pre-normalized vectors)
+### VectorCollectionStats
 
-**Important**: Metadata filtering is **post-filter** - the backend returns k results, then metadata is loaded and filtered. This means fewer than k results may be returned if filters eliminate some matches.
+Returns `CollectionInfo` with `index_type` ("brute_force" or "hnsw") and `memory_bytes` (approximate heap + graph memory usage).
+
+## Metadata Filtering
+
+### FilterOp Operators
+
+| Operator | Comparison | Type Handling |
+|----------|-----------|---------------|
+| `Eq` | Exact equality | All JsonScalar types |
+| `Ne` | Not equal | Inverse of Eq |
+| `Gt` | Greater than | Numeric only (non-numeric returns false) |
+| `Gte` | Greater than or equal | Numeric only |
+| `Lt` | Less than | Numeric only |
+| `Lte` | Less than or equal | Numeric only |
+| `In` | Value in set | Repeated Eq conditions |
+| `Contains` | Substring match | String only (non-string returns false) |
+
+Filters are applied post-search via `MetadataFilter::matches()`. The engine uses adaptive over-fetch to compensate for filtering losses.
 
 ## Storage Format
 
@@ -360,14 +263,52 @@ CollectionRecord {
 ```
 BruteForceBackend {
     heap: VectorHeap {
-        data:       BTreeMap<VectorId, Vec<f32>>  // Embeddings
+        data:       Vec<f32>                        // Contiguous embedding storage
+        id_to_offset: BTreeMap<VectorId, usize>     // ID -> data offset
         dimension:  usize
         metric:     DistanceMetric
-        next_id:    u64                            // Monotonic ID allocator
-        free_slots: Vec<usize>                     // Reusable IDs from deletions
+        next_id:    u64                             // Monotonic ID allocator
+        free_slots: Vec<usize>                      // Reusable storage slots
     }
 }
+
+HnswBackend {
+    config:     HnswConfig                          // M, ef_construction, ef_search, ml
+    heap:       VectorHeap                          // Same contiguous storage as brute-force
+    nodes:      BTreeMap<VectorId, HnswNode>        // Graph structure
+    entry_point: Option<VectorId>                   // Top-level entry node
+    max_level:  usize                               // Current max graph level
+    rng_seed:   u64                                 // Fixed seed for deterministic levels
+    rng_counter: u64                                // Monotonic RNG counter
+}
 ```
+
+### Snapshot Format
+
+The snapshot header includes:
+
+```
+CollectionSnapshotHeader {
+    branch_id:        [u8; 16]
+    name:             String
+    dimension:        u32
+    metric:           u8
+    storage_dtype:    u8
+    next_id:          u64
+    free_slots:       Vec<u64>
+    count:            u64
+    index_type:       u8           // 0 = BruteForce, 1 = HNSW
+    hnsw_graph_state: Vec<u8>      // Serialized graph (empty for brute-force)
+}
+```
+
+## Reserved Internal Namespace
+
+Collection names starting with `_system_` are reserved for internal use by the intelligence layer:
+
+- `validate_system_collection_name()` — validates `_system_*` prefix
+- `create_system_collection()`, `system_insert()`, `system_search()` — internal API that bypasses user-facing `_` prefix restriction
+- `vector_list_collections` filters out `_`-prefixed collections from user-visible results
 
 ## Transaction Behavior
 
@@ -378,15 +319,15 @@ BruteForceBackend {
 | Engine transactions | Used internally for KV persistence only |
 | In-memory consistency | Backend writes are immediate |
 | Crash recovery | Rebuild in-memory index from KV records on restart |
+| HNSW recovery | `rebuild_graph()` reconstructs graph from heap after recovery |
 | Search metric | Fixed per collection at creation time |
 
 ## Consistency Notes
 
-- Vector is the only primitive with **dual storage**: in-memory heap (for search) + persistent KV (for durability). All other primitives go through the standard transaction -> storage path.
+- Vector is the only primitive with **dual storage**: in-memory backend (for search) + persistent KV (for durability). All other primitives go through the standard transaction -> storage path.
 - Vector operations are **non-transactional** at the Session level. Even within an active Session transaction, vector operations execute immediately and are not rolled back on `TxnRollback`. This is a design choice for performance.
-- The `metric` parameter on `VectorSearch` is **ignored** - the collection's configured metric (set at creation) is always used. The parameter exists for API compatibility.
-- **Auto-creation**: `VectorUpsert` auto-creates collections with Cosine metric and the dimension of the first vector. Other primitives do not auto-create their containers.
-- Unlike KV (which uses `Version::Txn`), Vector uses `Version::Counter` per-vector, similar to State. But unlike State, Vector has no CAS operation.
-- **Post-filter search**: Metadata filtering happens after the brute-force search returns top-k results. This can return fewer than k results. Pre-filtering would require passing filters into the backend, which the current interface doesn't support.
-- The `VectorId` is an internal monotonic counter per collection. It's separate from the user-provided key string. The mapping between `VectorId` and user key is maintained through the KV-stored `VectorRecord`.
+- The `metric` parameter on `VectorSearch` is **ignored** - the collection's configured metric (set at creation) is always used.
+- **Auto-creation**: `VectorUpsert` auto-creates collections with Cosine metric and the dimension of the first vector.
+- **Post-filter search**: Metadata filtering happens after the backend returns candidates. The engine uses adaptive over-fetch (3x, 6x, 12x, all) to compensate.
+- The `VectorId` is an internal monotonic counter per collection, separate from the user-provided key string. The mapping is maintained through the KV-stored `VectorRecord`.
 - Collection names starting with `_` are reserved for internal use and rejected by the handler's `validate_not_internal_collection()` check.

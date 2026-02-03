@@ -9,7 +9,9 @@ The Vector Store holds embedding vectors in named collections and supports simil
 | `vector_create_collection` | `(collection: &str, dimension: u64, metric: DistanceMetric) -> Result<u64>` | Version |
 | `vector_delete_collection` | `(collection: &str) -> Result<bool>` | Whether it existed |
 | `vector_list_collections` | `() -> Result<Vec<CollectionInfo>>` | All collections |
+| `vector_collection_stats` | `(collection: &str) -> Result<CollectionInfo>` | Collection details |
 | `vector_upsert` | `(collection: &str, key: &str, vector: Vec<f32>, metadata: Option<Value>) -> Result<u64>` | Version |
+| `vector_batch_upsert` | `(collection: &str, entries: Vec<BatchVectorEntry>) -> Result<Vec<u64>>` | Versions |
 | `vector_get` | `(collection: &str, key: &str) -> Result<Option<VersionedVectorData>>` | Vector data |
 | `vector_delete` | `(collection: &str, key: &str) -> Result<bool>` | Whether it existed |
 | `vector_search` | `(collection: &str, query: Vec<f32>, k: u64) -> Result<Vec<VectorMatch>>` | Top-k matches |
@@ -35,11 +37,13 @@ db.vector_create_collection("scores", 128, DistanceMetric::DotProduct)?;
 
 ### Distance Metrics
 
-| Metric | Best For | Range |
-|--------|----------|-------|
-| `Cosine` | Text embeddings, normalized vectors | 0.0 (identical) to 2.0 (opposite) |
-| `Euclidean` | Spatial data, positions | 0.0+ (lower = more similar) |
-| `DotProduct` | Pre-normalized embeddings, scoring | Higher = more similar |
+| Metric | Best For | Score Range |
+|--------|----------|-------------|
+| `Cosine` | Text embeddings, normalized vectors | [-1, 1] (higher = more similar) |
+| `Euclidean` | Spatial data, positions | (0, 1] (higher = more similar) |
+| `DotProduct` | Pre-normalized embeddings, scoring | Unbounded (higher = more similar) |
+
+All metrics are normalized so that **higher scores = more similar**.
 
 ### List Collections
 
@@ -51,11 +55,47 @@ for c in &collections {
 }
 ```
 
+### Collection Statistics
+
+Get detailed information about a specific collection:
+
+```rust
+let stats = db.vector_collection_stats("embeddings")?;
+println!("Name: {}", stats.name);
+println!("Vectors: {}", stats.count);
+println!("Dimension: {}", stats.dimension);
+println!("Metric: {:?}", stats.metric);
+println!("Index type: {}", stats.index_type);      // "brute_force" or "hnsw"
+println!("Memory: {} bytes", stats.memory_bytes);
+```
+
 ### Delete a Collection
 
 ```rust
 db.vector_delete_collection("old-collection")?;
 ```
+
+## Index Backends
+
+The Vector Store supports two index backends:
+
+| Backend | Complexity | Recall | Best For |
+|---------|-----------|--------|----------|
+| **Brute Force** | O(n) exact | 100% | Collections < 10K vectors |
+| **HNSW** | O(log n) approximate | ~95%+ | Collections 10K+ vectors |
+
+The default backend is **Brute Force**. HNSW can be selected per collection at creation time via the engine-level `IndexBackendFactory::Hnsw(HnswConfig)`.
+
+### HNSW Configuration
+
+The HNSW backend accepts the following parameters:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `m` | 16 | Max connections per graph layer |
+| `ef_construction` | 200 | Beam width during index build (higher = better recall, slower build) |
+| `ef_search` | 50 | Beam width during search (higher = better recall, slower search) |
+| `ml` | 1/ln(m) | Level multiplier for probabilistic layer assignment |
 
 ## Storing Vectors
 
@@ -77,6 +117,37 @@ db.vector_upsert("docs", "doc-2", vec![0.0, 1.0, 0.0, 0.0], Some(metadata))?;
 ```
 
 The dimension of the vector must match the collection's dimension. A mismatch returns a `DimensionMismatch` error.
+
+### Batch Upsert
+
+For bulk loading, use `vector_batch_upsert` to insert multiple vectors atomically in a single transaction:
+
+```rust
+use stratadb::BatchVectorEntry;
+
+let entries = vec![
+    BatchVectorEntry {
+        key: "chunk-0".into(),
+        vector: vec![1.0, 0.0, 0.0, 0.0],
+        metadata: Some(serde_json::json!({"page": 1})),
+    },
+    BatchVectorEntry {
+        key: "chunk-1".into(),
+        vector: vec![0.0, 1.0, 0.0, 0.0],
+        metadata: Some(serde_json::json!({"page": 2})),
+    },
+    BatchVectorEntry {
+        key: "chunk-2".into(),
+        vector: vec![0.0, 0.0, 1.0, 0.0],
+        metadata: Some(serde_json::json!({"page": 3})),
+    },
+];
+
+let versions = db.vector_batch_upsert("docs", entries)?;
+println!("Inserted {} vectors", versions.len());
+```
+
+Batch upsert validates all entries before committing. If any entry has an invalid dimension, the entire batch fails atomically (no partial writes).
 
 ## Retrieving Vectors
 
@@ -115,8 +186,25 @@ for m in &results {
 | Field | Type | Description |
 |-------|------|-------------|
 | `key` | `String` | The vector's key |
-| `score` | `f32` | Similarity score |
+| `score` | `f32` | Similarity score (higher = more similar) |
 | `metadata` | `Option<Value>` | The vector's metadata (if stored) |
+
+### Metadata Filtering
+
+Search results can be filtered by metadata using 8 operators:
+
+| Operator | Description | Example |
+|----------|-------------|---------|
+| `Eq` | Equals | `source == "docs"` |
+| `Ne` | Not equals | `status != "archived"` |
+| `Gt` | Greater than | `score > 0.5` |
+| `Gte` | Greater than or equal | `version >= 2` |
+| `Lt` | Less than | `priority < 10` |
+| `Lte` | Less than or equal | `age <= 30` |
+| `In` | Value in set | `category in ["a", "b"]` |
+| `Contains` | String contains substring | `name contains "test"` |
+
+Metadata filtering is **post-filter** — the backend returns candidates, then metadata is loaded and filtered. The engine uses adaptive over-fetch (3x, 6x, 12x multipliers) to ensure enough results survive filtering.
 
 ## Deleting Vectors
 
@@ -133,16 +221,19 @@ assert!(existed);
 let db = Strata::cache()?;
 db.vector_create_collection("knowledge", 384, DistanceMetric::Cosine)?;
 
-// Index document chunks
-for (i, chunk) in chunks.iter().enumerate() {
-    let embedding = embed(chunk); // Your embedding function
-    let meta: Value = serde_json::json!({
-        "text": chunk,
-        "source": "docs",
-        "chunk_index": i
-    }).into();
-    db.vector_upsert("knowledge", &format!("chunk-{}", i), embedding, Some(meta))?;
-}
+// Bulk-index document chunks
+let entries: Vec<BatchVectorEntry> = chunks.iter().enumerate()
+    .map(|(i, chunk)| BatchVectorEntry {
+        key: format!("chunk-{}", i),
+        vector: embed(chunk),
+        metadata: Some(serde_json::json!({
+            "text": chunk,
+            "source": "docs",
+            "chunk_index": i
+        })),
+    })
+    .collect();
+db.vector_batch_upsert("knowledge", entries)?;
 
 // Search for relevant context
 let query_embedding = embed("How does StrataDB handle concurrency?");
