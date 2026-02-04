@@ -133,10 +133,9 @@ pub use primitives::{
 pub use bundle::{BundleInfo, ExportInfo, ImportInfo};
 
 // Re-export branch_ops types at crate root
-// Note: DiffEntry is not re-exported here to avoid clash with recovery::DiffEntry.
-// Use strata_engine::branch_ops::DiffEntry for branch diff entries.
 pub use branch_ops::{
-    BranchDiffResult, ConflictEntry, DiffSummary, ForkInfo, MergeInfo, MergeStrategy, SpaceDiff,
+    BranchDiffEntry, BranchDiffResult, ConflictEntry, DiffSummary, ForkInfo, MergeInfo,
+    MergeStrategy, SpaceDiff,
 };
 
 #[cfg(feature = "perf-trace")]

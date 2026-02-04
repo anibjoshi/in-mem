@@ -52,7 +52,14 @@ pub enum Value {
     Float(f64),
     /// UTF-8 string
     String(String),
-    /// Raw bytes
+    /// Raw bytes.
+    ///
+    /// **JSON roundtrip note**: When a `Value::Bytes` is serialized to JSON
+    /// (e.g., via `serde_json`), the bytes are base64-encoded into a JSON string.
+    /// Deserializing that JSON string back produces `Value::String`, not
+    /// `Value::Bytes`. This means `Bytes` values do not survive a JSON roundtrip
+    /// with their original type intact. Use binary serialization (e.g., bincode,
+    /// MessagePack) for lossless `Bytes` roundtrips.
     Bytes(Vec<u8>),
     /// Array of values
     Array(Vec<Value>),

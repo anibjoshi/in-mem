@@ -25,7 +25,6 @@ zstd = { workspace = true }
 xxhash-rust = { workspace = true }
 
 [dev-dependencies]
-proptest = { workspace = true }
 tempfile = { workspace = true }
 chrono = { workspace = true }
 serde_json = { workspace = true }

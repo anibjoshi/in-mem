@@ -47,7 +47,8 @@ mod vector;
 
 pub use branches::Branches;
 pub use strata_engine::branch_ops::{
-    BranchDiffResult, ConflictEntry, DiffSummary, ForkInfo, MergeInfo, MergeStrategy, SpaceDiff,
+    BranchDiffEntry, BranchDiffResult, ConflictEntry, DiffSummary, ForkInfo, MergeInfo,
+    MergeStrategy, SpaceDiff,
 };
 
 use std::path::Path;
