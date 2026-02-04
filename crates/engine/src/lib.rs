@@ -118,7 +118,6 @@ pub use primitives::{
     VectorConfigSerde,
     VectorEntry,
     VectorError,
-    VectorHandle,
     VectorHeap,
     VectorId,
     VectorIndexBackend,
