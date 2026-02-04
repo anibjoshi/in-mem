@@ -596,7 +596,10 @@ impl<'a> TransactionOps for Transaction<'a> {
     }
 
     // =========================================================================
-    // Vector Operations (Phase 4) - Stub implementations
+    // Vector Operations — not supported in transactions
+    //
+    // Vector operations require in-memory index backends that are not
+    // accessible from TransactionContext. Use VectorStore methods directly.
     // =========================================================================
 
     fn vector_insert(
@@ -606,7 +609,11 @@ impl<'a> TransactionOps for Transaction<'a> {
         _embedding: &[f32],
         _metadata: Option<Value>,
     ) -> Result<Version, StrataError> {
-        unimplemented!("Vector operations will be implemented in Phase 4")
+        Err(StrataError::invalid_input(
+            "Vector insert is not supported inside transactions. \
+             Use VectorStore::insert() directly."
+                .to_string(),
+        ))
     }
 
     fn vector_get(
@@ -614,11 +621,19 @@ impl<'a> TransactionOps for Transaction<'a> {
         _collection: &str,
         _key: &str,
     ) -> Result<Option<Versioned<VectorEntry>>, StrataError> {
-        unimplemented!("Vector operations will be implemented in Phase 4")
+        Err(StrataError::invalid_input(
+            "Vector get is not supported inside transactions. \
+             Use VectorStore::get() directly."
+                .to_string(),
+        ))
     }
 
     fn vector_delete(&mut self, _collection: &str, _key: &str) -> Result<bool, StrataError> {
-        unimplemented!("Vector operations will be implemented in Phase 4")
+        Err(StrataError::invalid_input(
+            "Vector delete is not supported inside transactions. \
+             Use VectorStore::delete() directly."
+                .to_string(),
+        ))
     }
 
     fn vector_search(
@@ -628,23 +643,39 @@ impl<'a> TransactionOps for Transaction<'a> {
         _k: usize,
         _filter: Option<MetadataFilter>,
     ) -> Result<Vec<VectorMatch>, StrataError> {
-        unimplemented!("Vector operations will be implemented in Phase 4")
+        Err(StrataError::invalid_input(
+            "Vector search is not supported inside transactions. \
+             Use VectorStore::search() directly."
+                .to_string(),
+        ))
     }
 
     fn vector_exists(&self, _collection: &str, _key: &str) -> Result<bool, StrataError> {
-        unimplemented!("Vector operations will be implemented in Phase 4")
+        Err(StrataError::invalid_input(
+            "Vector exists is not supported inside transactions. \
+             Use VectorStore::exists() directly."
+                .to_string(),
+        ))
     }
 
     // =========================================================================
-    // Run Operations (Phase 5) - Stub implementations
+    // Branch Operations — not supported in transactions
     // =========================================================================
 
     fn branch_metadata(&self) -> Result<Option<Versioned<BranchMetadata>>, StrataError> {
-        unimplemented!("Run operations will be implemented in Phase 5")
+        Err(StrataError::invalid_input(
+            "Branch metadata is not supported inside transactions. \
+             Use BranchIndex methods directly."
+                .to_string(),
+        ))
     }
 
     fn branch_update_status(&mut self, _status: BranchStatus) -> Result<Version, StrataError> {
-        unimplemented!("Run operations will be implemented in Phase 5")
+        Err(StrataError::invalid_input(
+            "Branch status update is not supported inside transactions. \
+             Use BranchIndex methods directly."
+                .to_string(),
+        ))
     }
 }
 
@@ -1151,4 +1182,5 @@ mod tests {
         let result = txn.json_get_path("doc", &JsonPath::root()).unwrap();
         assert_eq!(result, Some(doc));
     }
+
 }

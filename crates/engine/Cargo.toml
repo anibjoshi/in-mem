@@ -33,7 +33,6 @@ toml = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-proptest = { workspace = true }
 chrono = { workspace = true }
 criterion = "0.5"
 serde_json = { workspace = true }

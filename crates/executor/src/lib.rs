@@ -46,15 +46,21 @@
 //! // Data from experiment-1 is not visible here
 //! ```
 
+#![warn(missing_docs)]
+
 mod api;
 pub(crate) mod bridge;
+#[allow(missing_docs)]
 mod command;
 mod convert;
+#[allow(missing_docs)]
 mod error;
 mod executor;
 pub(crate) mod json;
+#[allow(missing_docs)]
 mod output;
 mod session;
+#[allow(missing_docs)]
 mod types;
 
 // Handler modules
@@ -70,8 +76,8 @@ mod tests;
 
 // Core types
 pub use api::{
-    BranchDiffResult, Branches, ConflictEntry, DiffSummary, ForkInfo, MergeInfo, MergeStrategy,
-    SpaceDiff, Strata,
+    BranchDiffEntry, BranchDiffResult, Branches, ConflictEntry, DiffSummary, ForkInfo, MergeInfo,
+    MergeStrategy, SpaceDiff, Strata,
 };
 pub use command::Command;
 pub use error::Error;

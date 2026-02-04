@@ -29,7 +29,7 @@
 
 use crate::database::Database;
 use crate::primitives::extensions::{
-    EventLogExt, JsonStoreExt, KVStoreExt, StateCellExt, VectorStoreExt,
+    EventLogExt, JsonStoreExt, KVStoreExt, StateCellExt,
 };
 use std::sync::Arc;
 use strata_concurrency::TransactionContext;
@@ -113,11 +113,6 @@ impl BranchHandle {
     /// Access the Json primitive for this branch
     pub fn json(&self) -> JsonHandle {
         JsonHandle::new(self.db.clone(), self.branch_id)
-    }
-
-    /// Access the Vector primitive for this branch
-    pub fn vectors(&self) -> VectorHandle {
-        VectorHandle::new(self.db.clone(), self.branch_id)
     }
 
     // === Transactions ===
@@ -303,46 +298,6 @@ impl JsonHandle {
     }
 }
 
-// ============================================================================
-// VectorHandle
-// ============================================================================
-
-/// Handle for Vector operations scoped to a branch
-///
-/// Note: VectorStore operations in transactions are limited.
-/// Complex operations like search should use VectorStore directly.
-#[derive(Clone)]
-pub struct VectorHandle {
-    db: Arc<Database>,
-    branch_id: BranchId,
-}
-
-impl VectorHandle {
-    /// Create a new VectorHandle
-    pub(crate) fn new(db: Arc<Database>, branch_id: BranchId) -> Self {
-        Self { db, branch_id }
-    }
-
-    /// Get a vector by key
-    ///
-    /// Note: This operation is not supported in cross-primitive transactions.
-    /// Use VectorStore::get() directly for vector operations.
-    pub fn get(&self, collection: &str, key: &str) -> StrataResult<Option<Vec<f32>>> {
-        self.db
-            .transaction(self.branch_id, |txn| txn.vector_get(collection, key))
-    }
-
-    /// Insert a vector
-    ///
-    /// Note: This operation is not supported in cross-primitive transactions.
-    /// Use VectorStore::insert() directly for vector operations.
-    pub fn insert(&self, collection: &str, key: &str, embedding: &[f32]) -> StrataResult<Version> {
-        self.db.transaction(self.branch_id, |txn| {
-            txn.vector_insert(collection, key, embedding)
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,6 +310,5 @@ mod tests {
         assert_clone_send_sync::<EventHandle>();
         assert_clone_send_sync::<StateHandle>();
         assert_clone_send_sync::<JsonHandle>();
-        assert_clone_send_sync::<VectorHandle>();
     }
 }

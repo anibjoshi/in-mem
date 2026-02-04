@@ -49,7 +49,7 @@ pub mod state;
 pub mod vector;
 
 // Re-exports - primitives are exported as they're implemented
-pub use branch::{BranchHandle, EventHandle, JsonHandle, KvHandle, StateHandle, VectorHandle};
+pub use branch::{BranchHandle, EventHandle, JsonHandle, KvHandle, StateHandle};
 pub use branch::{BranchIndex, BranchMetadata, BranchStatus};
 pub use event::{Event, EventLog};
 pub use json::{JsonDoc, JsonStore};

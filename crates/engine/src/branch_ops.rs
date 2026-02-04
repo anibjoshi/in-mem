@@ -54,8 +54,11 @@ pub struct ForkInfo {
 }
 
 /// A single entry in a branch diff.
+///
+/// Named `BranchDiffEntry` to distinguish from [`crate::recovery::replay::DiffEntry`]
+/// which is used for recovery replay diffs.
 #[derive(Debug, Clone)]
-pub struct DiffEntry {
+pub struct BranchDiffEntry {
     /// User key (UTF-8 or hex-encoded for binary keys)
     pub key: String,
     /// Raw user key bytes (for programmatic access, preserves binary keys)
@@ -76,11 +79,11 @@ pub struct SpaceDiff {
     /// Space name
     pub space: String,
     /// Entries in B but not A
-    pub added: Vec<DiffEntry>,
+    pub added: Vec<BranchDiffEntry>,
     /// Entries in A but not B
-    pub removed: Vec<DiffEntry>,
+    pub removed: Vec<BranchDiffEntry>,
     /// Entries in both with different values
-    pub modified: Vec<DiffEntry>,
+    pub modified: Vec<BranchDiffEntry>,
 }
 
 /// Summary statistics for a branch diff.
@@ -366,7 +369,7 @@ pub fn diff_branches(
 
             match map_b.get(&(user_key.clone(), *tag)) {
                 None => {
-                    removed.push(DiffEntry {
+                    removed.push(BranchDiffEntry {
                         key: key_str,
                         raw_key: user_key.clone(),
                         primitive,
@@ -377,7 +380,7 @@ pub fn diff_branches(
                 }
                 Some(val_b) => {
                     if val_a != val_b {
-                        modified.push(DiffEntry {
+                        modified.push(BranchDiffEntry {
                             key: key_str,
                             raw_key: user_key.clone(),
                             primitive,
@@ -393,7 +396,7 @@ pub fn diff_branches(
         // Keys only in B (added)
         for ((user_key, tag), val_b) in &map_b {
             if !map_a.contains_key(&(user_key.clone(), *tag)) {
-                added.push(DiffEntry {
+                added.push(BranchDiffEntry {
                     key: format_user_key(user_key),
                     raw_key: user_key.clone(),
                     primitive: type_tag_to_primitive(*tag),
@@ -526,7 +529,7 @@ pub fn merge_branches(
         spaces_merged += 1;
 
         // Collect entries to write from source: added + modified (for LWW)
-        let entries_to_apply: Vec<&DiffEntry> = space_diff
+        let entries_to_apply: Vec<&BranchDiffEntry> = space_diff
             .added
             .iter()
             .chain(if strategy == MergeStrategy::LastWriterWins {
