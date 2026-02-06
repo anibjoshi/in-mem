@@ -61,7 +61,8 @@ pub use vector::{
     CollectionId, CollectionInfo, CollectionRecord, DistanceMetric, FilterCondition, FilterOp,
     HnswBackend, HnswConfig, IndexBackendFactory, JsonScalar, MetadataFilter, StorageDtype,
     VectorBackendState, VectorConfig, VectorConfigSerde, VectorEntry, VectorError, VectorHeap,
-    VectorId, VectorIndexBackend, VectorMatch, VectorRecord, VectorResult, VectorStore,
+    VectorId, VectorIndexBackend, VectorMatch, VectorMatchWithSource, VectorRecord, VectorResult,
+    VectorStore,
 };
 
 // Re-export search types for convenience (from search module)

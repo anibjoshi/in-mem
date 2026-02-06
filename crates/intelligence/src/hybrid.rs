@@ -15,14 +15,27 @@
 //!
 //! HybridSearch is STATELESS. It holds only references to Database and primitives.
 
-use crate::fuser::{Fuser, SimpleFuser};
+use crate::fuser::{Fuser, RRFFuser, SimpleFuser};
 use std::sync::Arc;
 use std::time::Instant;
 use strata_core::PrimitiveType;
 use strata_core::StrataResult;
-use strata_engine::search::{SearchBudget, SearchRequest, SearchResponse, SearchStats};
+use strata_engine::search::{SearchBudget, SearchMode, SearchRequest, SearchResponse, SearchStats};
+#[cfg(feature = "embed")]
+use strata_engine::search::SearchHit;
 use strata_engine::Database;
 use strata_engine::{BranchIndex, EventLog, JsonStore, KVStore, StateCell, VectorStore};
+
+// Shadow vector collection names (duplicated from executor::embed_hook to avoid
+// cross-crate dependency from intelligence → executor).
+#[cfg(feature = "embed")]
+const SHADOW_KV: &str = "_system_embed_kv";
+#[cfg(feature = "embed")]
+const SHADOW_JSON: &str = "_system_embed_json";
+#[cfg(feature = "embed")]
+const SHADOW_EVENT: &str = "_system_embed_event";
+#[cfg(feature = "embed")]
+const SHADOW_STATE: &str = "_system_embed_state";
 
 // ============================================================================
 // HybridSearch
@@ -148,6 +161,12 @@ impl HybridSearch {
         let mut any_truncated = false;
 
         for (primitive, budget) in primitives.iter().zip(budgets.iter()) {
+            // In Hybrid mode, skip the Vector primitive in the BM25 loop —
+            // vector search is handled separately in step 4 via shadow collections.
+            if req.mode == SearchMode::Hybrid && *primitive == PrimitiveType::Vector {
+                continue;
+            }
+
             // Check overall time budget
             if start.elapsed().as_micros() as u64 >= req.budget.max_wall_time_micros {
                 any_truncated = true;
@@ -168,10 +187,69 @@ impl HybridSearch {
             primitive_results.push((*primitive, result));
         }
 
-        // 4. Fuse results
-        let fused = self.fuser.fuse(primitive_results, req.k);
+        // 4. Vector search for Hybrid mode
+        #[cfg(feature = "embed")]
+        if req.mode == SearchMode::Hybrid {
+            if let Some(query_embedding) =
+                crate::embed::embed_query(&self.db, &req.query)
+            {
+                let shadow_collections = [SHADOW_KV, SHADOW_JSON, SHADOW_EVENT, SHADOW_STATE];
+                let mut vector_hits: Vec<SearchHit> = Vec::new();
 
-        // 5. Build stats
+                for collection in &shadow_collections {
+                    let matches = self.vector.system_search_with_sources(
+                        req.branch_id,
+                        collection,
+                        &query_embedding,
+                        req.k,
+                    );
+
+                    if let Ok(results) = matches {
+                        for m in results {
+                            if let Some(source_ref) = m.source_ref {
+                                vector_hits.push(SearchHit::new(
+                                    source_ref,
+                                    m.score,
+                                    0, // placeholder — re-assigned after global sort
+                                ));
+                            }
+                        }
+                    }
+                    // Silently skip collections that don't exist yet
+                }
+
+                if !vector_hits.is_empty() {
+                    // Sort by score descending so RRF ranks reflect global relevance,
+                    // not the arbitrary shadow-collection iteration order.
+                    vector_hits.sort_by(|a, b| {
+                        b.score
+                            .partial_cmp(&a.score)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                    for (i, hit) in vector_hits.iter_mut().enumerate() {
+                        hit.rank = (i + 1) as u32;
+                    }
+
+                    total_candidates += vector_hits.len();
+                    let vector_response = SearchResponse::new(
+                        vector_hits,
+                        false,
+                        SearchStats::new(0, 0),
+                    );
+                    primitive_results.push((PrimitiveType::Vector, vector_response));
+                }
+            }
+        }
+
+        // 5. Fuse results — use RRF for Hybrid mode to properly merge keyword + vector
+        let fuser: &dyn Fuser = if req.mode == SearchMode::Hybrid {
+            &RRFFuser::default()
+        } else {
+            self.fuser.as_ref()
+        };
+        let fused = fuser.fuse(primitive_results, req.k);
+
+        // 6. Build stats
         let stats = SearchStats::new(start.elapsed().as_micros() as u64, total_candidates);
 
         Ok(SearchResponse {
