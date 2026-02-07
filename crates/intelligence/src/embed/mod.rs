@@ -62,6 +62,24 @@ impl EmbedModelState {
     }
 }
 
+/// Embed a query string using the cached MiniLM model from the database.
+///
+/// Loads or retrieves the cached model via [`EmbedModelState`], then embeds the
+/// given text. Returns `None` (with a warning log) if the model cannot be loaded
+/// or embedding fails. This is a best-effort helper for hybrid search.
+pub fn embed_query(db: &strata_engine::Database, text: &str) -> Option<Vec<f32>> {
+    let model_dir = db.model_dir();
+    let state = db.extension::<EmbedModelState>();
+    let model = match state.get_or_load(&model_dir) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(target: "strata::hybrid", error = %e, "Failed to load embed model for hybrid search");
+            return None;
+        }
+    };
+    Some(model.embed(text))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -122,6 +122,7 @@ pub use primitives::{
     VectorId,
     VectorIndexBackend,
     VectorMatch,
+    VectorMatchWithSource,
     VectorRecord,
     VectorResult,
     VectorStore,

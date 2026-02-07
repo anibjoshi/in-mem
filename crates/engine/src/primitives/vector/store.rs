@@ -29,7 +29,7 @@ use crate::primitives::vector::collection::{validate_collection_name, validate_v
 use crate::primitives::vector::{
     CollectionId, CollectionInfo, CollectionRecord, IndexBackendFactory, MetadataFilter,
     VectorConfig, VectorEntry, VectorError, VectorId, VectorIndexBackend, VectorMatch,
-    VectorRecord, VectorResult,
+    VectorMatchWithSource, VectorRecord, VectorResult,
 };
 use strata_concurrency::TransactionContext;
 use strata_core::contract::{Timestamp, Version, Versioned};
@@ -965,6 +965,57 @@ impl VectorStore {
         )))
     }
 
+    /// Get key, metadata, source_ref, and version for a VectorId by scanning KV (internal)
+    ///
+    /// Like `get_key_and_metadata()` but also returns the `source_ref` and `version`
+    /// fields from the VectorRecord. Used by `search_with_sources()`.
+    fn get_key_metadata_and_source(
+        &self,
+        branch_id: BranchId,
+        space: &str,
+        collection: &str,
+        target_id: VectorId,
+    ) -> VectorResult<(String, Option<JsonValue>, Option<strata_core::EntityRef>, u64)> {
+        use strata_core::traits::SnapshotView;
+
+        let namespace = self.namespace_for(branch_id, space);
+        let prefix = Key::vector_collection_prefix(namespace, collection);
+
+        let snapshot = self.db.storage().create_snapshot();
+        let entries = snapshot
+            .scan_prefix(&prefix)
+            .map_err(|e| VectorError::Storage(e.to_string()))?;
+
+        for (key, versioned) in entries {
+            let bytes = match &versioned.value {
+                Value::Bytes(b) => b,
+                _ => continue,
+            };
+
+            let record = match VectorRecord::from_bytes(bytes) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+
+            if record.vector_id == target_id.0 {
+                let user_key = String::from_utf8(key.user_key.clone())
+                    .map_err(|e| VectorError::Serialization(e.to_string()))?;
+
+                let vector_key = user_key
+                    .strip_prefix(&format!("{}/", collection))
+                    .unwrap_or(&user_key)
+                    .to_string();
+
+                return Ok((vector_key, record.metadata, record.source_ref, record.version));
+            }
+        }
+
+        Err(VectorError::Internal(format!(
+            "VectorId {:?} not found in KV",
+            target_id
+        )))
+    }
+
     /// Get the current vector count for a collection
     fn get_collection_count(
         &self,
@@ -1341,6 +1392,86 @@ impl VectorStore {
         use crate::primitives::vector::collection::validate_system_collection_name;
         validate_system_collection_name(collection)?;
         self.search(branch_id, "default", collection, query, k, filter)
+    }
+
+    /// Search a system collection returning results with source references (internal use only)
+    ///
+    /// Like `system_search()` but returns `VectorMatchWithSource` which includes the
+    /// `source_ref` and `version` from the original VectorRecord. Used by hybrid search
+    /// to trace shadow vectors back to their originating records.
+    pub fn system_search_with_sources(
+        &self,
+        branch_id: BranchId,
+        collection: &str,
+        query: &[f32],
+        k: usize,
+    ) -> VectorResult<Vec<VectorMatchWithSource>> {
+        use crate::primitives::vector::collection::validate_system_collection_name;
+        validate_system_collection_name(collection)?;
+        self.search_with_sources(branch_id, "default", collection, query, k)
+    }
+
+    /// Search returning results with source references (internal)
+    ///
+    /// Mirrors `search()` but uses `get_key_metadata_and_source()` to build
+    /// `VectorMatchWithSource` results that include `source_ref` and `version`.
+    fn search_with_sources(
+        &self,
+        branch_id: BranchId,
+        space: &str,
+        collection: &str,
+        query: &[f32],
+        k: usize,
+    ) -> VectorResult<Vec<VectorMatchWithSource>> {
+        if k == 0 {
+            return Ok(Vec::new());
+        }
+
+        // Ensure collection is loaded
+        self.ensure_collection_loaded(branch_id, space, collection)?;
+
+        let collection_id = CollectionId::new(branch_id, collection);
+
+        // Validate query dimension
+        let config = self.get_collection_config_required(branch_id, space, collection)?;
+        if query.len() != config.dimension {
+            return Err(VectorError::DimensionMismatch {
+                expected: config.dimension,
+                got: query.len(),
+            });
+        }
+
+        // Search backend (no filter support — shadow collections don't need it)
+        let candidates = {
+            let state = self.state();
+            let backends = state.backends.read();
+            let backend = backends.get(&collection_id).ok_or_else(|| {
+                VectorError::CollectionNotFound {
+                    name: collection.to_string(),
+                }
+            })?;
+            backend.search(query, k)
+        };
+
+        let mut matches: Vec<VectorMatchWithSource> = Vec::with_capacity(candidates.len());
+
+        for (vector_id, score) in candidates {
+            let (key, metadata, source_ref, version) =
+                self.get_key_metadata_and_source(branch_id, space, collection, vector_id)?;
+            matches.push(VectorMatchWithSource::new(key, score, metadata, source_ref, version));
+        }
+
+        // Facade-level tie-breaking (score desc, key asc)
+        matches.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.key.cmp(&b.key))
+        });
+
+        matches.truncate(k);
+
+        Ok(matches)
     }
 
     /// Delete from a system collection (internal use only)
