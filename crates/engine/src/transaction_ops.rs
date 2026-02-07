@@ -40,13 +40,20 @@ use strata_core::{
 /// Every primitive's operations are accessible through this trait,
 /// enabling cross-primitive atomic operations.
 ///
-/// ## Phase 2 Implementation
+/// ## Implemented Operations
 ///
-/// Phase 2 implements KV and EventLog operations. Other primitive
-/// operations return `unimplemented!()` and will be wired in later phases:
-/// - Phase 3: State
-/// - Phase 4: Json + Vector
-/// - Phase 5: Run operations (finalize)
+/// - **KV**: key-value get, put, delete, exists, list
+/// - **Event**: append-only event log with hash chaining
+/// - **State**: compare-and-swap state cells (init, get, cas)
+/// - **JSON**: document operations with path-based access
+///
+/// ## Not Supported in Transactions
+///
+/// - **Vector**: requires in-memory index backends; use `VectorStore` directly
+/// - **Branch**: metadata/status operations; use `BranchIndex` directly
+///
+/// These return `Err(StrataError::InvalidInput)` with guidance on the
+/// correct API to use.
 pub trait TransactionOps {
     // =========================================================================
     // KV Operations (Phase 2)
@@ -186,8 +193,13 @@ mod tests {
     use super::*;
 
     /// Mock implementation of TransactionOps for testing trait properties
+    ///
+    /// Implements KV, Event, State, and JSON operations.
+    /// Vector and Branch return proper errors (matching real Transaction behavior).
     struct MockTransactionOps {
         kv_data: std::collections::HashMap<String, Value>,
+        state_data: std::collections::HashMap<String, State>,
+        json_data: std::collections::HashMap<String, JsonValue>,
         event_count: u64,
     }
 
@@ -195,6 +207,8 @@ mod tests {
         fn new() -> Self {
             Self {
                 kv_data: std::collections::HashMap::new(),
+                state_data: std::collections::HashMap::new(),
+                json_data: std::collections::HashMap::new(),
                 event_count: 0,
             }
         }
@@ -241,12 +255,9 @@ mod tests {
         }
 
         fn event_get(&self, sequence: u64) -> Result<Option<Versioned<Event>>, StrataError> {
-            // Return None for simplicity - Event struct is complex
             if sequence == 0 || sequence > self.event_count {
                 return Ok(None);
             }
-            // For testing purposes, we'll return None rather than construct a complex Event
-            // The trait behavior is still tested through event_append and event_len
             Ok(None)
         }
 
@@ -255,7 +266,6 @@ mod tests {
             _start: u64,
             _end: u64,
         ) -> Result<Vec<Versioned<Event>>, StrataError> {
-            // Return empty for simplicity
             Ok(Vec::new())
         }
 
@@ -263,87 +273,115 @@ mod tests {
             Ok(self.event_count)
         }
 
-        // State operations - return not implemented error for mock
-        fn state_get(&self, _name: &str) -> Result<Option<Versioned<State>>, StrataError> {
-            Err(StrataError::Internal {
-                message: "state_get not implemented in mock".to_string(),
-            })
+        fn state_get(&self, name: &str) -> Result<Option<Versioned<State>>, StrataError> {
+            Ok(self
+                .state_data
+                .get(name)
+                .map(|s| Versioned::new(s.clone(), s.version)))
         }
 
-        fn state_init(&mut self, _name: &str, _value: Value) -> Result<Version, StrataError> {
-            Err(StrataError::Internal {
-                message: "state_init not implemented in mock".to_string(),
-            })
+        fn state_init(&mut self, name: &str, value: Value) -> Result<Version, StrataError> {
+            if self.state_data.contains_key(name) {
+                return Err(StrataError::invalid_input(format!(
+                    "state '{}' already exists",
+                    name
+                )));
+            }
+            let state = State::new(value);
+            let version = state.version;
+            self.state_data.insert(name.to_string(), state);
+            Ok(version)
         }
 
         fn state_cas(
             &mut self,
-            _name: &str,
-            _expected: Version,
-            _value: Value,
+            name: &str,
+            expected: Version,
+            value: Value,
         ) -> Result<Version, StrataError> {
-            Err(StrataError::Internal {
-                message: "state_cas not implemented in mock".to_string(),
-            })
+            let current = self.state_data.get(name).ok_or_else(|| {
+                StrataError::Internal {
+                    message: format!("state '{}' not found", name),
+                }
+            })?;
+            if current.version != expected {
+                return Err(StrataError::Internal {
+                    message: format!(
+                        "version conflict: expected {:?}, got {:?}",
+                        expected, current.version
+                    ),
+                });
+            }
+            let new_version = expected.increment();
+            let new_state = State::with_version(value, new_version);
+            self.state_data.insert(name.to_string(), new_state);
+            Ok(new_version)
         }
 
-        // Json operations
         fn json_create(
             &mut self,
-            _doc_id: &str,
-            _value: JsonValue,
+            doc_id: &str,
+            value: JsonValue,
         ) -> Result<Version, StrataError> {
-            Err(StrataError::Internal {
-                message: "json_create not implemented in mock".to_string(),
-            })
+            if self.json_data.contains_key(doc_id) {
+                return Err(StrataError::invalid_input(format!(
+                    "document '{}' already exists",
+                    doc_id
+                )));
+            }
+            self.json_data.insert(doc_id.to_string(), value);
+            Ok(Version::txn(1))
         }
 
-        fn json_get(&self, _doc_id: &str) -> Result<Option<Versioned<JsonValue>>, StrataError> {
-            Err(StrataError::Internal {
-                message: "json_get not implemented in mock".to_string(),
-            })
+        fn json_get(&self, doc_id: &str) -> Result<Option<Versioned<JsonValue>>, StrataError> {
+            Ok(self
+                .json_data
+                .get(doc_id)
+                .map(|v| Versioned::new(v.clone(), Version::txn(1))))
         }
 
         fn json_get_path(
             &self,
-            _doc_id: &str,
-            _path: &JsonPath,
+            doc_id: &str,
+            path: &JsonPath,
         ) -> Result<Option<JsonValue>, StrataError> {
-            Err(StrataError::Internal {
-                message: "json_get_path not implemented in mock".to_string(),
-            })
+            match self.json_data.get(doc_id) {
+                Some(doc) => {
+                    if path.is_root() {
+                        Ok(Some(doc.clone()))
+                    } else {
+                        Ok(strata_core::get_at_path(doc, path).cloned())
+                    }
+                }
+                None => Ok(None),
+            }
         }
 
         fn json_set(
             &mut self,
-            _doc_id: &str,
-            _path: &JsonPath,
-            _value: JsonValue,
+            doc_id: &str,
+            path: &JsonPath,
+            value: JsonValue,
         ) -> Result<Version, StrataError> {
-            Err(StrataError::Internal {
-                message: "json_set not implemented in mock".to_string(),
-            })
+            if path.is_root() {
+                self.json_data.insert(doc_id.to_string(), value);
+            }
+            Ok(Version::txn(1))
         }
 
-        fn json_delete(&mut self, _doc_id: &str) -> Result<bool, StrataError> {
-            Err(StrataError::Internal {
-                message: "json_delete not implemented in mock".to_string(),
-            })
+        fn json_delete(&mut self, doc_id: &str) -> Result<bool, StrataError> {
+            Ok(self.json_data.remove(doc_id).is_some())
         }
 
-        fn json_exists(&self, _doc_id: &str) -> Result<bool, StrataError> {
-            Err(StrataError::Internal {
-                message: "json_exists not implemented in mock".to_string(),
-            })
+        fn json_exists(&self, doc_id: &str) -> Result<bool, StrataError> {
+            Ok(self.json_data.contains_key(doc_id))
         }
 
-        fn json_destroy(&mut self, _doc_id: &str) -> Result<bool, StrataError> {
-            Err(StrataError::Internal {
-                message: "json_destroy not implemented in mock".to_string(),
-            })
+        fn json_destroy(&mut self, doc_id: &str) -> Result<bool, StrataError> {
+            self.json_delete(doc_id)
         }
 
-        // Vector operations
+        // Vector operations — not supported in transactions (returns proper error)
         fn vector_insert(
             &mut self,
             _collection: &str,
@@ -351,9 +389,11 @@ mod tests {
             _embedding: &[f32],
             _metadata: Option<Value>,
         ) -> Result<Version, StrataError> {
-            Err(StrataError::Internal {
-                message: "vector_insert not implemented in mock".to_string(),
-            })
+            Err(StrataError::invalid_input(
+                "Vector insert is not supported inside transactions. \
+                 Use VectorStore::insert() directly."
+                    .to_string(),
+            ))
         }
 
         fn vector_get(
@@ -361,15 +401,19 @@ mod tests {
             _collection: &str,
             _key: &str,
         ) -> Result<Option<Versioned<VectorEntry>>, StrataError> {
-            Err(StrataError::Internal {
-                message: "vector_get not implemented in mock".to_string(),
-            })
+            Err(StrataError::invalid_input(
+                "Vector get is not supported inside transactions. \
+                 Use VectorStore::get() directly."
+                    .to_string(),
+            ))
         }
 
         fn vector_delete(&mut self, _collection: &str, _key: &str) -> Result<bool, StrataError> {
-            Err(StrataError::Internal {
-                message: "vector_delete not implemented in mock".to_string(),
-            })
+            Err(StrataError::invalid_input(
+                "Vector delete is not supported inside transactions. \
+                 Use VectorStore::delete() directly."
+                    .to_string(),
+            ))
         }
 
         fn vector_search(
@@ -379,28 +423,36 @@ mod tests {
             _k: usize,
             _filter: Option<MetadataFilter>,
         ) -> Result<Vec<VectorMatch>, StrataError> {
-            Err(StrataError::Internal {
-                message: "vector_search not implemented in mock".to_string(),
-            })
+            Err(StrataError::invalid_input(
+                "Vector search is not supported inside transactions. \
+                 Use VectorStore::search() directly."
+                    .to_string(),
+            ))
         }
 
         fn vector_exists(&self, _collection: &str, _key: &str) -> Result<bool, StrataError> {
-            Err(StrataError::Internal {
-                message: "vector_exists not implemented in mock".to_string(),
-            })
+            Err(StrataError::invalid_input(
+                "Vector exists is not supported inside transactions. \
+                 Use VectorStore::exists() directly."
+                    .to_string(),
+            ))
         }
 
-        // Run operations
+        // Branch operations — not supported in transactions (returns proper error)
         fn branch_metadata(&self) -> Result<Option<Versioned<BranchMetadata>>, StrataError> {
-            Err(StrataError::Internal {
-                message: "branch_metadata not implemented in mock".to_string(),
-            })
+            Err(StrataError::invalid_input(
+                "Branch metadata is not supported inside transactions. \
+                 Use BranchIndex methods directly."
+                    .to_string(),
+            ))
         }
 
         fn branch_update_status(&mut self, _status: BranchStatus) -> Result<Version, StrataError> {
-            Err(StrataError::Internal {
-                message: "branch_update_status not implemented in mock".to_string(),
-            })
+            Err(StrataError::invalid_input(
+                "Branch status update is not supported inside transactions. \
+                 Use BranchIndex methods directly."
+                    .to_string(),
+            ))
         }
     }
 
@@ -498,27 +550,114 @@ mod tests {
         assert!(user_keys.iter().all(|k| k.starts_with("user:")));
     }
 
-    // ========== Unimplemented Operations Return Proper Errors ==========
+    // ========== State Operations Through Trait Object ==========
 
     #[test]
-    fn test_unimplemented_operations_return_errors() {
-        let ops: Box<dyn TransactionOps> = Box::new(MockTransactionOps::new());
+    fn test_state_init_and_get_through_trait_object() {
+        let mut ops: Box<dyn TransactionOps> = Box::new(MockTransactionOps::new());
 
-        // State operations should return unimplemented error
-        let result = ops.state_get("test");
-        assert!(result.is_err());
+        // Initialize state
+        let version = ops.state_init("counter", Value::Int(0)).unwrap();
+        assert_eq!(version, Version::counter(1));
 
-        // Json operations should return unimplemented error
-        let result = ops.json_get("test-doc");
-        assert!(result.is_err());
+        // Read state back
+        let result = ops.state_get("counter").unwrap();
+        assert!(result.is_some());
+        let versioned = result.unwrap();
+        assert_eq!(versioned.value.value, Value::Int(0));
+        assert_eq!(versioned.value.version, Version::counter(1));
+    }
 
-        // Vector operations should return unimplemented error
-        let result = ops.vector_exists("collection", "key");
-        assert!(result.is_err());
+    #[test]
+    fn test_state_cas_through_trait_object() {
+        let mut ops: Box<dyn TransactionOps> = Box::new(MockTransactionOps::new());
 
-        // Run operations should return unimplemented error
-        let result = ops.branch_metadata();
+        ops.state_init("counter", Value::Int(0)).unwrap();
+        let new_version = ops
+            .state_cas("counter", Version::counter(1), Value::Int(42))
+            .unwrap();
+        assert_eq!(new_version, Version::counter(2));
+
+        let result = ops.state_get("counter").unwrap().unwrap();
+        assert_eq!(result.value.value, Value::Int(42));
+    }
+
+    #[test]
+    fn test_state_cas_version_mismatch_returns_error() {
+        let mut ops: Box<dyn TransactionOps> = Box::new(MockTransactionOps::new());
+
+        ops.state_init("counter", Value::Int(0)).unwrap();
+        let result = ops.state_cas("counter", Version::counter(99), Value::Int(1));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_state_init_duplicate_returns_error() {
+        let mut ops: Box<dyn TransactionOps> = Box::new(MockTransactionOps::new());
+
+        ops.state_init("counter", Value::Int(0)).unwrap();
+        let result = ops.state_init("counter", Value::Int(1));
+        assert!(result.is_err());
+    }
+
+    // ========== JSON Operations Through Trait Object ==========
+
+    #[test]
+    fn test_json_create_and_get_through_trait_object() {
+        let mut ops: Box<dyn TransactionOps> = Box::new(MockTransactionOps::new());
+
+        let doc: JsonValue = serde_json::json!({"name": "Alice"}).into();
+        ops.json_create("user:1", doc.clone()).unwrap();
+
+        let result = ops.json_get("user:1").unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().value, doc);
+    }
+
+    #[test]
+    fn test_json_delete_through_trait_object() {
+        let mut ops: Box<dyn TransactionOps> = Box::new(MockTransactionOps::new());
+
+        let doc: JsonValue = serde_json::json!({"key": "value"}).into();
+        ops.json_create("doc", doc).unwrap();
+        assert!(ops.json_exists("doc").unwrap());
+
+        let deleted = ops.json_delete("doc").unwrap();
+        assert!(deleted);
+        assert!(!ops.json_exists("doc").unwrap());
+    }
+
+    #[test]
+    fn test_json_create_duplicate_returns_error() {
+        let mut ops: Box<dyn TransactionOps> = Box::new(MockTransactionOps::new());
+
+        let doc: JsonValue = serde_json::json!({}).into();
+        ops.json_create("doc", doc.clone()).unwrap();
+        let result = ops.json_create("doc", doc);
+        assert!(result.is_err());
+    }
+
+    // ========== Vector/Branch Operations Return Proper Errors (Not Panics) ==========
+
+    #[test]
+    fn test_vector_operations_return_errors_not_panics() {
+        let mut ops: Box<dyn TransactionOps> = Box::new(MockTransactionOps::new());
+
+        // All vector operations should return Err, not panic
+        assert!(ops.vector_insert("col", "k", &[1.0], None).is_err());
+        assert!(ops.vector_get("col", "k").is_err());
+        assert!(ops.vector_delete("col", "k").is_err());
+        assert!(ops.vector_search("col", &[1.0], 5, None).is_err());
+        assert!(ops.vector_exists("col", "k").is_err());
+    }
+
+    #[test]
+    fn test_branch_operations_return_errors_not_panics() {
+        let mut ops: Box<dyn TransactionOps> = Box::new(MockTransactionOps::new());
+
+        // Branch operations should return Err, not panic
+        assert!(ops.branch_metadata().is_err());
+        assert!(ops.branch_update_status(BranchStatus::Active).is_err());
     }
 
     // ========== Trait Method Signatures ==========
