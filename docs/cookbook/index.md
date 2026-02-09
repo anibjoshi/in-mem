@@ -6,4 +6,5 @@ Real-world patterns and recipes for building with StrataDB.
 - **[Multi-Agent Coordination](multi-agent-coordination.md)** — shared databases, CAS coordination, branch isolation
 - **[RAG with Vectors](rag-with-vectors.md)** — store embeddings, search similar, combine with KV context
 - **[Deterministic Replay](deterministic-replay.md)** — record nondeterministic inputs, replay later
+- **[Intelligent Search](intelligent-search.md)** — time-scoped cross-primitive search with expansion and reranking
 - **[A/B Testing with Branches](ab-testing-with-branches.md)** — run two strategies, compare results
