@@ -36,7 +36,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::SystemTime;
 use strata_concurrency::TransactionContext;
-use strata_core::contract::{Timestamp, Version, Versioned};
+use strata_core::contract::{Version, Versioned};
 use strata_core::primitives::json::{
     delete_at_path, get_at_path, set_at_path, JsonLimitError, JsonPath, JsonValue,
 };
@@ -334,7 +334,7 @@ impl JsonStore {
                     Some(json_val) => Ok(Some(Versioned::with_timestamp(
                         json_val,
                         strata_core::contract::Version::counter(doc.version),
-                        strata_core::contract::Timestamp::from_micros(doc.updated_at),
+                        vv.timestamp,
                     ))),
                     None => Ok(None),
                 }
@@ -365,7 +365,7 @@ impl JsonStore {
                 Some(Versioned::with_timestamp(
                     doc.value,
                     Version::counter(doc.version),
-                    Timestamp::from_micros(doc.updated_at),
+                    vv.timestamp,
                 ))
             })
             .collect();
@@ -1843,5 +1843,52 @@ mod tests {
         // Subsequent destroys return false
         assert!(!store.destroy(&branch_id, "default", &doc_id).unwrap());
         assert!(!store.destroy(&branch_id, "default", &doc_id).unwrap());
+    }
+
+    // ========== Time-Travel Boundary Tests ==========
+
+    #[test]
+    fn test_get_at_exact_versioned_timestamp() {
+        // Reproduces: get_versioned returns timestamp T1 (JsonDoc.updated_at),
+        // but get_at compares against storage-layer timestamp T2 (StoredValue).
+        // Since T2 > T1, using T1 as as_of fails to find the value.
+        let db = Database::cache().unwrap();
+        let store = JsonStore::new(db);
+        let branch_id = BranchId::new();
+        let doc_id = "tt-doc";
+
+        let root = JsonPath::root();
+
+        store
+            .create(
+                &branch_id,
+                "default",
+                doc_id,
+                JsonValue::from("v1"),
+            )
+            .unwrap();
+
+        // Capture the timestamp returned by get_versioned
+        let versioned = store
+            .get_versioned(&branch_id, "default", doc_id, &root)
+            .unwrap()
+            .unwrap();
+        let ts = versioned.timestamp.as_micros();
+
+        // Update to v2
+        store
+            .set(&branch_id, "default", doc_id, &root, JsonValue::from("v2"))
+            .unwrap();
+
+        // Reading at the exact timestamp of v1 should return v1, not None
+        let result = store
+            .get_at(&branch_id, "default", doc_id, &root, ts)
+            .unwrap();
+        assert!(
+            result.is_some(),
+            "get_at with exact versioned timestamp returned None — \
+             timestamp mismatch between JsonDoc.updated_at and StoredValue.timestamp"
+        );
+        assert_eq!(result.unwrap(), JsonValue::from("v1"));
     }
 }
