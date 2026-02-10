@@ -1,6 +1,7 @@
 # Python SDK Reference
 
-The StrataDB Python SDK provides native Python bindings via PyO3.
+The StrataDB Python SDK provides native Python bindings via PyO3, with a
+Pythonic namespace API, context managers, and time-travel snapshots.
 
 ## Installation
 
@@ -13,47 +14,58 @@ pip install stratadb
 ```python
 from stratadb import Strata
 
-# Open a database
 db = Strata.open("/path/to/data")
 
-# Store and retrieve data
-db.kv_put("greeting", "Hello, World!")
-print(db.kv_get("greeting"))  # "Hello, World!"
+# Namespace API
+db.kv.put("greeting", "Hello, World!")
+print(db.kv.get("greeting"))  # "Hello, World!"
 
-# Use transactions
+# Transactions
 with db.transaction():
-    db.kv_put("a", 1)
-    db.kv_put("b", 2)
+    db.kv.put("a", 1)
+    db.kv.put("b", 2)
 # Auto-commits on success, auto-rollbacks on exception
 
-# Use vector search with NumPy
+# Vector search with NumPy
 import numpy as np
-embedding = np.random.rand(384).astype(np.float32)
-db.vector_create_collection("docs", 384)
-db.vector_upsert("docs", "doc-1", embedding)
-results = db.vector_search("docs", embedding, k=5)
+coll = db.vectors.create("docs", dimension=384)
+coll.upsert("doc-1", np.random.rand(384).astype(np.float32))
+results = coll.search(np.random.rand(384).astype(np.float32), k=5)
+
+# Time-travel
+from datetime import datetime
+snapshot = db.at(datetime(2024, 6, 15, 12, 0))
+snapshot.kv.get("greeting")  # reads value as of that timestamp
 ```
 
 ---
 
 ## Opening a Database
 
-### Strata.open(path)
+### Strata.open(path, auto_embed=False, read_only=False)
 
 Open a database at the given path.
 
 ```python
 db = Strata.open("/path/to/data")
+
+# With auto-embedding for semantic search
+db = Strata.open("/path/to/data", auto_embed=True)
+
+# Read-only mode
+db = Strata.open("/path/to/data", read_only=True)
 ```
 
 **Parameters:**
 | Name | Type | Description |
 |------|------|-------------|
 | `path` | str | Path to the database directory |
+| `auto_embed` | bool | Enable automatic text embedding (default: `False`) |
+| `read_only` | bool | Open in read-only mode (default: `False`) |
 
 **Returns:** `Strata` instance
 
-**Raises:** `RuntimeError` if the database cannot be opened
+**Raises:** `StrataError` if the database cannot be opened
 
 ### Strata.cache()
 
@@ -65,16 +77,27 @@ db = Strata.cache()
 
 **Returns:** `Strata` instance
 
+### Strata.setup() / stratadb.setup()
+
+Download model files for auto-embedding (~80MB MiniLM-L6-v2).
+
+```python
+import stratadb
+stratadb.setup()  # pre-download during installation
+```
+
+**Returns:** `str` - Path where model files are stored
+
 ---
 
-## KV Store
+## KV Store (`db.kv`)
 
-### kv_put(key, value)
+### kv.put(key, value)
 
 Store a key-value pair.
 
 ```python
-version = db.kv_put("user:123", {"name": "Alice", "age": 30})
+version = db.kv.put("user:123", {"name": "Alice", "age": 30})
 ```
 
 **Parameters:**
@@ -85,143 +108,149 @@ version = db.kv_put("user:123", {"name": "Alice", "age": 30})
 
 **Returns:** `int` - Version number
 
-### kv_get(key, as_of=None)
+### kv.get(key, *, default=None, as_of=None)
 
 Get a value by key.
 
 ```python
-value = db.kv_get("user:123")
+value = db.kv.get("user:123")
 if value is not None:
     print(value["name"])
 
+# With default
+name = db.kv.get("missing", default="Unknown")
+
 # Time-travel: read historical value
-historical = db.kv_get("user:123", as_of=1700002000)
+historical = db.kv.get("user:123", as_of=1700002000)
 ```
 
 **Parameters:**
 | Name | Type | Description |
 |------|------|-------------|
 | `key` | str | The key |
+| `default` | any, optional | Value to return if key not found (default: `None`) |
 | `as_of` | int, optional | Timestamp (microseconds since epoch) for time-travel read |
 
-**Returns:** Value or `None` if not found
+**Returns:** Value, `default` if not found
 
-### kv_delete(key)
+### kv.delete(key)
 
 Delete a key.
 
 ```python
-deleted = db.kv_delete("user:123")
+deleted = db.kv.delete("user:123")
 ```
-
-**Parameters:**
-| Name | Type | Description |
-|------|------|-------------|
-| `key` | str | The key |
 
 **Returns:** `bool` - True if the key existed
 
-### kv_list(prefix=None)
+### kv.keys(*, prefix=None)
 
 List keys with optional prefix filter.
 
 ```python
-all_keys = db.kv_list()
-user_keys = db.kv_list(prefix="user:")
+all_keys = db.kv.keys()
+user_keys = db.kv.keys(prefix="user:")
+```
+
+**Returns:** `list[str]`
+
+### kv.list(*, prefix=None, limit=None, as_of=None)
+
+List keys with optional prefix, limit, and time-travel support.
+
+```python
+all_keys = db.kv.list()
+user_keys = db.kv.list(prefix="user:")
+page = db.kv.list(prefix="user:", limit=100)
+past_keys = db.kv.list(prefix="user:", as_of=1700002000)
 ```
 
 **Parameters:**
 | Name | Type | Description |
 |------|------|-------------|
 | `prefix` | str, optional | Filter keys by prefix |
+| `limit` | int, optional | Maximum number of keys to return |
+| `as_of` | int, optional | Timestamp (microseconds since epoch) for time-travel read |
 
-**Returns:** `list[str]` - Key names
+**Returns:** `list[str]`
 
-### kv_history(key)
-
-Get version history for a key.
-
-```python
-history = db.kv_history("user:123")
-for entry in history:
-    print(f"v{entry['version']}: {entry['value']}")
-```
-
-**Returns:** `list[dict]` with `value`, `version`, `timestamp`, or `None`
-
-### kv_get_versioned(key)
+### kv.get_versioned(key)
 
 Get a value with version info.
 
 ```python
-result = db.kv_get_versioned("user:123")
+result = db.kv.get_versioned("user:123")
 if result:
     print(f"Value: {result['value']}, Version: {result['version']}")
 ```
 
 **Returns:** `dict` with `value`, `version`, `timestamp`, or `None`
 
-### kv_list_paginated(prefix=None, limit=None, cursor=None)
+### kv.history(key)
 
-List keys with pagination.
+Get version history for a key.
 
 ```python
-result = db.kv_list_paginated(prefix="user:", limit=100)
-print(result["keys"])
+history = db.kv.history("user:123")
+for entry in history:
+    print(f"v{entry['version']}: {entry['value']}")
 ```
 
-**Returns:** `dict` with `keys` list
+**Returns:** `list[dict]` with `value`, `version`, `timestamp`, or `None`
 
 ---
 
-## State Cell
+## State Cell (`db.state`)
 
-### state_set(cell, value)
+### state.set(cell, value)
 
 Set a state cell value.
 
 ```python
-version = db.state_set("counter", 0)
+version = db.state.set("counter", 0)
 ```
 
 **Returns:** `int` - Version number
 
-### state_get(cell, as_of=None)
+### state.get(cell, *, default=None, as_of=None)
 
 Get a state cell value.
 
 ```python
-value = db.state_get("counter")
+value = db.state.get("counter")
 
-# Time-travel: read historical value
-historical = db.state_get("counter", as_of=1700002000)
+# With default
+count = db.state.get("counter", default=0)
+
+# Time-travel
+historical = db.state.get("counter", as_of=1700002000)
 ```
 
 **Parameters:**
 | Name | Type | Description |
 |------|------|-------------|
 | `cell` | str | The cell name |
+| `default` | any, optional | Value to return if cell not found (default: `None`) |
 | `as_of` | int, optional | Timestamp (microseconds since epoch) for time-travel read |
 
-**Returns:** Value or `None`
+**Returns:** Value, `default` if not found
 
-### state_init(cell, value)
+### state.init(cell, value)
 
 Initialize a state cell only if it doesn't exist.
 
 ```python
-version = db.state_init("counter", 0)
+version = db.state.init("counter", 0)
 ```
 
 **Returns:** `int` - Version number
 
-### state_cas(cell, new_value, expected_version=None)
+### state.cas(cell, new_value, *, expected_version=None)
 
 Compare-and-swap update.
 
 ```python
-# Only update if version is 5
-new_version = db.state_cas("counter", 10, expected_version=5)
+new_version = db.state.cas("counter", 10, expected_version=5)
 if new_version is None:
     print("CAS failed - version mismatch")
 ```
@@ -235,57 +264,58 @@ if new_version is None:
 
 **Returns:** `int` (new version) or `None` if CAS failed
 
-### state_delete(cell)
+### state.delete(cell)
 
 Delete a state cell.
 
 ```python
-deleted = db.state_delete("counter")
+deleted = db.state.delete("counter")
 ```
 
 **Returns:** `bool` - True if the cell existed
 
-### state_list(prefix=None)
+### state.list(*, prefix=None, as_of=None)
 
 List state cell names.
 
 ```python
-cells = db.state_list()
-cells = db.state_list(prefix="config:")
+cells = db.state.list()
+cells = db.state.list(prefix="config:")
+past_cells = db.state.list(prefix="config:", as_of=1700002000)
 ```
 
 **Returns:** `list[str]`
 
-### state_history(cell)
-
-Get version history for a state cell.
-
-```python
-history = db.state_history("counter")
-```
-
-**Returns:** `list[dict]` or `None`
-
-### state_get_versioned(cell)
+### state.get_versioned(cell)
 
 Get a state cell with version info.
 
 ```python
-result = db.state_get_versioned("counter")
+result = db.state.get_versioned("counter")
 ```
 
 **Returns:** `dict` with `value`, `version`, `timestamp`, or `None`
 
+### state.history(cell)
+
+Get version history for a state cell.
+
+```python
+history = db.state.history("counter")
+```
+
+**Returns:** `list[dict]` or `None`
+
 ---
 
-## Event Log
+## Event Log (`db.events`)
 
-### event_append(event_type, payload)
+### events.append(event_type, payload)
 
 Append an event to the log.
 
 ```python
-seq = db.event_append("user_action", {"action": "click", "target": "button"})
+seq = db.events.append("user_action", {"action": "click", "target": "button"})
 ```
 
 **Parameters:**
@@ -296,46 +326,35 @@ seq = db.event_append("user_action", {"action": "click", "target": "button"})
 
 **Returns:** `int` - Sequence number
 
-### event_get(sequence)
+### events.get(sequence, *, as_of=None)
 
 Get an event by sequence number.
 
 ```python
-event = db.event_get(0)
+event = db.events.get(0)
 if event:
     print(event["value"])
+
+# Time-travel
+past_event = db.events.get(0, as_of=1700002000)
 ```
 
 **Returns:** `dict` with `value`, `version`, `timestamp`, or `None`
 
-### event_list(event_type)
+### events.list(event_type, *, limit=None, after=None, as_of=None)
 
-List events by type.
+List events by type with optional pagination and time-travel.
 
 ```python
-events = db.event_list("user_action")
+events = db.events.list("user_action")
 for event in events:
     print(event["value"])
-```
 
-**Returns:** `list[dict]`
+# Paginated
+page = db.events.list("user_action", limit=100, after=500)
 
-### event_len()
-
-Get total event count.
-
-```python
-count = db.event_len()
-```
-
-**Returns:** `int`
-
-### event_list_paginated(event_type, limit=None, after=None)
-
-List events with pagination.
-
-```python
-events = db.event_list_paginated("user_action", limit=100, after=500)
+# Time-travel
+past_events = db.events.list("user_action", as_of=1700002000)
 ```
 
 **Parameters:**
@@ -344,23 +363,42 @@ events = db.event_list_paginated("user_action", limit=100, after=500)
 | `event_type` | str | The event type |
 | `limit` | int, optional | Maximum events |
 | `after` | int, optional | Return events after this sequence |
+| `as_of` | int, optional | Timestamp (microseconds since epoch) for time-travel read |
 
 **Returns:** `list[dict]`
 
+### events.count
+
+Get total event count (property).
+
+```python
+count = db.events.count
+```
+
+**Returns:** `int`
+
+### len(db.events)
+
+Get total event count via `__len__`.
+
+```python
+count = len(db.events)
+```
+
 ---
 
-## JSON Store
+## JSON Store (`db.json`)
 
-### json_set(key, path, value)
+### json.set(key, path, value)
 
 Set a value at a JSONPath.
 
 ```python
 # Set entire document
-db.json_set("user:123", "$", {"name": "Alice", "age": 30})
+db.json.set("user:123", "$", {"name": "Alice", "age": 30})
 
 # Set nested field
-db.json_set("user:123", "$.email", "alice@example.com")
+db.json.set("user:123", "$.email", "alice@example.com")
 ```
 
 **Parameters:**
@@ -372,114 +410,143 @@ db.json_set("user:123", "$.email", "alice@example.com")
 
 **Returns:** `int` - Version number
 
-### json_get(key, path, as_of=None)
+### json.get(key, path="$", *, as_of=None)
 
-Get a value at a JSONPath.
+Get a value at a JSONPath. Defaults to `"$"` (root).
 
 ```python
-doc = db.json_get("user:123", "$")
-name = db.json_get("user:123", "$.name")
+doc = db.json.get("user:123")          # path defaults to "$"
+name = db.json.get("user:123", "$.name")
 
-# Time-travel: read historical document
-historical = db.json_get("config", "$", as_of=1700002000)
+# Time-travel
+historical = db.json.get("config", as_of=1700002000)
 ```
 
 **Parameters:**
 | Name | Type | Description |
 |------|------|-------------|
 | `key` | str | Document key |
-| `path` | str | JSONPath (use `$` for root) |
+| `path` | str | JSONPath (default: `"$"`) |
 | `as_of` | int, optional | Timestamp (microseconds since epoch) for time-travel read |
 
 **Returns:** Value or `None`
 
-### json_delete(key, path)
+### json.delete(key, path="$")
 
-Delete a value at a JSONPath.
+Delete a value at a JSONPath. Defaults to `"$"` (whole document).
 
 ```python
-deleted_count = db.json_delete("user:123", "$.email")
+deleted_count = db.json.delete("user:123", "$.email")
+db.json.delete("user:123")  # delete entire document
 ```
 
 **Returns:** `int` - Count of elements deleted
 
-### json_list(limit, prefix=None, cursor=None)
+### json.list(*, prefix=None, limit=100, cursor=None, as_of=None)
 
 List JSON document keys with pagination.
 
 ```python
-result = db.json_list(100, prefix="user:")
+result = db.json.list(prefix="user:")
 keys = result["keys"]
 next_cursor = result.get("cursor")
+
+# Time-travel
+past_result = db.json.list(prefix="user:", as_of=1700002000)
 ```
 
 **Returns:** `dict` with `keys` and optional `cursor`
 
-### json_history(key)
-
-Get version history for a JSON document.
-
-```python
-history = db.json_history("user:123")
-```
-
-**Returns:** `list[dict]` or `None`
-
-### json_get_versioned(key)
+### json.get_versioned(key)
 
 Get a JSON document with version info.
 
 ```python
-result = db.json_get_versioned("user:123")
+result = db.json.get_versioned("user:123")
 ```
 
 **Returns:** `dict` with `value`, `version`, `timestamp`, or `None`
 
----
+### json.history(key)
 
-## Vector Store
-
-### vector_create_collection(collection, dimension, metric=None)
-
-Create a vector collection.
+Get version history for a JSON document.
 
 ```python
-db.vector_create_collection("embeddings", 384)
-db.vector_create_collection("images", 512, metric="euclidean")
+history = db.json.history("user:123")
+```
+
+**Returns:** `list[dict]` or `None`
+
+---
+
+## Vector Store (`db.vectors`)
+
+### vectors.create(name, *, dimension, metric="cosine")
+
+Create a vector collection and return a `Collection` handle.
+
+```python
+coll = db.vectors.create("embeddings", dimension=384)
+coll = db.vectors.create("images", dimension=512, metric="euclidean")
 ```
 
 **Parameters:**
 | Name | Type | Description |
 |------|------|-------------|
-| `collection` | str | Collection name |
+| `name` | str | Collection name |
 | `dimension` | int | Vector dimension |
-| `metric` | str, optional | `cosine` (default), `euclidean`, `dot_product` |
+| `metric` | str | `"cosine"` (default), `"euclidean"`, `"dot_product"` |
 
-**Returns:** `int` - Version number
+**Returns:** `Collection` handle
 
-### vector_delete_collection(collection)
+### vectors.collection(name)
+
+Get a handle to an existing collection.
+
+```python
+coll = db.vectors.collection("embeddings")
+```
+
+**Returns:** `Collection` handle
+
+### vectors.drop(name)
 
 Delete a vector collection.
 
 ```python
-deleted = db.vector_delete_collection("embeddings")
+deleted = db.vectors.drop("embeddings")
 ```
 
 **Returns:** `bool`
 
-### vector_list_collections()
+### vectors.list()
 
 List all vector collections.
 
 ```python
-collections = db.vector_list_collections()
+collections = db.vectors.list()
 for c in collections:
     print(f"{c['name']}: {c['count']} vectors")
 ```
 
 **Returns:** `list[dict]` with `name`, `dimension`, `metric`, `count`, `index_type`, `memory_bytes`
 
-### vector_upsert(collection, key, vector, metadata=None)
+### "name" in db.vectors
+
+Check if a collection exists.
+
+```python
+if "embeddings" in db.vectors:
+    print("Collection exists")
+```
+
+---
+
+## Collection
+
+A `Collection` handle is returned by `db.vectors.create()` or `db.vectors.collection()`.
+
+### coll.upsert(key, vector, *, metadata=None)
 
 Insert or update a vector.
 
@@ -487,102 +554,77 @@ Insert or update a vector.
 import numpy as np
 
 embedding = np.random.rand(384).astype(np.float32)
-db.vector_upsert("embeddings", "doc-1", embedding, {"title": "Hello"})
+coll.upsert("doc-1", embedding, metadata={"title": "Hello"})
 
 # Also accepts lists
-db.vector_upsert("embeddings", "doc-2", [0.1, 0.2, 0.3, ...])
+coll.upsert("doc-2", [0.1, 0.2, 0.3, ...])
 ```
 
 **Parameters:**
 | Name | Type | Description |
 |------|------|-------------|
-| `collection` | str | Collection name |
 | `key` | str | Vector key |
 | `vector` | ndarray or list | Vector embedding |
 | `metadata` | dict, optional | Metadata |
 
 **Returns:** `int` - Version number
 
-### vector_get(collection, key)
+### coll.get(key, *, as_of=None)
 
 Get a vector by key.
 
 ```python
-result = db.vector_get("embeddings", "doc-1")
+result = coll.get("doc-1")
 if result:
     print(result["embedding"])  # NumPy array
     print(result["metadata"])
+
+# Time-travel
+past = coll.get("doc-1", as_of=1700002000)
 ```
 
 **Returns:** `dict` with `key`, `embedding`, `metadata`, `version`, `timestamp`, or `None`
 
-### vector_delete(collection, key)
+### coll.delete(key)
 
 Delete a vector.
 
 ```python
-deleted = db.vector_delete("embeddings", "doc-1")
+deleted = coll.delete("doc-1")
 ```
 
 **Returns:** `bool`
 
-### vector_search(collection, query, k, as_of=None)
+### coll.search(query, *, k=10, filter=None, metric=None, as_of=None)
 
-Search for similar vectors.
+Search for similar vectors. If `filter` or `metric` is provided, uses filtered search.
 
 ```python
 query = np.random.rand(384).astype(np.float32)
-matches = db.vector_search("embeddings", query, k=10)
+matches = coll.search(query, k=10)
 for match in matches:
     print(f"{match['key']}: {match['score']}")
 
-# Time-travel: search as of a past timestamp
-historical = db.vector_search("embeddings", query, k=10, as_of=1700002000)
-```
-
-**Parameters:**
-| Name | Type | Description |
-|------|------|-------------|
-| `collection` | str | Collection name |
-| `query` | ndarray or list | Query vector |
-| `k` | int | Number of results |
-| `as_of` | int, optional | Timestamp (microseconds since epoch) for temporal search |
-
-**Returns:** `list[dict]` with `key`, `score`, `metadata`
-
-### vector_search_filtered(collection, query, k, metric=None, filter=None)
-
-Search with filter and metric override.
-
-```python
-matches = db.vector_search_filtered(
-    "embeddings",
+# With metadata filter and metric override
+matches = coll.search(
     query,
     k=10,
     metric="euclidean",
     filter=[
         {"field": "category", "op": "eq", "value": "science"},
-        {"field": "year", "op": "gte", "value": 2020}
-    ]
+        {"field": "year", "op": "gte", "value": 2020},
+    ],
 )
+
+# Time-travel search
+past_matches = coll.search(query, k=10, as_of=1700002000)
 ```
 
 **Filter operators:** `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, `contains`
 
 **Returns:** `list[dict]` with `key`, `score`, `metadata`
 
-### vector_collection_stats(collection)
-
-Get detailed collection statistics.
-
-```python
-stats = db.vector_collection_stats("embeddings")
-print(f"Count: {stats['count']}, Memory: {stats['memory_bytes']} bytes")
-```
-
-**Returns:** `dict`
-
-### vector_batch_upsert(collection, vectors)
+### coll.batch_upsert(vectors)
 
 Batch insert/update vectors.
 
@@ -591,270 +633,286 @@ vectors = [
     {"key": "doc-1", "vector": [0.1, 0.2, ...], "metadata": {"title": "A"}},
     {"key": "doc-2", "vector": [0.3, 0.4, ...]},
 ]
-versions = db.vector_batch_upsert("embeddings", vectors)
+versions = coll.batch_upsert(vectors)
 ```
 
 **Returns:** `list[int]` - Version numbers
+
+### coll.stats()
+
+Get detailed collection statistics.
+
+```python
+stats = coll.stats()
+print(f"Count: {stats['count']}, Memory: {stats['memory_bytes']} bytes")
+```
+
+**Returns:** `dict` with `name`, `dimension`, `metric`, `count`, `index_type`, `memory_bytes`
+
+### len(coll)
+
+Get vector count via `__len__`.
+
+```python
+count = len(coll)
+```
 
 ---
 
 ## Branches
 
-### current_branch()
-
-Get the current branch name.
+### Properties and Methods
 
 ```python
-branch = db.current_branch()
+db.branch                     # Current branch name (property)
+db.checkout("feature")        # Switch to a branch
+db.fork("experiment-copy")    # Fork current branch with all data
+db.merge("feature")           # Merge into current branch
+db.diff("default", "feature") # Compare two branches
 ```
 
-**Returns:** `str`
+### db.branch
 
-### set_branch(branch)
+Current branch name (read-only property).
+
+```python
+print(db.branch)  # "default"
+```
+
+### db.checkout(name)
 
 Switch to a different branch.
 
 ```python
-db.set_branch("feature")
+db.checkout("feature")
 ```
 
-### create_branch(branch)
-
-Create a new empty branch.
-
-```python
-db.create_branch("experiment")
-```
-
-### list_branches()
-
-List all branches.
-
-```python
-branches = db.list_branches()
-```
-
-**Returns:** `list[str]`
-
-### delete_branch(branch)
-
-Delete a branch.
-
-```python
-db.delete_branch("experiment")
-```
-
-### branch_exists(name)
-
-Check if a branch exists.
-
-```python
-exists = db.branch_exists("feature")
-```
-
-**Returns:** `bool`
-
-### branch_get(name)
-
-Get branch metadata.
-
-```python
-info = db.branch_get("default")
-if info:
-    print(f"Created: {info['created_at']}, Version: {info['version']}")
-```
-
-**Returns:** `dict` or `None`
-
-### fork_branch(destination)
+### db.fork(destination)
 
 Fork the current branch with all its data.
 
 ```python
-result = db.fork_branch("experiment-copy")
+result = db.fork("experiment-copy")
 print(f"Copied {result['keys_copied']} keys")
 ```
 
 **Returns:** `dict` with `source`, `destination`, `keys_copied`
 
-### diff_branches(branch_a, branch_b)
-
-Compare two branches.
-
-```python
-diff = db.diff_branches("default", "feature")
-print(f"Added: {diff['summary']['total_added']}")
-```
-
-**Returns:** `dict` with diff details
-
-### merge_branches(source, strategy=None)
+### db.merge(source, *, strategy="last_writer_wins")
 
 Merge a branch into the current branch.
 
 ```python
-result = db.merge_branches("feature", strategy="last_writer_wins")
+result = db.merge("feature")
+result = db.merge("feature", strategy="strict")
 ```
 
 **Parameters:**
 | Name | Type | Description |
 |------|------|-------------|
 | `source` | str | Source branch |
-| `strategy` | str, optional | `last_writer_wins` (default) or `strict` |
+| `strategy` | str | `"last_writer_wins"` (default) or `"strict"` |
 
-**Returns:** `dict` with merge results
+**Returns:** `dict` with `keys_applied`, `spaces_merged`, `conflicts`
+
+### db.diff(branch_a, branch_b)
+
+Compare two branches.
+
+```python
+diff = db.diff("default", "feature")
+print(f"Added: {diff['summary']['total_added']}")
+```
+
+**Returns:** `dict` with diff details
+
+### db.on_branch(name)
+
+Context manager to temporarily switch branch (restores on exit).
+
+```python
+with db.on_branch("experiment"):
+    db.kv.put("temp", "value")
+# Back on original branch
+```
+
+### Branch Management Namespace (`db.branches`)
+
+```python
+db.branches.create("experiment")
+db.branches.delete("experiment")
+db.branches.exists("feature")        # bool
+db.branches.get("default")           # dict or None
+db.branches.list()                    # list[str]
+"feature" in db.branches             # __contains__
+list(db.branches)                     # __iter__
+
+# Bundle operations
+db.branches.export_bundle("default", "/tmp/backup.bundle")
+db.branches.import_bundle("/tmp/backup.bundle")
+db.branches.validate_bundle("/tmp/backup.bundle")
+```
 
 ---
 
 ## Spaces
 
-### current_space()
-
-Get the current space name.
+### Properties and Methods
 
 ```python
-space = db.current_space()
+db.space                      # Current space name (property)
+db.use_space("conversations") # Switch to a space
 ```
 
-**Returns:** `str`
+### db.space
 
-### set_space(space)
+Current space name (read-only property).
+
+```python
+print(db.space)  # "default"
+```
+
+### db.use_space(name)
 
 Switch to a different space.
 
 ```python
-db.set_space("conversations")
+db.use_space("conversations")
 ```
 
-### list_spaces()
+### db.in_space(name)
 
-List all spaces.
+Context manager to temporarily switch space (restores on exit).
 
 ```python
-spaces = db.list_spaces()
+with db.in_space("tenant_42"):
+    db.kv.put("key", "value")
+# Back in original space
 ```
 
-**Returns:** `list[str]`
-
-### delete_space(space)
-
-Delete an empty space.
+### Space Management Namespace (`db.spaces`)
 
 ```python
-db.delete_space("old-space")
+db.spaces.create("archive")
+db.spaces.delete("old-space")              # delete empty space
+db.spaces.delete("old-space", force=True)  # delete with all data
+db.spaces.exists("archive")               # bool
+db.spaces.list()                           # list[str]
+"archive" in db.spaces                    # __contains__
+list(db.spaces)                            # __iter__
 ```
-
-### delete_space_force(space)
-
-Delete a space and all its data.
-
-```python
-db.delete_space_force("old-space")
-```
-
-### space_create(space)
-
-Create a new space explicitly.
-
-```python
-db.space_create("archive")
-```
-
-### space_exists(space)
-
-Check if a space exists.
-
-```python
-exists = db.space_exists("archive")
-```
-
-**Returns:** `bool`
 
 ---
 
 ## Transactions
 
-### transaction(read_only=False)
+### db.transaction(read_only=False)
 
 Get a transaction context manager.
 
 ```python
 # Read-write transaction
 with db.transaction():
-    db.kv_put("a", 1)
-    db.kv_put("b", 2)
-# Auto-commits on success
+    db.kv.put("a", 1)
+    db.kv.put("b", 2)
+# Auto-commits on success, auto-rollbacks on exception
 
 # Read-only transaction
 with db.transaction(read_only=True):
-    a = db.kv_get("a")
-    b = db.kv_get("b")
+    a = db.kv.get("a")
+    b = db.kv.get("b")
 ```
 
-**Parameters:**
-| Name | Type | Description |
-|------|------|-------------|
-| `read_only` | bool | Read-only transaction |
+### db.in_transaction
 
-### begin(read_only=None)
+Whether a transaction is currently active (property).
 
-Begin a transaction manually.
+```python
+assert db.in_transaction is False
+with db.transaction():
+    assert db.in_transaction is True
+```
+
+### Manual Transaction Control
 
 ```python
 db.begin()
 try:
-    db.kv_put("a", 1)
+    db.kv.put("a", 1)
     db.commit()
 except Exception:
     db.rollback()
     raise
 ```
 
-### commit()
+- `begin(read_only=None)` - Begin a transaction
+- `commit()` - Commit (returns version `int`)
+- `rollback()` - Rollback
+- `txn_info()` - Get transaction info (`dict` with `id`, `status`, `started_at`, or `None`)
+- `txn_is_active()` - Check if active (`bool`)
 
-Commit the current transaction.
+---
 
-```python
-version = db.commit()
-```
+## Time-Travel
 
-**Returns:** `int` - Commit version
+### db.at(timestamp)
 
-### rollback()
-
-Rollback the current transaction.
-
-```python
-db.rollback()
-```
-
-### txn_info()
-
-Get current transaction info.
+Create a read-only snapshot at a point in time. All reads on the snapshot
+are automatically scoped to that timestamp.
 
 ```python
-info = db.txn_info()
-if info:
-    print(f"Transaction {info['id']} is {info['status']}")
+from datetime import datetime
+
+# From a datetime
+snapshot = db.at(datetime(2024, 6, 15, 12, 0))
+
+# From microseconds since epoch
+snapshot = db.at(1700002000)
+
+# Read via snapshot namespaces (read-only)
+snapshot.kv.get("user:123")
+snapshot.kv.get("missing", default="fallback")
+snapshot.kv.keys(prefix="user:")
+snapshot.kv.list(prefix="user:", limit=100)
+
+snapshot.state.get("counter")
+snapshot.state.list(prefix="config:")
+
+snapshot.events.get(0)
+snapshot.events.list("click", limit=10)
+
+snapshot.json.get("config")
+snapshot.json.list(prefix="user:")
+
+snap_coll = snapshot.vectors.collection("embeddings")
+snap_coll.get("doc-1")
+snap_coll.search(query_vector, k=10)
 ```
 
-**Returns:** `dict` with `id`, `status`, `started_at`, or `None`
+**Parameters:**
+| Name | Type | Description |
+|------|------|-------------|
+| `timestamp` | datetime or int | Point in time (`datetime` or microseconds since epoch) |
 
-### txn_is_active()
+**Returns:** `Snapshot` - Read-only view with `kv`, `state`, `events`, `json`, `vectors` namespaces
 
-Check if a transaction is active.
+### db.time_range
+
+Get the available time-travel window for the current branch (property).
 
 ```python
-active = db.txn_is_active()
+result = db.time_range
+if result["oldest_ts"] is not None:
+    print(f"Data from {result['oldest_ts']} to {result['latest_ts']}")
 ```
 
-**Returns:** `bool`
+**Returns:** `dict` with `oldest_ts` and `latest_ts` (microseconds, or `None` if no data)
 
 ---
 
 ## Search
 
-### search(query, k=None, primitives=None, time_range=None, mode=None, expand=None, rerank=None)
+### db.search(query, *, k=None, primitives=None, time_range=None, mode=None, expand=None, rerank=None)
 
 Search across multiple primitives with optional time filtering, query expansion, and reranking.
 
@@ -896,11 +954,32 @@ results = db.search("database issues", rerank=True)
 
 When `expand` or `rerank` are not specified, they are automatically enabled if a model is configured via `configure_model`. Set to `False` to force off, or `True` to force on (silently skipped if no model).
 
+### db.configure_model(endpoint, model, api_key=None, timeout_ms=None)
+
+Configure an inference model endpoint for intelligent search.
+
+```python
+db.configure_model(
+    "http://localhost:11434/v1",
+    "qwen3:1.7b",
+    api_key="optional-token",
+    timeout_ms=5000,
+)
+```
+
+**Parameters:**
+| Name | Type | Description |
+|------|------|-------------|
+| `endpoint` | str | OpenAI-compatible API endpoint URL |
+| `model` | str | Model name |
+| `api_key` | str, optional | Bearer token |
+| `timeout_ms` | int, optional | Request timeout in milliseconds (default: 5000) |
+
 ---
 
 ## Database Operations
 
-### ping()
+### db.ping()
 
 Check database connectivity.
 
@@ -910,7 +989,7 @@ version = db.ping()
 
 **Returns:** `str` - Version string
 
-### info()
+### db.info()
 
 Get database information.
 
@@ -922,95 +1001,92 @@ print(f"Total keys: {info['total_keys']}")
 
 **Returns:** `dict` with `version`, `uptime_secs`, `branch_count`, `total_keys`
 
-### flush()
+### db.flush()
 
 Flush pending writes to disk.
 
-```python
-db.flush()
-```
-
-### compact()
+### db.compact()
 
 Trigger database compaction.
 
-```python
-db.compact()
-```
+### db.retention_apply()
 
-### time_range(branch=None)
-
-Get the available time-travel window for a branch.
-
-```python
-result = db.time_range()
-if result:
-    print(f"Data from {result['oldest_ts']} to {result['latest_ts']}")
-```
-
-**Parameters:**
-| Name | Type | Description |
-|------|------|-------------|
-| `branch` | str, optional | Branch name (defaults to current branch) |
-
-**Returns:** `dict` with `oldest_ts` and `latest_ts`, or `None` if branch has no data
+Apply retention policy (trigger garbage collection).
 
 ---
 
 ## Bundle Operations
 
-### branch_export(branch, path)
+Accessible via `db.branches`:
+
+### branches.export_bundle(branch, path)
 
 Export a branch to a bundle file.
 
 ```python
-result = db.branch_export("default", "/tmp/backup.bundle")
+result = db.branches.export_bundle("default", "/tmp/backup.bundle")
 print(f"Exported {result['entry_count']} entries")
 ```
 
-**Returns:** `dict` with export details
+**Returns:** `dict` with `branch_id`, `path`, `entry_count`, `bundle_size`
 
-### branch_import(path)
+### branches.import_bundle(path)
 
 Import a branch from a bundle file.
 
 ```python
-result = db.branch_import("/tmp/backup.bundle")
+result = db.branches.import_bundle("/tmp/backup.bundle")
 print(f"Imported to branch {result['branch_id']}")
 ```
 
-**Returns:** `dict` with import details
+**Returns:** `dict` with `branch_id`, `transactions_applied`, `keys_written`
 
-### branch_validate_bundle(path)
+### branches.validate_bundle(path)
 
 Validate a bundle file without importing.
 
 ```python
-result = db.branch_validate_bundle("/tmp/backup.bundle")
+result = db.branches.validate_bundle("/tmp/backup.bundle")
 print(f"Valid: {result['checksums_valid']}")
 ```
 
-**Returns:** `dict` with validation details
+**Returns:** `dict` with `branch_id`, `format_version`, `entry_count`, `checksums_valid`
 
 ---
 
 ## Error Handling
 
-All methods may raise `RuntimeError` for database errors:
+StrataDB uses a structured exception hierarchy instead of generic `RuntimeError`:
 
 ```python
+from stratadb import StrataError, NotFoundError, ValidationError
+
 try:
-    db.set_branch("nonexistent")
-except RuntimeError as e:
-    print(f"Error: {e}")
+    db.kv.get_versioned("nonexistent")
+except NotFoundError as e:
+    print(f"Not found: {e}")
+except StrataError as e:
+    print(f"Database error: {e}")
 ```
 
-Common errors:
-- Branch not found
-- Collection not found
-- CAS version mismatch
-- Transaction already active
-- Invalid input
+### Exception Hierarchy
+
+| Exception | Description |
+|-----------|-------------|
+| `StrataError` | Base exception for all StrataDB errors |
+| `NotFoundError` | Entity not found (key, branch, collection, etc.) |
+| `ValidationError` | Invalid input or type mismatch |
+| `ConflictError` | Version or concurrency conflict |
+| `StateError` | Invalid state transition (e.g., duplicate branch, transaction already active) |
+| `ConstraintError` | Constraint violation (dimension mismatch, limits, history trimmed) |
+| `AccessDeniedError` | Access denied (e.g., write on read-only database) |
+| `IoError` | I/O, serialization, or internal error |
+
+All specific exceptions are subclasses of `StrataError`:
+
+```python
+assert issubclass(NotFoundError, StrataError)
+```
 
 ---
 
@@ -1040,9 +1116,9 @@ import numpy as np
 
 # Use np.float32 for best performance
 embedding = np.random.rand(384).astype(np.float32)
-db.vector_upsert("coll", "key", embedding)
+coll.upsert("key", embedding)
 
 # Retrieved embeddings are NumPy arrays
-result = db.vector_get("coll", "key")
+result = coll.get("key")
 embedding = result["embedding"]  # np.ndarray
 ```

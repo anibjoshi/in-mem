@@ -23,7 +23,6 @@ use strata_concurrency::TransactionContext;
 use strata_core::contract::{Version, Versioned};
 use strata_core::types::{BranchId, Key, Namespace};
 use strata_core::value::Value;
-use strata_core::Timestamp;
 use strata_core::{StrataResult, VersionedHistory};
 
 // Re-export State from core
@@ -167,7 +166,7 @@ impl StateCell {
                 Ok(Some(Versioned::with_timestamp(
                     state.value,
                     state.version,
-                    Timestamp::from_micros(state.updated_at),
+                    vv.timestamp,
                 )))
             }
             None => Ok(None),
@@ -196,7 +195,7 @@ impl StateCell {
                 Some(Versioned::with_timestamp(
                     state.value,
                     state.version,
-                    Timestamp::from_micros(state.updated_at),
+                    vv.timestamp,
                 ))
             })
             .collect();
@@ -887,5 +886,39 @@ mod tests {
 
         assert!(version.is_counter());
         assert_eq!(version, Version::counter(2));
+    }
+
+    // ========== Time-Travel Boundary Tests ==========
+
+    #[test]
+    fn test_get_at_exact_versioned_timestamp() {
+        // Reproduces: get_versioned returns timestamp T1 (State.updated_at),
+        // but get_at compares against storage-layer timestamp T2 (StoredValue).
+        // Since T2 > T1, using T1 as as_of fails to find the value.
+        let (_temp, _db, sc) = setup();
+        let branch_id = BranchId::new();
+
+        sc.set(&branch_id, "default", "cell", Value::String("v1".into()))
+            .unwrap();
+
+        // Capture the timestamp returned by get_versioned
+        let versioned = sc
+            .get_versioned(&branch_id, "default", "cell")
+            .unwrap()
+            .unwrap();
+        let ts = versioned.timestamp.as_micros();
+
+        // Update to v2
+        sc.set(&branch_id, "default", "cell", Value::String("v2".into()))
+            .unwrap();
+
+        // Reading at the exact timestamp of v1 should return v1, not None
+        let result = sc.get_at(&branch_id, "default", "cell", ts).unwrap();
+        assert!(
+            result.is_some(),
+            "get_at with exact versioned timestamp returned None — \
+             timestamp mismatch between State.updated_at and StoredValue.timestamp"
+        );
+        assert_eq!(result.unwrap(), Value::String("v1".into()));
     }
 }
