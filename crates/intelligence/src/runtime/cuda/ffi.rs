@@ -6,7 +6,7 @@
 //! and cached for the lifetime of the process.
 
 use std::ffi::CStr;
-use std::os::raw::c_void;
+use std::os::raw::{c_char, c_void};
 
 use super::super::dl::DynLib;
 
@@ -50,7 +50,7 @@ type FnCuMemcpyDtoH =
 type FnCuModuleLoadData =
     unsafe extern "C" fn(module: *mut CUmodule, image: *const c_void) -> CUresult;
 type FnCuModuleGetFunction =
-    unsafe extern "C" fn(func: *mut CUfunction, module: CUmodule, name: *const i8) -> CUresult;
+    unsafe extern "C" fn(func: *mut CUfunction, module: CUmodule, name: *const c_char) -> CUresult;
 type FnCuLaunchKernel = unsafe extern "C" fn(
     f: CUfunction,
     grid_x: u32,

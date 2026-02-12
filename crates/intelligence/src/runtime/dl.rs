@@ -4,7 +4,7 @@
 //! runtime. Used by the CUDA backend to load `libcuda.so.1` / `nvcuda.dll`.
 
 use std::ffi::CStr;
-use std::os::raw::c_void;
+use std::os::raw::{c_char, c_void};
 
 /// Handle to a dynamically loaded shared library.
 pub struct DynLib {
@@ -122,17 +122,17 @@ const RTLD_LOCAL: i32 = 0;
 
 #[cfg(unix)]
 extern "C" {
-    fn dlopen(filename: *const i8, flags: i32) -> *mut c_void;
-    fn dlsym(handle: *mut c_void, symbol: *const i8) -> *mut c_void;
+    fn dlopen(filename: *const c_char, flags: i32) -> *mut c_void;
+    fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
     fn dlclose(handle: *mut c_void) -> i32;
-    fn dlerror() -> *const i8;
+    fn dlerror() -> *const c_char;
 }
 
 // --- Windows bindings ---
 
 #[cfg(windows)]
 extern "system" {
-    fn LoadLibraryA(name: *const i8) -> *mut c_void;
-    fn GetProcAddress(module: *mut c_void, name: *const i8) -> *mut c_void;
+    fn LoadLibraryA(name: *const c_char) -> *mut c_void;
+    fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *mut c_void;
     fn FreeLibrary(module: *mut c_void) -> i32;
 }
