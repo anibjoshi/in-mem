@@ -435,12 +435,12 @@ mod tests {
         let doc2 = test_doc_ref("doc2");
 
         index.index_document(&doc1, "hello world", None);
-        index.index_document(&doc2, "hello there", None);
+        index.index_document(&doc2, "hello planet", None);
 
         assert_eq!(index.total_docs(), 2);
         assert_eq!(index.doc_freq("hello"), 2); // In both docs
         assert_eq!(index.doc_freq("world"), 1); // Only in doc1
-        assert_eq!(index.doc_freq("there"), 1); // Only in doc2
+        assert_eq!(index.doc_freq("planet"), 1); // Only in doc2
 
         let postings = index.lookup("hello").unwrap();
         assert_eq!(postings.len(), 2);

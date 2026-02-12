@@ -64,8 +64,7 @@ fn test_search_returns_empty_for_kv_primitive() {
         })
         .unwrap();
 
-    // Search for "hello" - KV primitive returns empty results
-    // (search is handled by intelligence layer, not primitives)
+    // Search for "hello" — BM25 index is enabled, KV search returns results
     let result = executor.execute(Command::Search {
         branch: None,
         space: None,
@@ -82,12 +81,8 @@ fn test_search_returns_empty_for_kv_primitive() {
 
     match result {
         Ok(Output::SearchResults(hits)) => {
-            // KV primitive search returns empty - this is expected
-            // Full search functionality is in the intelligence layer
-            assert!(
-                hits.is_empty(),
-                "KV primitive search should return empty (search is in intelligence layer)"
-            );
+            assert_eq!(hits.len(), 1, "Should find the doc containing 'hello'");
+            assert!(hits[0].score > 0.0);
         }
         other => panic!("Expected SearchResults, got {:?}", other),
     }

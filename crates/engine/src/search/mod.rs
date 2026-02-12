@@ -8,6 +8,7 @@
 
 mod index;
 mod searchable;
+pub mod stemmer;
 pub mod tokenizer;
 mod types;
 
