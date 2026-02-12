@@ -180,6 +180,25 @@ impl RRFFuser {
 
 impl Fuser for RRFFuser {
     fn fuse(&self, results: Vec<(PrimitiveType, SearchResponse)>, k: usize) -> FusedResult {
+        // Single-list passthrough: when only one primitive contributes results,
+        // preserve raw scores (e.g. BM25) instead of replacing them with RRF.
+        // RRF is only meaningful when fusing multiple ranked lists.
+        if results.len() == 1 {
+            let (_primitive, response) = results.into_iter().next().unwrap();
+            let truncated = response.hits.len() > k;
+            let hits: Vec<SearchHit> = response
+                .hits
+                .into_iter()
+                .take(k)
+                .enumerate()
+                .map(|(i, mut hit)| {
+                    hit.rank = (i + 1) as u32;
+                    hit
+                })
+                .collect();
+            return FusedResult::new(hits, truncated);
+        }
+
         let mut rrf_scores: HashMap<EntityRef, f32> = HashMap::new();
         let mut hit_data: HashMap<EntityRef, SearchHit> = HashMap::new();
 
@@ -309,20 +328,26 @@ mod tests {
     }
 
     #[test]
-    fn test_rrf_fuser_single_list() {
+    fn test_rrf_fuser_single_list_passthrough() {
         let fuser = RRFFuser::default();
 
         let branch_id = BranchId::new();
         let doc_ref_a = make_kv_doc_ref(&branch_id, "a");
         let doc_ref_b = make_kv_doc_ref(&branch_id, "b");
 
-        let hits = vec![make_hit(doc_ref_a, 0.9, 1), make_hit(doc_ref_b, 0.8, 2)];
+        let hits = vec![
+            make_hit(doc_ref_a, 0.9, 1),
+            make_hit(doc_ref_b, 0.8, 2),
+        ];
         let results = vec![(PrimitiveType::Kv, make_response(hits))];
 
         let result = fuser.fuse(results, 10);
         assert_eq!(result.hits.len(), 2);
-        // RRF scores: 1/(60+1)=0.0164, 1/(60+2)=0.0161
-        assert!(result.hits[0].score > result.hits[1].score);
+        // Single list: raw scores preserved, NOT replaced with RRF
+        assert!((result.hits[0].score - 0.9).abs() < 0.0001);
+        assert!((result.hits[1].score - 0.8).abs() < 0.0001);
+        assert_eq!(result.hits[0].rank, 1);
+        assert_eq!(result.hits[1].rank, 2);
     }
 
     #[test]
@@ -448,16 +473,25 @@ mod tests {
         let fuser = RRFFuser::new(10);
         assert_eq!(fuser.k_rrf(), 10);
 
+        // Custom k only matters for multi-list fusion.
+        // Verify it works with two lists.
         let branch_id = BranchId::new();
-        let doc_ref = make_kv_doc_ref(&branch_id, "custom_k");
-        let hits = vec![make_hit(doc_ref, 0.9, 1)];
-        let results = vec![(PrimitiveType::Kv, make_response(hits))];
+        let doc_ref_a = make_kv_doc_ref(&branch_id, "custom_k_a");
+        let doc_ref_b = make_kv_doc_ref(&branch_id, "custom_k_b");
+
+        let list1 = vec![make_hit(doc_ref_a.clone(), 0.9, 1)];
+        let list2 = vec![make_hit(doc_ref_b.clone(), 0.8, 1)];
+        let results = vec![
+            (PrimitiveType::Kv, make_response(list1)),
+            (PrimitiveType::Json, make_response(list2)),
+        ];
 
         let result = fuser.fuse(results, 10);
 
-        // With k=10, score should be 1/(10+1) = 0.0909
+        // With k=10, both at rank 1: score = 1/(10+1) = 0.0909
         let expected = 1.0 / 11.0;
         assert!((result.hits[0].score - expected).abs() < 0.0001);
+        assert!((result.hits[1].score - expected).abs() < 0.0001);
     }
 
     #[test]
