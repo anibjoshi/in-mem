@@ -128,32 +128,15 @@ pub fn event_get_by_type(
     after_sequence: Option<u64>,
 ) -> Result<Output> {
     let core_branch_id = bridge::to_core_branch_id(&branch)?;
-    let events = convert_result(p.event.get_by_type(&core_branch_id, &space, &event_type))?;
+    let events = convert_result(p.event.get_by_type(
+        &core_branch_id,
+        &space,
+        &event_type,
+        after_sequence,
+        limit.map(|l| l as usize),
+    ))?;
 
-    // Apply after_sequence filter
-    let filtered: Vec<_> = if let Some(after_seq) = after_sequence {
-        events
-            .into_iter()
-            .filter(|e| {
-                if let strata_core::Version::Sequence(seq) = e.version {
-                    seq > after_seq
-                } else {
-                    true
-                }
-            })
-            .collect()
-    } else {
-        events
-    };
-
-    // Apply limit
-    let limited: Vec<_> = if let Some(lim) = limit {
-        filtered.into_iter().take(lim as usize).collect()
-    } else {
-        filtered
-    };
-
-    let versioned: Vec<VersionedValue> = limited
+    let versioned: Vec<VersionedValue> = events
         .into_iter()
         .map(|e| VersionedValue {
             value: e.value.payload.clone(),
@@ -176,7 +159,9 @@ pub fn event_get_by_type_at(
     as_of_ts: u64,
 ) -> Result<Output> {
     let core_branch_id = bridge::to_core_branch_id(&branch)?;
-    let events = convert_result(p.event.get_by_type(&core_branch_id, &space, &event_type))?;
+    let events = convert_result(p.event.get_by_type(
+        &core_branch_id, &space, &event_type, None, None,
+    ))?;
 
     // Filter events by timestamp
     let versioned: Vec<VersionedValue> = events

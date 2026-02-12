@@ -624,39 +624,29 @@ impl JsonStore {
         limit: usize,
     ) -> StrataResult<JsonListResult> {
         let ns = self.namespace_for(branch_id, space);
-        let scan_prefix = Key::new_json_prefix(ns);
+        // Narrow scan at storage level: if prefix is given, only scan matching keys
+        let scan_prefix = Key::new_json(ns, prefix.unwrap_or(""));
 
         self.db.transaction(*branch_id, |txn| {
             let mut doc_ids = Vec::with_capacity(limit + 1);
+            let mut past_cursor = cursor.is_none();
 
-            // Cursor is now a simple string key (no UUID parsing needed)
-            let cursor_doc_id: Option<&str> = cursor;
-
-            let mut past_cursor = cursor_doc_id.is_none();
-
-            for (_key, value) in txn.scan_prefix(&scan_prefix)? {
-                // Deserialize to get doc_id
-                let doc = match Self::deserialize_doc(&value) {
-                    Ok(d) => d,
-                    Err(_) => continue, // Skip invalid documents
+            for (key, _value) in txn.scan_prefix(&scan_prefix)? {
+                // Extract doc_id from Key instead of deserializing the full Value
+                let doc_id = match key.user_key_string() {
+                    Some(id) => id,
+                    None => continue,
                 };
 
                 // Handle cursor: skip until we're past the cursor
                 if !past_cursor {
-                    if cursor_doc_id == Some(doc.id.as_str()) {
+                    if cursor == Some(doc_id.as_str()) {
                         past_cursor = true;
                     }
                     continue;
                 }
 
-                // Apply prefix filter if specified
-                if let Some(p) = prefix {
-                    if !doc.id.starts_with(p) {
-                        continue;
-                    }
-                }
-
-                doc_ids.push(doc.id);
+                doc_ids.push(doc_id);
 
                 // Collect limit + 1 to detect if there are more
                 if doc_ids.len() > limit {
@@ -666,7 +656,7 @@ impl JsonStore {
 
             // If we have more than limit, pop the last and use it as cursor
             let next_cursor = if doc_ids.len() > limit {
-                doc_ids.pop(); // Remove the extra item
+                doc_ids.pop();
                 doc_ids.last().cloned()
             } else {
                 None

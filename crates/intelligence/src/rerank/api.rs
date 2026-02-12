@@ -47,18 +47,6 @@ impl ApiReranker {
         }
     }
 
-    /// Override the sampling temperature.
-    pub fn with_temperature(mut self, temperature: f32) -> Self {
-        self.temperature = temperature;
-        self
-    }
-
-    /// Override the maximum response tokens.
-    pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
-        self.max_tokens = max_tokens;
-        self
-    }
-
     /// Make the HTTP call and return the raw response text.
     #[cfg(feature = "rerank")]
     fn call_api(&self, query: &str, snippets: &[(usize, &str)]) -> Result<String, RerankError> {

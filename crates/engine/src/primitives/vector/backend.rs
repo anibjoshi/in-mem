@@ -177,13 +177,18 @@ pub trait VectorIndexBackend: Send + Sync {
 ///
 /// This abstraction allows switching between BruteForce and HNSW
 /// without changing the VectorStore code.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub enum IndexBackendFactory {
     /// Brute-force O(n) search
-    #[default]
     BruteForce,
     /// HNSW O(log n) approximate nearest neighbor search
     Hnsw(super::hnsw::HnswConfig),
+}
+
+impl Default for IndexBackendFactory {
+    fn default() -> Self {
+        IndexBackendFactory::Hnsw(super::hnsw::HnswConfig::default())
+    }
 }
 
 impl IndexBackendFactory {

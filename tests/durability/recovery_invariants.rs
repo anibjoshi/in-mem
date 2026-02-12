@@ -66,7 +66,7 @@ fn committed_event_data_survives_restart() {
 
     let event = test_db.event();
     let events = event
-        .get_by_type(&branch_id, "default", "test_stream")
+        .get_by_type(&branch_id, "default", "test_stream", None, None)
         .unwrap();
     assert_eq!(events.len(), 10, "All events should survive restart");
 }

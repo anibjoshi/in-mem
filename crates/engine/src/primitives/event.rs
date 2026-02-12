@@ -463,6 +463,8 @@ impl EventLog {
         branch_id: &BranchId,
         space: &str,
         event_type: &str,
+        after_sequence: Option<u64>,
+        limit: Option<usize>,
     ) -> StrataResult<Vec<Versioned<Event>>> {
         self.db.transaction(*branch_id, |txn| {
             let ns = self.namespace_for(branch_id, space);
@@ -472,13 +474,19 @@ impl EventLog {
             let idx_entries = txn.scan_prefix(&idx_prefix)?;
 
             if !idx_entries.is_empty() {
-                let mut results = Vec::with_capacity(idx_entries.len());
+                let capacity = limit.unwrap_or(idx_entries.len()).min(idx_entries.len());
+                let mut results = Vec::with_capacity(capacity);
                 for (idx_key, _) in &idx_entries {
                     // Extract sequence from the last 8 bytes of the user_key
                     let user_key = &idx_key.user_key;
                     if user_key.len() >= 8 {
                         let seq_bytes: [u8; 8] = user_key[user_key.len() - 8..].try_into().unwrap();
                         let seq = u64::from_be_bytes(seq_bytes);
+
+                        if after_sequence.is_some_and(|after| seq <= after) {
+                            continue;
+                        }
+
                         let event_key = Key::new_event(ns.clone(), seq);
                         if let Some(v) = txn.get(&event_key)? {
                             let event: Event = from_stored_value(&v).map_err(|e| {
@@ -489,6 +497,10 @@ impl EventLog {
                                 Version::Sequence(seq),
                                 Timestamp::from_micros(event.timestamp),
                             ));
+
+                            if limit.is_some_and(|l| results.len() >= l) {
+                                break;
+                            }
                         }
                     }
                 }
@@ -504,6 +516,10 @@ impl EventLog {
 
             let mut filtered = Vec::new();
             for seq in 0..meta.next_sequence {
+                if after_sequence.is_some_and(|after| seq <= after) {
+                    continue;
+                }
+
                 let event_key = Key::new_event(ns.clone(), seq);
                 if let Some(v) = txn.get(&event_key)? {
                     let event: Event = from_stored_value(&v)
@@ -514,6 +530,10 @@ impl EventLog {
                             Version::Sequence(seq),
                             Timestamp::from_micros(event.timestamp),
                         ));
+
+                        if limit.is_some_and(|l| filtered.len() >= l) {
+                            break;
+                        }
                     }
                 }
             }
@@ -1030,17 +1050,17 @@ mod tests {
         log.append(&branch_id, "default", "tool_call", int_payload(5))
             .unwrap();
 
-        let tool_calls = log.get_by_type(&branch_id, "default", "tool_call").unwrap();
+        let tool_calls = log.get_by_type(&branch_id, "default", "tool_call", None, None).unwrap();
         assert_eq!(tool_calls.len(), 3);
         assert_eq!(tool_calls[0].value.payload, int_payload(1));
         assert_eq!(tool_calls[1].value.payload, int_payload(3));
         assert_eq!(tool_calls[2].value.payload, int_payload(5));
 
-        let thoughts = log.get_by_type(&branch_id, "default", "thought").unwrap();
+        let thoughts = log.get_by_type(&branch_id, "default", "thought", None, None).unwrap();
         assert_eq!(thoughts.len(), 1);
 
         let nonexistent = log
-            .get_by_type(&branch_id, "default", "nonexistent")
+            .get_by_type(&branch_id, "default", "nonexistent", None, None)
             .unwrap();
         assert!(nonexistent.is_empty());
     }

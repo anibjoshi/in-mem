@@ -119,7 +119,7 @@ mod event_scale {
         // Count
         measure(&format!("Count {} events", count), || {
             let len = event
-                .get_by_type(&branch_id, "default", "scale_test")
+                .get_by_type(&branch_id, "default", "scale_test", None, None)
                 .unwrap()
                 .len() as u64;
             assert_eq!(len, count as u64);
@@ -128,7 +128,7 @@ mod event_scale {
         // Read all
         measure(&format!("Read {} events", count), || {
             let events = event
-                .get_by_type(&branch_id, "default", "scale_test")
+                .get_by_type(&branch_id, "default", "scale_test", None, None)
                 .unwrap();
             assert_eq!(events.len(), count);
         });
@@ -338,7 +338,7 @@ fn cross_primitive_scale_1k() {
     );
     assert_eq!(
         p.event
-            .get_by_type(&branch_id, "default", "items")
+            .get_by_type(&branch_id, "default", "items", None, None)
             .unwrap()
             .len() as u64,
         count as u64

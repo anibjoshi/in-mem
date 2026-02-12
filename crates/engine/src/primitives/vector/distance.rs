@@ -33,7 +33,7 @@ pub fn compute_similarity(a: &[f32], b: &[f32], metric: DistanceMetric) -> f32 {
 ///
 /// Range: [-1, 1], higher = more similar
 /// Returns 0.0 if either vector has zero norm (avoids division by zero)
-pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     let dot = dot_product(a, b);
     let norm_a = l2_norm(a);
     let norm_b = l2_norm(b);
@@ -49,7 +49,7 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 ///
 /// Range: (0, 1], higher = more similar
 /// Transforms distance to similarity (inversely related)
-pub fn euclidean_similarity(a: &[f32], b: &[f32]) -> f32 {
+fn euclidean_similarity(a: &[f32], b: &[f32]) -> f32 {
     let dist = euclidean_distance(a, b);
     1.0 / (1.0 + dist)
 }
@@ -63,12 +63,12 @@ pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
 }
 
 /// L2 norm (Euclidean length)
-pub fn l2_norm(v: &[f32]) -> f32 {
+fn l2_norm(v: &[f32]) -> f32 {
     v.iter().map(|x| x * x).sum::<f32>().sqrt()
 }
 
 /// Euclidean distance (L2 distance)
-pub fn euclidean_distance(a: &[f32], b: &[f32]) -> f32 {
+fn euclidean_distance(a: &[f32], b: &[f32]) -> f32 {
     a.iter()
         .zip(b.iter())
         .map(|(x, y)| (x - y).powi(2))
