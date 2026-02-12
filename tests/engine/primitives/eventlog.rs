@@ -298,10 +298,10 @@ fn multiple_event_types() {
 
     // Verify both types exist by reading by type
     let type_a = event
-        .get_by_type(&test_db.branch_id, "default", "type_a")
+        .get_by_type(&test_db.branch_id, "default", "type_a", None, None)
         .unwrap();
     let type_b = event
-        .get_by_type(&test_db.branch_id, "default", "type_b")
+        .get_by_type(&test_db.branch_id, "default", "type_b", None, None)
         .unwrap();
     assert_eq!(type_a.len(), 2);
     assert_eq!(type_b.len(), 1);
@@ -328,21 +328,21 @@ fn len_by_type() {
     // len_by_type rewritten using get_by_type().len()
     assert_eq!(
         event
-            .get_by_type(&test_db.branch_id, "default", "type_a")
+            .get_by_type(&test_db.branch_id, "default", "type_a", None, None)
             .unwrap()
             .len(),
         3
     );
     assert_eq!(
         event
-            .get_by_type(&test_db.branch_id, "default", "type_b")
+            .get_by_type(&test_db.branch_id, "default", "type_b", None, None)
             .unwrap()
             .len(),
         1
     );
     assert_eq!(
         event
-            .get_by_type(&test_db.branch_id, "default", "type_c")
+            .get_by_type(&test_db.branch_id, "default", "type_c", None, None)
             .unwrap()
             .len(),
         0
@@ -365,7 +365,7 @@ fn get_by_type() {
         .unwrap();
 
     let orders = event
-        .get_by_type(&test_db.branch_id, "default", "orders")
+        .get_by_type(&test_db.branch_id, "default", "orders", None, None)
         .unwrap();
     assert_eq!(orders.len(), 2);
     assert_eq!(orders[0].value.payload, payload_int(100));

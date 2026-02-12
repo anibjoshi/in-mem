@@ -151,7 +151,7 @@ fn limit_error_to_strata(e: strata_core::limits::LimitError) -> StrataError {
     StrataError::capacity_exceeded(e.reason_code(), e.max(), e.actual())
 }
 /// Check if a collection name is internal (starts with `_`).
-pub fn is_internal_collection(name: &str) -> bool {
+pub(crate) fn is_internal_collection(name: &str) -> bool {
     name.starts_with('_')
 }
 

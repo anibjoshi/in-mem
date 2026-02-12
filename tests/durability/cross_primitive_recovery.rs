@@ -56,7 +56,7 @@ fn all_six_primitives_recover_together() {
 
     let events = p
         .event
-        .get_by_type(&branch_id, "default", "stream")
+        .get_by_type(&branch_id, "default", "stream", None, None)
         .unwrap();
     assert_eq!(events.len(), 1, "EventLog should recover");
 
@@ -97,7 +97,7 @@ fn interleaved_writes_recover_correctly() {
     }
 
     let events = event
-        .get_by_type(&branch_id, "default", "interleaved")
+        .get_by_type(&branch_id, "default", "interleaved", None, None)
         .unwrap();
     assert_eq!(events.len(), 50, "All 50 events should recover");
 }

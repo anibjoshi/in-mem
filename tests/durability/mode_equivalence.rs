@@ -58,7 +58,7 @@ fn event_operations_equivalent_across_modes() {
             .append(&branch_id, "default", "stream", int_payload(3))
             .unwrap();
 
-        let events = event.get_by_type(&branch_id, "default", "stream").unwrap();
+        let events = event.get_by_type(&branch_id, "default", "stream", None, None).unwrap();
         events.len() as u64
     });
 }

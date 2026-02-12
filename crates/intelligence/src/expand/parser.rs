@@ -5,16 +5,6 @@
 
 use super::{ExpandedQueries, ExpandedQuery, QueryType};
 
-/// Parse LLM output into typed expanded queries.
-///
-/// Tolerant parsing:
-/// - Lines without a valid `lex:`, `vec:`, or `hyde:` prefix are ignored
-/// - Empty text after prefix is ignored
-/// - Returns empty vec if no valid lines found (caller handles fallback)
-pub fn parse_expansion(text: &str) -> ExpandedQueries {
-    parse_expansion_with_filter(text, None)
-}
-
 /// Parse LLM output, filtering out expansions that share no terms with the original query.
 ///
 /// When `original_query` is provided, each expansion must contain at least one
@@ -82,7 +72,7 @@ lex: user authentication login
 vec: how does user authentication work in the system
 hyde: The authentication module handles user login via OAuth2 tokens.";
 
-        let result = parse_expansion(text);
+        let result = parse_expansion_with_filter(text, None);
         assert_eq!(result.queries.len(), 3);
         assert_eq!(result.queries[0].query_type, QueryType::Lex);
         assert_eq!(result.queries[0].text, "user authentication login");
@@ -97,7 +87,7 @@ lex: auth login
 lex: oauth2 token
 vec: authentication system overview";
 
-        let result = parse_expansion(text);
+        let result = parse_expansion_with_filter(text, None);
         assert_eq!(result.queries.len(), 3);
         assert_eq!(result.queries[0].query_type, QueryType::Lex);
         assert_eq!(result.queries[1].query_type, QueryType::Lex);
@@ -114,27 +104,27 @@ vec: valid semantic query
 1. numbered list item
 hyde: valid hypothetical document";
 
-        let result = parse_expansion(text);
+        let result = parse_expansion_with_filter(text, None);
         assert_eq!(result.queries.len(), 3);
     }
 
     #[test]
     fn test_parse_empty_input() {
-        let result = parse_expansion("");
+        let result = parse_expansion_with_filter("", None);
         assert!(result.queries.is_empty());
     }
 
     #[test]
     fn test_parse_all_invalid() {
         let text = "no valid prefixes here\njust garbage\n";
-        let result = parse_expansion(text);
+        let result = parse_expansion_with_filter(text, None);
         assert!(result.queries.is_empty());
     }
 
     #[test]
     fn test_parse_strips_whitespace() {
         let text = "  lex:  spaced out query  \n  vec:  another query  ";
-        let result = parse_expansion(text);
+        let result = parse_expansion_with_filter(text, None);
         assert_eq!(result.queries.len(), 2);
         assert_eq!(result.queries[0].text, "spaced out query");
         assert_eq!(result.queries[1].text, "another query");
@@ -143,7 +133,7 @@ hyde: valid hypothetical document";
     #[test]
     fn test_parse_skips_empty_text_after_prefix() {
         let text = "lex:\nvec: valid\nlex:   \nhyde: also valid";
-        let result = parse_expansion(text);
+        let result = parse_expansion_with_filter(text, None);
         assert_eq!(result.queries.len(), 2);
         assert_eq!(result.queries[0].query_type, QueryType::Vec);
         assert_eq!(result.queries[1].query_type, QueryType::Hyde);

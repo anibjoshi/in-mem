@@ -146,8 +146,7 @@ impl VectorStore {
 
     /// Get the backend factory (hardcoded currently, configurable in future versions)
     fn backend_factory(&self) -> IndexBackendFactory {
-        // Hardcoded to BruteForce. future versions may make this configurable.
-        IndexBackendFactory::default()
+        IndexBackendFactory::Hnsw(super::hnsw::HnswConfig::default())
     }
 
     // ========================================================================

@@ -104,12 +104,6 @@ impl HybridSearch {
         }
     }
 
-    /// Builder: set custom fuser
-    pub fn with_fuser(mut self, fuser: Arc<dyn Fuser>) -> Self {
-        self.fuser = fuser;
-        self
-    }
-
     // ========================================================================
     // Search Orchestration
     // ========================================================================
