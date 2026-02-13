@@ -22,6 +22,20 @@ pub struct TokenizedInput {
     pub token_type_ids: Vec<u32>,
 }
 
+/// Tokenized inputs for a batch, all padded to max_seq_len.
+pub struct BatchTokenizedInput {
+    /// Token IDs (vocabulary indices), flat: batch_size * max_seq_len.
+    pub input_ids: Vec<u32>,
+    /// Attention mask (1 for real tokens, 0 for padding), flat: batch_size * max_seq_len.
+    pub attention_mask: Vec<u32>,
+    /// Token type IDs (0 for single-sentence input), flat: batch_size * max_seq_len.
+    pub token_type_ids: Vec<u32>,
+    /// Number of sequences in the batch.
+    pub batch_size: usize,
+    /// Maximum sequence length (all sequences padded to this length).
+    pub max_seq_len: usize,
+}
+
 impl WordPieceTokenizer {
     /// Build a tokenizer from a vocab.txt file (one token per line).
     pub fn from_vocab(vocab_text: &str) -> Self {
@@ -62,6 +76,33 @@ impl WordPieceTokenizer {
             input_ids: tokens,
             attention_mask,
             token_type_ids,
+        }
+    }
+
+    /// Tokenize a batch of texts, padding all sequences to the same length.
+    pub fn tokenize_batch(&self, texts: &[&str]) -> BatchTokenizedInput {
+        let tokenized: Vec<TokenizedInput> = texts.iter().map(|t| self.tokenize(t)).collect();
+        let max_seq_len = tokenized.iter().map(|t| t.input_ids.len()).max().unwrap_or(2);
+        let batch_size = texts.len();
+
+        let mut input_ids = vec![0u32; batch_size * max_seq_len];
+        let mut attention_mask = vec![0u32; batch_size * max_seq_len];
+        let mut token_type_ids = vec![0u32; batch_size * max_seq_len];
+
+        for (i, t) in tokenized.iter().enumerate() {
+            let off = i * max_seq_len;
+            let len = t.input_ids.len();
+            input_ids[off..off + len].copy_from_slice(&t.input_ids);
+            attention_mask[off..off + len].copy_from_slice(&t.attention_mask);
+            token_type_ids[off..off + len].copy_from_slice(&t.token_type_ids);
+        }
+
+        BatchTokenizedInput {
+            input_ids,
+            attention_mask,
+            token_type_ids,
+            batch_size,
+            max_seq_len,
         }
     }
 
@@ -361,5 +402,166 @@ mod tests {
         let r3 = tok.tokenize(&"hello ".repeat(100));
         assert_eq!(r3.input_ids[0], CLS_ID);
         assert_eq!(*r3.input_ids.last().unwrap(), SEP_ID);
+    }
+
+    // -------------------------------------------------------------------
+    // Batch tokenization tests
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_tokenize_batch_matches_individual() {
+        let vocab = test_vocab();
+        let tok = WordPieceTokenizer::from_vocab(&vocab);
+
+        let texts = &["hello world", "test", "hello"];
+        let batch = tok.tokenize_batch(texts);
+
+        assert_eq!(batch.batch_size, 3);
+
+        // Tokenize individually for comparison
+        let individual: Vec<TokenizedInput> = texts.iter().map(|t| tok.tokenize(t)).collect();
+        let expected_max_len = individual.iter().map(|t| t.input_ids.len()).max().unwrap();
+        assert_eq!(batch.max_seq_len, expected_max_len);
+
+        // Verify each sequence's tokens match individual tokenization
+        for (i, ind) in individual.iter().enumerate() {
+            let off = i * batch.max_seq_len;
+            let real_len = ind.input_ids.len();
+
+            // Real token region matches
+            assert_eq!(
+                &batch.input_ids[off..off + real_len],
+                &ind.input_ids[..],
+                "batch {} input_ids mismatch in real token region",
+                i
+            );
+            assert_eq!(
+                &batch.attention_mask[off..off + real_len],
+                &ind.attention_mask[..],
+                "batch {} attention_mask mismatch in real token region",
+                i
+            );
+            assert_eq!(
+                &batch.token_type_ids[off..off + real_len],
+                &ind.token_type_ids[..],
+                "batch {} token_type_ids mismatch in real token region",
+                i
+            );
+
+            // Padding region is all zeros
+            for j in real_len..batch.max_seq_len {
+                assert_eq!(
+                    batch.input_ids[off + j], 0,
+                    "batch {} padding input_ids[{}] should be 0",
+                    i, j
+                );
+                assert_eq!(
+                    batch.attention_mask[off + j], 0,
+                    "batch {} padding attention_mask[{}] should be 0",
+                    i, j
+                );
+                assert_eq!(
+                    batch.token_type_ids[off + j], 0,
+                    "batch {} padding token_type_ids[{}] should be 0",
+                    i, j
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_tokenize_batch_same_length_no_padding() {
+        // Two texts that tokenize to the same length → no padding needed
+        let vocab = test_vocab();
+        let tok = WordPieceTokenizer::from_vocab(&vocab);
+
+        let texts = &["hello", "world"];
+        let batch = tok.tokenize_batch(texts);
+
+        // Both texts → [CLS, token, SEP] = length 3
+        assert_eq!(batch.batch_size, 2);
+        assert_eq!(batch.max_seq_len, 3);
+        // All attention mask entries should be 1 (no padding)
+        assert!(
+            batch.attention_mask.iter().all(|&v| v == 1),
+            "same-length batch should have no padding"
+        );
+    }
+
+    #[test]
+    fn test_tokenize_batch_single_text() {
+        // Single text batch should match individual tokenization exactly
+        let vocab = test_vocab();
+        let tok = WordPieceTokenizer::from_vocab(&vocab);
+
+        let individual = tok.tokenize("hello world");
+        let batch = tok.tokenize_batch(&["hello world"]);
+
+        assert_eq!(batch.batch_size, 1);
+        assert_eq!(batch.max_seq_len, individual.input_ids.len());
+        assert_eq!(batch.input_ids, individual.input_ids);
+        assert_eq!(batch.attention_mask, individual.attention_mask);
+        assert_eq!(batch.token_type_ids, individual.token_type_ids);
+    }
+
+    #[test]
+    fn test_tokenize_batch_empty_texts() {
+        let vocab = test_vocab();
+        let tok = WordPieceTokenizer::from_vocab(&vocab);
+
+        let batch = tok.tokenize_batch(&[]);
+        assert_eq!(batch.batch_size, 0);
+        assert_eq!(batch.max_seq_len, 2); // unwrap_or(2)
+        assert!(batch.input_ids.is_empty());
+    }
+
+    #[test]
+    fn test_tokenize_batch_different_lengths_padding_pattern() {
+        // "hello world" → 4 tokens [CLS, hello, world, SEP]
+        // "hello" → 3 tokens [CLS, hello, SEP]
+        // "" → 2 tokens [CLS, SEP]
+        let vocab = test_vocab();
+        let tok = WordPieceTokenizer::from_vocab(&vocab);
+
+        let texts = &["hello world", "hello", ""];
+        let batch = tok.tokenize_batch(texts);
+
+        assert_eq!(batch.batch_size, 3);
+        assert_eq!(batch.max_seq_len, 4); // longest is "hello world"
+
+        // Total flat size
+        assert_eq!(batch.input_ids.len(), 3 * 4);
+        assert_eq!(batch.attention_mask.len(), 3 * 4);
+
+        // Sequence 0 ("hello world"): 4 tokens, 0 padding
+        assert_eq!(&batch.attention_mask[0..4], &[1, 1, 1, 1]);
+
+        // Sequence 1 ("hello"): 3 tokens, 1 padding
+        assert_eq!(&batch.attention_mask[4..8], &[1, 1, 1, 0]);
+        assert_eq!(batch.input_ids[7], 0); // padding token
+
+        // Sequence 2 (""): 2 tokens, 2 padding
+        assert_eq!(&batch.attention_mask[8..12], &[1, 1, 0, 0]);
+        assert_eq!(batch.input_ids[10], 0);
+        assert_eq!(batch.input_ids[11], 0);
+    }
+
+    #[test]
+    fn test_tokenize_batch_preserves_cls_sep() {
+        // Every sequence in the batch should start with CLS and end with SEP
+        // (in the non-padded region)
+        let vocab = test_vocab();
+        let tok = WordPieceTokenizer::from_vocab(&vocab);
+
+        let texts = &["hello world", "test", ""];
+        let batch = tok.tokenize_batch(texts);
+        let individual: Vec<TokenizedInput> = texts.iter().map(|t| tok.tokenize(t)).collect();
+
+        for (i, ind) in individual.iter().enumerate() {
+            let off = i * batch.max_seq_len;
+            assert_eq!(batch.input_ids[off], CLS_ID, "batch {} missing CLS", i);
+            let last_real = off + ind.input_ids.len() - 1;
+            assert_eq!(batch.input_ids[last_real], SEP_ID, "batch {} missing SEP", i);
+        }
     }
 }

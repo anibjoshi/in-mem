@@ -47,6 +47,9 @@ pub struct OpenOptions {
     pub model_api_key: Option<String>,
     /// Override model request timeout in milliseconds.
     pub model_timeout_ms: Option<u64>,
+    /// Override embedding batch size for auto-embed.
+    /// `None` means "use the config file default" (64).
+    pub embed_batch_size: Option<usize>,
 }
 
 impl OpenOptions {
@@ -91,6 +94,12 @@ impl OpenOptions {
         self.model_timeout_ms = Some(ms);
         self
     }
+
+    /// Set the embedding batch size for auto-embed.
+    pub fn embed_batch_size(mut self, size: usize) -> Self {
+        self.embed_batch_size = Some(size);
+        self
+    }
 }
 
 impl Default for OpenOptions {
@@ -103,6 +112,7 @@ impl Default for OpenOptions {
             model_name: None,
             model_api_key: None,
             model_timeout_ms: None,
+            embed_batch_size: None,
         }
     }
 }

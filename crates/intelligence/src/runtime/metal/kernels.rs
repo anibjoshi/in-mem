@@ -387,4 +387,186 @@ kernel void mean_pool(
     }
     output[tid] = (count > 0.0f) ? (sum / count) : 0.0f;
 }
+
+// -----------------------------------------------------------------------
+// batched_gemm_transpose — block-diagonal C[b] = A[b] * B[b]^T
+//   A: (batch*S, K), B: (batch*S, K), C: (batch*S, S)
+//   Each batch: (S,K) x (S,K)^T -> (S,S)
+//   Tiled 16x16 with batch index from threadgroup z.
+// -----------------------------------------------------------------------
+kernel void batched_gemm_transpose(
+    device const float* A       [[buffer(0)]],
+    device const float* B       [[buffer(1)]],
+    device       float* C       [[buffer(2)]],
+    constant     uint&  S       [[buffer(3)]],
+    constant     uint&  K       [[buffer(4)]],
+    uint3 tgid [[threadgroup_position_in_grid]],
+    uint2 lid  [[thread_position_in_threadgroup]])
+{
+    uint batch = tgid.z;
+    uint row   = tgid.y * TILE + lid.y;
+    uint col   = tgid.x * TILE + lid.x;
+
+    uint a_off = batch * S * K;
+    uint b_off = batch * S * K;
+    uint c_off = batch * S * S;
+
+    threadgroup float tileA[TILE][TILE];
+    threadgroup float tileB[TILE][TILE];
+
+    float sum = 0.0f;
+
+    uint numTiles = (K + TILE - 1) / TILE;
+    for (uint t = 0; t < numTiles; ++t) {
+        // Load tile of A  (S x K, row-major)
+        uint aCol = t * TILE + lid.x;
+        tileA[lid.y][lid.x] = (row < S && aCol < K)
+            ? A[a_off + row * K + aCol] : 0.0f;
+
+        // Load tile of B^T — B is (S x K), B^T[k][n] = B[n][k]
+        uint bK = t * TILE + lid.y;
+        uint bN = tgid.x * TILE + lid.x;
+        tileB[lid.y][lid.x] = (bK < K && bN < S)
+            ? B[b_off + bN * K + bK] : 0.0f;
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        for (uint i = 0; i < TILE; ++i) {
+            sum += tileA[lid.y][i] * tileB[i][lid.x];
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (row < S && col < S) {
+        C[c_off + row * S + col] = sum;
+    }
+}
+
+// -----------------------------------------------------------------------
+// batched_gemm — block-diagonal C[b] = A[b] * B[b]
+//   A: (batch*S, S), B: (batch*S, K), C: (batch*S, K)
+//   Each batch: (S,S) x (S,K) -> (S,K)
+//   Tiled 16x16 with batch index from threadgroup z.
+// -----------------------------------------------------------------------
+kernel void batched_gemm(
+    device const float* A       [[buffer(0)]],
+    device const float* B       [[buffer(1)]],
+    device       float* C       [[buffer(2)]],
+    constant     uint&  S       [[buffer(3)]],
+    constant     uint&  K       [[buffer(4)]],
+    uint3 tgid [[threadgroup_position_in_grid]],
+    uint2 lid  [[thread_position_in_threadgroup]])
+{
+    uint batch = tgid.z;
+    uint row   = tgid.y * TILE + lid.y;
+    uint col   = tgid.x * TILE + lid.x;
+
+    uint a_off = batch * S * S;
+    uint b_off = batch * S * K;
+    uint c_off = batch * S * K;
+
+    threadgroup float tileA[TILE][TILE];
+    threadgroup float tileB[TILE][TILE];
+
+    float sum = 0.0f;
+
+    uint numTiles = (S + TILE - 1) / TILE;
+    for (uint t = 0; t < numTiles; ++t) {
+        // Load tile of A  (S x S, row-major)
+        uint aCol = t * TILE + lid.x;
+        tileA[lid.y][lid.x] = (row < S && aCol < S)
+            ? A[a_off + row * S + aCol] : 0.0f;
+
+        // Load tile of B  (S x K, row-major)
+        uint bRow = t * TILE + lid.y;
+        tileB[lid.y][lid.x] = (bRow < S && col < K)
+            ? B[b_off + bRow * K + col] : 0.0f;
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        for (uint i = 0; i < TILE; ++i) {
+            sum += tileA[lid.y][i] * tileB[i][lid.x];
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (row < S && col < K) {
+        C[c_off + row * K + col] = sum;
+    }
+}
+
+// -----------------------------------------------------------------------
+// batched_attention_mask — per-sequence masking for batched attention
+//   scores: (batch*S, S), mask: (batch*S,)
+//   For row r: batch = r / seq_len,
+//   if mask[batch * seq_len + col] == 0 then scores[r][col] = -10000
+// -----------------------------------------------------------------------
+kernel void batched_attention_mask(
+    device       float* scores   [[buffer(0)]],
+    device const uint*  mask     [[buffer(1)]],
+    constant     uint&  total_rows [[buffer(2)]],
+    constant     uint&  seq_len  [[buffer(3)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    uint r = gid.y;
+    uint c = gid.x;
+    if (r >= total_rows || c >= seq_len) return;
+    uint batch = r / seq_len;
+    if (mask[batch * seq_len + c] == 0u) {
+        scores[r * seq_len + c] = -10000.0f;
+    }
+}
+
+// -----------------------------------------------------------------------
+// batched_mean_pool — per-sequence mean pooling
+//   hidden: (batch*S, D), mask: (batch*S,), output: (batch, D)
+//   One threadgroup per batch. Each thread handles columns at stride.
+// -----------------------------------------------------------------------
+kernel void batched_mean_pool(
+    device const float* hidden   [[buffer(0)]],
+    device const uint*  mask     [[buffer(1)]],
+    device       float* output   [[buffer(2)]],
+    constant     uint&  seq_len  [[buffer(3)]],
+    constant     uint&  cols     [[buffer(4)]],
+    uint gid  [[threadgroup_position_in_grid]],
+    uint lid  [[thread_position_in_threadgroup]],
+    uint threads_per_group [[threads_per_threadgroup]])
+{
+    uint batch = gid;
+
+    // Zero output columns handled by this thread.
+    for (uint c = lid; c < cols; c += threads_per_group) {
+        output[batch * cols + c] = 0.0f;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Count masked tokens in this batch.
+    float count = 0.0f;
+    for (uint s = 0; s < seq_len; ++s) {
+        if (mask[batch * seq_len + s] == 1u) {
+            count += 1.0f;
+        }
+    }
+
+    // Accumulate masked rows.
+    for (uint s = 0; s < seq_len; ++s) {
+        if (mask[batch * seq_len + s] == 1u) {
+            uint row_off = (batch * seq_len + s) * cols;
+            for (uint c = lid; c < cols; c += threads_per_group) {
+                output[batch * cols + c] += hidden[row_off + c];
+            }
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Divide by count.
+    if (count > 0.0f) {
+        float inv_count = 1.0f / count;
+        for (uint c = lid; c < cols; c += threads_per_group) {
+            output[batch * cols + c] *= inv_count;
+        }
+    }
+}
 "#;

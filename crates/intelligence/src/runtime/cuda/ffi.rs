@@ -71,6 +71,13 @@ type FnCuStreamDestroy = unsafe extern "C" fn(stream: CUstream) -> CUresult;
 type FnCuModuleUnload = unsafe extern "C" fn(module: CUmodule) -> CUresult;
 type FnCuMemsetD32 =
     unsafe extern "C" fn(dptr: CUdeviceptr, value: u32, count: usize) -> CUresult;
+// Stream-ordered async memory operations (CUDA 11.2+).
+type FnCuMemAllocAsync =
+    unsafe extern "C" fn(dptr: *mut CUdeviceptr, bytesize: usize, stream: CUstream) -> CUresult;
+type FnCuMemFreeAsync =
+    unsafe extern "C" fn(dptr: CUdeviceptr, stream: CUstream) -> CUresult;
+type FnCuMemsetD32Async =
+    unsafe extern "C" fn(dptr: CUdeviceptr, value: u32, count: usize, stream: CUstream) -> CUresult;
 
 // ---------------------------------------------------------------------------
 // CudaApi — resolved driver function pointers
@@ -100,6 +107,10 @@ pub struct CudaApi {
     cu_stream_destroy: FnCuStreamDestroy,
     cu_module_unload: FnCuModuleUnload,
     cu_memset_d32: FnCuMemsetD32,
+    // Async memory ops (CUDA 11.2+). None on older drivers.
+    cu_mem_alloc_async: Option<FnCuMemAllocAsync>,
+    cu_mem_free_async: Option<FnCuMemFreeAsync>,
+    cu_memset_d32_async: Option<FnCuMemsetD32Async>,
 }
 
 // SAFETY: All CUDA Driver API functions are thread-safe per the CUDA
@@ -119,6 +130,19 @@ macro_rules! load_sym {
             return Err(format!("{} resolved to null", $name));
         }
         unsafe { std::mem::transmute::<*mut c_void, _>(ptr) }
+    }};
+}
+
+/// Like `load_sym!` but returns `None` instead of failing if the symbol is
+/// missing. Used for optional CUDA 11.2+ async memory APIs.
+macro_rules! try_load_sym {
+    ($lib:expr, $name:expr) => {{
+        let cname = concat!($name, "\0");
+        let cstr = unsafe { CStr::from_bytes_with_nul_unchecked(cname.as_bytes()) };
+        match unsafe { $lib.sym(cstr) } {
+            Ok(ptr) if !ptr.is_null() => Some(unsafe { std::mem::transmute::<*mut c_void, _>(ptr) }),
+            _ => None,
+        }
     }};
 }
 
@@ -158,6 +182,16 @@ impl CudaApi {
         let cu_stream_destroy: FnCuStreamDestroy = load_sym!(lib, "cuStreamDestroy_v2");
         let cu_module_unload: FnCuModuleUnload = load_sym!(lib, "cuModuleUnload");
         let cu_memset_d32: FnCuMemsetD32 = load_sym!(lib, "cuMemsetD32_v2");
+
+        // Stream-ordered async memory operations (CUDA 11.2+). These avoid
+        // the synchronous OS-level memory mapping that cuMemAlloc performs,
+        // reducing per-allocation overhead from ~100us to <1us.
+        let cu_mem_alloc_async: Option<FnCuMemAllocAsync> =
+            try_load_sym!(lib, "cuMemAllocAsync");
+        let cu_mem_free_async: Option<FnCuMemFreeAsync> =
+            try_load_sym!(lib, "cuMemFreeAsync");
+        let cu_memset_d32_async: Option<FnCuMemsetD32Async> =
+            try_load_sym!(lib, "cuMemsetD32Async");
 
         // --- Initialize the driver ---
         let rc = unsafe { cu_init(0) };
@@ -206,6 +240,9 @@ impl CudaApi {
             cu_stream_destroy,
             cu_module_unload,
             cu_memset_d32,
+            cu_mem_alloc_async,
+            cu_mem_free_async,
+            cu_memset_d32_async,
         })
     }
 
@@ -351,6 +388,55 @@ impl CudaApi {
         let rc = unsafe { (self.cu_memset_d32)(dptr, value, count) };
         check(rc, "cuMemsetD32")
     }
+
+    /// Stream-ordered allocation (CUDA 11.2+). Falls back to synchronous
+    /// `cuMemAlloc` on older drivers.
+    pub fn mem_alloc_async(
+        &self,
+        bytesize: usize,
+        stream: CUstream,
+    ) -> Result<CUdeviceptr, String> {
+        if let Some(f) = self.cu_mem_alloc_async {
+            let mut dptr: CUdeviceptr = 0;
+            let rc = unsafe { f(&mut dptr, bytesize, stream) };
+            check(rc, "cuMemAllocAsync")?;
+            Ok(dptr)
+        } else {
+            self.mem_alloc(bytesize)
+        }
+    }
+
+    /// Stream-ordered free (CUDA 11.2+). Falls back to synchronous
+    /// `cuMemFree` on older drivers.
+    pub fn mem_free_async(
+        &self,
+        dptr: CUdeviceptr,
+        stream: CUstream,
+    ) -> Result<(), String> {
+        if let Some(f) = self.cu_mem_free_async {
+            let rc = unsafe { f(dptr, stream) };
+            check(rc, "cuMemFreeAsync")
+        } else {
+            self.mem_free(dptr)
+        }
+    }
+
+    /// Stream-ordered memset (CUDA 11.2+). Falls back to synchronous
+    /// `cuMemsetD32` on older drivers.
+    pub fn memset_d32_async(
+        &self,
+        dptr: CUdeviceptr,
+        value: u32,
+        count: usize,
+        stream: CUstream,
+    ) -> Result<(), String> {
+        if let Some(f) = self.cu_memset_d32_async {
+            let rc = unsafe { f(dptr, value, count, stream) };
+            check(rc, "cuMemsetD32Async")
+        } else {
+            self.memset_d32(dptr, value, count)
+        }
+    }
 }
 
 impl Drop for CudaApi {
@@ -367,5 +453,247 @@ fn check(rc: CUresult, fn_name: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("{} failed with CUDA error code {}", fn_name, rc))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// cuBLAS types and constants
+// ---------------------------------------------------------------------------
+
+/// Opaque cuBLAS handle.
+pub type CublasHandle = *mut c_void;
+/// cuBLAS status code.
+pub type CublasStatus = i32;
+/// Successful cuBLAS API call.
+pub const CUBLAS_STATUS_SUCCESS: CublasStatus = 0;
+/// No transpose.
+pub const CUBLAS_OP_N: i32 = 0;
+/// Transpose.
+pub const CUBLAS_OP_T: i32 = 1;
+
+// ---------------------------------------------------------------------------
+// cuBLAS function pointer types
+// ---------------------------------------------------------------------------
+
+type FnCublasCreate = unsafe extern "C" fn(handle: *mut CublasHandle) -> CublasStatus;
+type FnCublasDestroy = unsafe extern "C" fn(handle: CublasHandle) -> CublasStatus;
+type FnCublasSetStream =
+    unsafe extern "C" fn(handle: CublasHandle, stream: CUstream) -> CublasStatus;
+type FnCublasSgemm = unsafe extern "C" fn(
+    handle: CublasHandle,
+    transa: i32,
+    transb: i32,
+    m: i32,
+    n: i32,
+    k: i32,
+    alpha: *const f32,
+    a: CUdeviceptr,
+    lda: i32,
+    b: CUdeviceptr,
+    ldb: i32,
+    beta: *const f32,
+    c: CUdeviceptr,
+    ldc: i32,
+) -> CublasStatus;
+type FnCublasSgemmStridedBatched = unsafe extern "C" fn(
+    handle: CublasHandle,
+    transa: i32,
+    transb: i32,
+    m: i32,
+    n: i32,
+    k: i32,
+    alpha: *const f32,
+    a: CUdeviceptr,
+    lda: i32,
+    stride_a: i64,
+    b: CUdeviceptr,
+    ldb: i32,
+    stride_b: i64,
+    beta: *const f32,
+    c: CUdeviceptr,
+    ldc: i32,
+    stride_c: i64,
+    batch_count: i32,
+) -> CublasStatus;
+
+// ---------------------------------------------------------------------------
+// CublasApi — resolved cuBLAS function pointers
+// ---------------------------------------------------------------------------
+
+/// Holds the dynamically loaded cuBLAS library, handle, and resolved function
+/// pointers. Created once via [`CublasApi::load()`] and owned by `CudaBackend`.
+pub struct CublasApi {
+    /// Keep the library alive for the lifetime of this struct.
+    _lib: DynLib,
+    /// cuBLAS handle (created on load, destroyed on drop).
+    handle: CublasHandle,
+    /// Destroy function pointer (needed for drop).
+    cublas_destroy: FnCublasDestroy,
+    /// Required: single GEMM.
+    cublas_sgemm: FnCublasSgemm,
+    /// Optional: strided batched GEMM (for Tier 3).
+    cublas_sgemm_strided_batched: Option<FnCublasSgemmStridedBatched>,
+}
+
+// SAFETY: cuBLAS is thread-safe when each thread uses its own handle or
+// when access is serialized (which we do via &self on CudaBackend).
+unsafe impl Send for CublasApi {}
+unsafe impl Sync for CublasApi {}
+
+impl CublasApi {
+    /// Attempt to load the cuBLAS library and create a handle bound to `stream`.
+    ///
+    /// Probes multiple library names to support CUDA 11 and 12.
+    pub fn load(stream: CUstream) -> Result<Self, String> {
+        // Probe library names in order of preference.
+        #[cfg(unix)]
+        let lib_names: &[&CStr] = &[c"libcublas.so.12", c"libcublas.so.11", c"libcublas.so"];
+        #[cfg(windows)]
+        let lib_names: &[&CStr] = &[c"cublas64_12.dll", c"cublas64_11.dll"];
+        #[cfg(not(any(unix, windows)))]
+        return Err("cuBLAS is not supported on this platform".to_string());
+
+        let lib = {
+            let mut last_err = String::new();
+            let mut found = None;
+            for name in lib_names {
+                match DynLib::open(name) {
+                    Ok(l) => {
+                        found = Some(l);
+                        break;
+                    }
+                    Err(e) => last_err = e,
+                }
+            }
+            found.ok_or_else(|| format!("could not load cuBLAS: {}", last_err))?
+        };
+
+        // Resolve required symbols.
+        let cublas_create: FnCublasCreate = load_sym!(lib, "cublasCreate_v2");
+        let cublas_destroy: FnCublasDestroy = load_sym!(lib, "cublasDestroy_v2");
+        let cublas_set_stream: FnCublasSetStream = load_sym!(lib, "cublasSetStream_v2");
+        let cublas_sgemm: FnCublasSgemm = load_sym!(lib, "cublasSgemm_v2");
+
+        // Optional: strided batched GEMM.
+        let cublas_sgemm_strided_batched: Option<FnCublasSgemmStridedBatched> =
+            try_load_sym!(lib, "cublasSgemmStridedBatched");
+
+        // Create handle and bind to stream.
+        let mut handle: CublasHandle = std::ptr::null_mut();
+        let rc = unsafe { cublas_create(&mut handle) };
+        if rc != CUBLAS_STATUS_SUCCESS {
+            return Err(format!("cublasCreate failed with status {}", rc));
+        }
+
+        let rc = unsafe { cublas_set_stream(handle, stream) };
+        if rc != CUBLAS_STATUS_SUCCESS {
+            unsafe { cublas_destroy(handle) };
+            return Err(format!("cublasSetStream failed with status {}", rc));
+        }
+
+        Ok(Self {
+            _lib: lib,
+            handle,
+            cublas_destroy,
+            cublas_sgemm,
+            cublas_sgemm_strided_batched,
+        })
+    }
+
+    /// Single-precision general matrix multiply.
+    ///
+    /// Computes C = alpha * op(A) * op(B) + beta * C in column-major layout.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sgemm(
+        &self,
+        transa: i32,
+        transb: i32,
+        m: i32,
+        n: i32,
+        k: i32,
+        alpha: f32,
+        a: CUdeviceptr,
+        lda: i32,
+        b: CUdeviceptr,
+        ldb: i32,
+        beta: f32,
+        c: CUdeviceptr,
+        ldc: i32,
+    ) -> Result<(), String> {
+        let rc = unsafe {
+            (self.cublas_sgemm)(
+                self.handle, transa, transb, m, n, k, &alpha, a, lda, b, ldb, &beta, c, ldc,
+            )
+        };
+        if rc != CUBLAS_STATUS_SUCCESS {
+            return Err(format!("cublasSgemm failed with status {}", rc));
+        }
+        Ok(())
+    }
+
+    /// Strided batched single-precision GEMM.
+    ///
+    /// Returns `Err` if the symbol was not available at load time.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sgemm_strided_batched(
+        &self,
+        transa: i32,
+        transb: i32,
+        m: i32,
+        n: i32,
+        k: i32,
+        alpha: f32,
+        a: CUdeviceptr,
+        lda: i32,
+        stride_a: i64,
+        b: CUdeviceptr,
+        ldb: i32,
+        stride_b: i64,
+        beta: f32,
+        c: CUdeviceptr,
+        ldc: i32,
+        stride_c: i64,
+        batch_count: i32,
+    ) -> Result<(), String> {
+        let f = self
+            .cublas_sgemm_strided_batched
+            .ok_or("cublasSgemmStridedBatched not available")?;
+        let rc = unsafe {
+            f(
+                self.handle,
+                transa,
+                transb,
+                m,
+                n,
+                k,
+                &alpha,
+                a,
+                lda,
+                stride_a,
+                b,
+                ldb,
+                stride_b,
+                &beta,
+                c,
+                ldc,
+                stride_c,
+                batch_count,
+            )
+        };
+        if rc != CUBLAS_STATUS_SUCCESS {
+            return Err(format!(
+                "cublasSgemmStridedBatched failed with status {}",
+                rc
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Drop for CublasApi {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            unsafe { (self.cublas_destroy)(self.handle) };
+        }
     }
 }
