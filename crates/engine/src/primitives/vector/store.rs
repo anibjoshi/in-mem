@@ -146,7 +146,7 @@ impl VectorStore {
 
     /// Get the backend factory (hardcoded currently, configurable in future versions)
     fn backend_factory(&self) -> IndexBackendFactory {
-        IndexBackendFactory::Hnsw(super::hnsw::HnswConfig::default())
+        IndexBackendFactory::SegmentedHnsw(super::segmented::SegmentedHnswConfig::default())
     }
 
     // ========================================================================
