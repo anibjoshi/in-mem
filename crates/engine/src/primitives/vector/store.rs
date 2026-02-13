@@ -1215,6 +1215,75 @@ impl VectorStore {
         )))
     }
 
+    /// Batch-resolve metadata for multiple VectorIds in a single prefix scan.
+    ///
+    /// Instead of calling `get_key_metadata_and_source()` per candidate (each
+    /// doing a full O(n) scan), this scans the collection prefix once and
+    /// collects metadata for all requested VectorIds.
+    fn batch_get_metadata(
+        &self,
+        branch_id: BranchId,
+        space: &str,
+        collection: &str,
+        candidates: &[(VectorId, f32)],
+    ) -> VectorResult<Vec<VectorMatchWithSource>> {
+        use strata_core::traits::SnapshotView;
+        use std::collections::HashMap;
+
+        // Build a lookup set of target VectorIds → score
+        let mut target_map: HashMap<u64, f32> = HashMap::with_capacity(candidates.len());
+        for &(vid, score) in candidates {
+            target_map.insert(vid.0, score);
+        }
+
+        let namespace = self.namespace_for(branch_id, space);
+        let prefix = Key::vector_collection_prefix(namespace, collection);
+        let collection_prefix = format!("{}/", collection);
+
+        let snapshot = self.db.storage().create_snapshot();
+        let entries = snapshot
+            .scan_prefix(&prefix)
+            .map_err(|e| VectorError::Storage(e.to_string()))?;
+
+        let mut matches: Vec<VectorMatchWithSource> = Vec::with_capacity(candidates.len());
+
+        for (key, versioned) in entries {
+            if target_map.is_empty() {
+                break; // Found all candidates, stop scanning
+            }
+
+            let bytes = match &versioned.value {
+                Value::Bytes(b) => b,
+                _ => continue,
+            };
+
+            let record = match VectorRecord::from_bytes(bytes) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+
+            if let Some(score) = target_map.remove(&record.vector_id) {
+                let user_key = String::from_utf8(key.user_key.clone())
+                    .map_err(|e| VectorError::Serialization(e.to_string()))?;
+
+                let vector_key = user_key
+                    .strip_prefix(&collection_prefix)
+                    .unwrap_or(&user_key)
+                    .to_string();
+
+                matches.push(VectorMatchWithSource::new(
+                    vector_key,
+                    score,
+                    record.metadata,
+                    record.source_ref,
+                    record.version,
+                ));
+            }
+        }
+
+        Ok(matches)
+    }
+
     /// Get the current vector count for a collection
     fn get_collection_count(
         &self,
@@ -1668,15 +1737,7 @@ impl VectorStore {
             backend.search(query, k)
         };
 
-        let mut matches: Vec<VectorMatchWithSource> = Vec::with_capacity(candidates.len());
-
-        for (vector_id, score) in candidates {
-            let (key, metadata, source_ref, version) =
-                self.get_key_metadata_and_source(branch_id, space, collection, vector_id)?;
-            matches.push(VectorMatchWithSource::new(
-                key, score, metadata, source_ref, version,
-            ));
-        }
+        let mut matches = self.batch_get_metadata(branch_id, space, collection, &candidates)?;
 
         // Facade-level tie-breaking (score desc, key asc)
         matches.sort_by(|a, b| {
@@ -1753,15 +1814,7 @@ impl VectorStore {
             backend.search_in_range(query, k, start_ts, end_ts)
         };
 
-        let mut matches: Vec<VectorMatchWithSource> = Vec::with_capacity(candidates.len());
-
-        for (vector_id, score) in candidates {
-            let (key, metadata, source_ref, version) =
-                self.get_key_metadata_and_source(branch_id, space, collection, vector_id)?;
-            matches.push(VectorMatchWithSource::new(
-                key, score, metadata, source_ref, version,
-            ));
-        }
+        let mut matches = self.batch_get_metadata(branch_id, space, collection, &candidates)?;
 
         // Facade-level tie-breaking (score desc, key asc)
         matches.sort_by(|a, b| {
