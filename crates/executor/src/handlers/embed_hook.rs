@@ -225,6 +225,7 @@ pub fn flush_embed_buffer(p: &Arc<Primitives>) {
             );
         }
     }
+
     tracing::debug!(
         target: "strata::embed",
         count,
