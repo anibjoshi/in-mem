@@ -67,6 +67,10 @@ pub struct MetalBackend {
     pso_scatter_columns: Id,
     pso_attention_mask: Id,
     pso_mean_pool: Id,
+    pso_batched_gemm_transpose: Id,
+    pso_batched_gemm: Id,
+    pso_batched_attention_mask: Id,
+    pso_batched_mean_pool: Id,
 }
 
 // We synchronize every dispatch with waitUntilCompleted, so the backend can
@@ -92,6 +96,10 @@ impl Drop for MetalBackend {
                 self.pso_scatter_columns,
                 self.pso_attention_mask,
                 self.pso_mean_pool,
+                self.pso_batched_gemm_transpose,
+                self.pso_batched_gemm,
+                self.pso_batched_attention_mask,
+                self.pso_batched_mean_pool,
             ] {
                 if pso != NIL {
                     msg_send_void(pso, rel);
@@ -163,9 +171,13 @@ impl MetalBackend {
                 "scatter_columns",
                 "attention_mask",
                 "mean_pool",
+                "batched_gemm_transpose",
+                "batched_gemm",
+                "batched_attention_mask",
+                "batched_mean_pool",
             ];
 
-            let mut psos = [NIL; 12];
+            let mut psos = [NIL; 16];
             for (i, name) in kernel_names.iter().enumerate() {
                 let ns_name = ns_string(name);
                 let func = msg_send_id_id(library, sels.new_function_with_name, ns_name);
@@ -227,6 +239,10 @@ impl MetalBackend {
                 pso_scatter_columns: psos[9],
                 pso_attention_mask: psos[10],
                 pso_mean_pool: psos[11],
+                pso_batched_gemm_transpose: psos[12],
+                pso_batched_gemm: psos[13],
+                pso_batched_attention_mask: psos[14],
+                pso_batched_mean_pool: psos[15],
             })
         }
     }
@@ -652,38 +668,39 @@ impl ComputeBackend for MetalBackend {
         Self::wrap(buf, byte_len, rows, cols)
     }
 
-    fn apply_attention_mask(&self, scores: &mut DeviceTensor, mask: &[u32]) {
+    fn upload_mask(&self, mask: &[u32]) -> DeviceTensor {
+        let byte_len = mask.len() * std::mem::size_of::<u32>();
+        let buf = unsafe { self.create_buffer_u32(mask) };
+        Self::wrap(buf, byte_len, 1, mask.len())
+    }
+
+    fn apply_attention_mask(&self, scores: &mut DeviceTensor, mask: &DeviceTensor) {
         let rows = scores.rows;
         let cols = scores.cols;
 
         unsafe {
-            let mask_buf = self.create_buffer_u32(mask);
             let (cmd, enc) = self.begin_command(self.pso_attention_mask);
 
             self.set_buffer(enc, Self::buf_id(scores), 0);
-            self.set_buffer(enc, mask_buf, 1);
+            self.set_buffer(enc, Self::buf_id(mask), 1);
             self.set_u32(enc, rows as u32, 2);
             self.set_u32(enc, cols as u32, 3);
 
             self.dispatch_2d(enc, cmd, cols, rows, 16, 16);
-
-            // Release the temporary mask buffer.
-            msg_send_void(mask_buf, self.sels.release);
         }
     }
 
-    fn mean_pool(&self, hidden: &DeviceTensor, mask: &[u32]) -> Vec<f32> {
+    fn mean_pool(&self, hidden: &DeviceTensor, mask: &DeviceTensor) -> Vec<f32> {
         let rows = hidden.rows;
         let cols = hidden.cols;
         let out_bytes = cols * std::mem::size_of::<f32>();
 
         unsafe {
-            let mask_buf = self.create_buffer_u32(mask);
             let out_buf = self.create_buffer_empty(out_bytes);
             let (cmd, enc) = self.begin_command(self.pso_mean_pool);
 
             self.set_buffer(enc, Self::buf_id(hidden), 0);
-            self.set_buffer(enc, mask_buf, 1);
+            self.set_buffer(enc, Self::buf_id(mask), 1);
             self.set_buffer(enc, out_buf, 2);
             self.set_u32(enc, rows as u32, 3);
             self.set_u32(enc, cols as u32, 4);
@@ -692,11 +709,133 @@ impl ComputeBackend for MetalBackend {
 
             let result = self.read_buffer_f32(out_buf, cols);
 
-            // Release temporary buffers.
-            msg_send_void(mask_buf, self.sels.release);
+            // Release temporary output buffer.
             msg_send_void(out_buf, self.sels.release);
 
             result
+        }
+    }
+
+    fn batched_matmul_transpose(
+        &self,
+        a: &DeviceTensor,
+        b: &DeviceTensor,
+        batch_size: usize,
+        seq_len: usize,
+    ) -> DeviceTensor {
+        let k = a.cols;
+        let out_count = batch_size * seq_len * seq_len;
+        let out_bytes = out_count * std::mem::size_of::<f32>();
+
+        unsafe {
+            let out_buf = self.create_buffer_empty(out_bytes);
+            let (cmd, enc) = self.begin_command(self.pso_batched_gemm_transpose);
+
+            self.set_buffer(enc, Self::buf_id(a), 0);
+            self.set_buffer(enc, Self::buf_id(b), 1);
+            self.set_buffer(enc, out_buf, 2);
+            self.set_u32(enc, seq_len as u32, 3);
+            self.set_u32(enc, k as u32, 4);
+
+            let gx = (seq_len + 15) / 16;
+            let gy = (seq_len + 15) / 16;
+            msg_send_dispatch(
+                enc,
+                self.sels.dispatch_threadgroups,
+                gx, gy, batch_size, // threadgroups
+                16, 16, 1,          // threads per threadgroup
+            );
+            self.end_command(cmd, enc);
+
+            Self::wrap(out_buf, out_bytes, batch_size * seq_len, seq_len)
+        }
+    }
+
+    fn batched_matmul(
+        &self,
+        a: &DeviceTensor,
+        b: &DeviceTensor,
+        batch_size: usize,
+        seq_len: usize,
+    ) -> DeviceTensor {
+        let k = b.cols;
+        let out_count = batch_size * seq_len * k;
+        let out_bytes = out_count * std::mem::size_of::<f32>();
+
+        unsafe {
+            let out_buf = self.create_buffer_empty(out_bytes);
+            let (cmd, enc) = self.begin_command(self.pso_batched_gemm);
+
+            self.set_buffer(enc, Self::buf_id(a), 0);
+            self.set_buffer(enc, Self::buf_id(b), 1);
+            self.set_buffer(enc, out_buf, 2);
+            self.set_u32(enc, seq_len as u32, 3);
+            self.set_u32(enc, k as u32, 4);
+
+            let gx = (k + 15) / 16;
+            let gy = (seq_len + 15) / 16;
+            msg_send_dispatch(
+                enc,
+                self.sels.dispatch_threadgroups,
+                gx, gy, batch_size, // threadgroups
+                16, 16, 1,          // threads per threadgroup
+            );
+            self.end_command(cmd, enc);
+
+            Self::wrap(out_buf, out_bytes, batch_size * seq_len, k)
+        }
+    }
+
+    fn batched_attention_mask(
+        &self,
+        scores: &mut DeviceTensor,
+        mask: &DeviceTensor,
+        batch_size: usize,
+        seq_len: usize,
+    ) {
+        let total_rows = batch_size * seq_len;
+
+        unsafe {
+            let (cmd, enc) = self.begin_command(self.pso_batched_attention_mask);
+
+            self.set_buffer(enc, Self::buf_id(scores), 0);
+            self.set_buffer(enc, Self::buf_id(mask), 1);
+            self.set_u32(enc, total_rows as u32, 2);
+            self.set_u32(enc, seq_len as u32, 3);
+
+            self.dispatch_2d(enc, cmd, seq_len, total_rows, 16, 16);
+        }
+    }
+
+    fn batched_mean_pool(
+        &self,
+        hidden: &DeviceTensor,
+        mask: &DeviceTensor,
+        batch_size: usize,
+        seq_len: usize,
+    ) -> Vec<Vec<f32>> {
+        let cols = hidden.cols;
+        let out_count = batch_size * cols;
+        let out_bytes = out_count * std::mem::size_of::<f32>();
+
+        unsafe {
+            let out_buf = self.create_buffer_empty(out_bytes);
+            let (cmd, enc) = self.begin_command(self.pso_batched_mean_pool);
+
+            self.set_buffer(enc, Self::buf_id(hidden), 0);
+            self.set_buffer(enc, Self::buf_id(mask), 1);
+            self.set_buffer(enc, out_buf, 2);
+            self.set_u32(enc, seq_len as u32, 3);
+            self.set_u32(enc, cols as u32, 4);
+
+            self.dispatch_rows(enc, cmd, batch_size, 256);
+
+            let flat = self.read_buffer_f32(out_buf, out_count);
+
+            // Release temporary output buffer.
+            msg_send_void(out_buf, self.sels.release);
+
+            flat.chunks(cols).map(|c| c.to_vec()).collect()
         }
     }
 

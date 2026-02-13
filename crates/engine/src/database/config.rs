@@ -73,6 +73,9 @@ pub struct StrataConfig {
     /// Optional model configuration for query expansion and re-ranking.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<ModelConfig>,
+    /// Embedding batch size for auto-embed (default: 64).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embed_batch_size: Option<usize>,
 }
 
 fn default_durability_str() -> String {
@@ -85,6 +88,7 @@ impl Default for StrataConfig {
             durability: default_durability_str(),
             auto_embed: false,
             model: None,
+            embed_batch_size: None,
         }
     }
 }
@@ -118,6 +122,10 @@ durability = "standard"
 # Auto-embed: automatically generate embeddings for text data (default: false)
 # Requires the "embed" feature to be compiled in.
 auto_embed = false
+
+# Embedding batch size for auto-embed (default: 64).
+# Increase for bulk ingestion, decrease for interactive use.
+# embed_batch_size = 64
 
 # Model configuration for query expansion and re-ranking.
 # Uncomment and configure to enable intelligent search features.
@@ -275,6 +283,7 @@ mod tests {
                 api_key: Some("sk-test".to_string()),
                 timeout_ms: 3000,
             }),
+            embed_batch_size: None,
         };
 
         let toml_str = toml::to_string_pretty(&config).unwrap();
@@ -295,6 +304,7 @@ mod tests {
             durability: "standard".to_string(),
             auto_embed: false,
             model: None,
+            embed_batch_size: None,
         };
 
         let toml_str = toml::to_string_pretty(&config).unwrap();
@@ -347,6 +357,7 @@ model = "qwen3:1.7b"
                 api_key: None,
                 timeout_ms: 5000,
             }),
+            embed_batch_size: None,
         };
 
         config.write_to_file(&path).unwrap();

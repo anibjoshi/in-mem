@@ -81,7 +81,6 @@ struct PendingEmbed {
 #[cfg(feature = "embed")]
 pub struct EmbedBuffer {
     pending: std::sync::Mutex<Vec<PendingEmbed>>,
-    batch_size: usize,
 }
 
 #[cfg(feature = "embed")]
@@ -89,7 +88,6 @@ impl Default for EmbedBuffer {
     fn default() -> Self {
         Self {
             pending: std::sync::Mutex::new(Vec::with_capacity(64)),
-            batch_size: 64,
         }
     }
 }
@@ -130,7 +128,7 @@ pub fn maybe_embed_text(
             text: text.to_owned(),
             source_ref,
         });
-        pending.len() >= buf.batch_size
+        pending.len() >= p.db.embed_batch_size()
     };
 
     if should_flush {
@@ -227,7 +225,6 @@ pub fn flush_embed_buffer(p: &Arc<Primitives>) {
             );
         }
     }
-
     tracing::debug!(
         target: "strata::embed",
         count,

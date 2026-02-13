@@ -718,6 +718,11 @@ impl Database {
         });
     }
 
+    /// Get the embedding batch size (reads config, defaults to 64).
+    pub fn embed_batch_size(&self) -> usize {
+        self.config.read().embed_batch_size.unwrap_or(64)
+    }
+
     /// Path to the model directory for MiniLM-L6-v2.
     ///
     /// Checks in order:

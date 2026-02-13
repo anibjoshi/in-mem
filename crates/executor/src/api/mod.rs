@@ -175,6 +175,9 @@ impl Strata {
                 model.timeout_ms = ms;
             }
         }
+        if let Some(bs) = opts.embed_batch_size {
+            cfg.embed_batch_size = Some(bs);
+        }
 
         let db = Database::open_with_config(&data_dir, cfg).map_err(|e| Error::Internal {
             reason: format!("Failed to open database: {}", e),

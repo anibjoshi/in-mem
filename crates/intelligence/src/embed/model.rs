@@ -6,7 +6,7 @@ use crate::runtime::backend::{select_backend, ComputeBackend, DeviceTensor};
 use crate::runtime::safetensors::SafeTensors;
 use crate::runtime::tensor::Tensor;
 
-use super::tokenizer::{TokenizedInput, WordPieceTokenizer};
+use super::tokenizer::{BatchTokenizedInput, TokenizedInput, WordPieceTokenizer};
 
 const HIDDEN_SIZE: usize = 384;
 const NUM_HEADS: usize = 12;
@@ -56,9 +56,26 @@ impl EmbedModel {
     /// - HuggingFace BERT: `bert.embeddings.word_embeddings.weight`
     /// - Sentence Transformers: `embeddings.word_embeddings.weight`
     pub fn load(safetensors_bytes: &[u8], vocab_text: &str) -> Result<Self, String> {
+        Self::load_with_backend(safetensors_bytes, vocab_text, select_backend())
+    }
+
+    /// Load model with a specific compute backend (used for testing).
+    #[cfg(test)]
+    pub(crate) fn load_with_backend_for_test(
+        safetensors_bytes: &[u8],
+        vocab_text: &str,
+        backend: Arc<dyn ComputeBackend>,
+    ) -> Result<Self, String> {
+        Self::load_with_backend(safetensors_bytes, vocab_text, backend)
+    }
+
+    fn load_with_backend(
+        safetensors_bytes: &[u8],
+        vocab_text: &str,
+        backend: Arc<dyn ComputeBackend>,
+    ) -> Result<Self, String> {
         let st = SafeTensors::from_bytes(safetensors_bytes)?;
         let tokenizer = WordPieceTokenizer::from_vocab(vocab_text);
-        let backend = select_backend();
 
         // Detect naming convention: try with "bert." prefix first, fall back to without.
         let prefix = if st
@@ -203,11 +220,69 @@ impl EmbedModel {
 
     /// Embed multiple texts, returning one 384-dimensional vector per input.
     ///
-    /// Currently iterates sequentially (back-to-back forward passes keep the
-    /// GPU warm). True tensor batching (padding + batched matmul) is a
-    /// follow-up optimisation.
+    /// Uses tensor-batched forward passes: all texts are tokenized together,
+    /// padded to a common length, and processed as a single (B*S, 384) tensor
+    /// through all transformer layers.
+    ///
+    /// Callers control batch size via `embed_batch_size` in `OpenOptions` /
+    /// `StrataConfig` — smaller batches reduce padding waste on CPU, larger
+    /// batches improve GPU throughput.
     pub fn embed_batch(&self, texts: &[&str]) -> Vec<Vec<f32>> {
-        texts.iter().map(|t| self.embed(t)).collect()
+        if texts.is_empty() {
+            return vec![];
+        }
+        if texts.len() == 1 {
+            return vec![self.embed(texts[0])];
+        }
+
+        // Sort by text length so the tokenizer pads to the longest text in
+        // the batch. Sorting minimizes worst-case padding waste when texts
+        // have varied lengths (attention is O(S^2)).
+        let mut order: Vec<usize> = (0..texts.len()).collect();
+        order.sort_by_key(|&i| texts[i].len());
+        let sorted_texts: Vec<&str> = order.iter().map(|&i| texts[i]).collect();
+
+        let sorted_results = self.embed_batch_inner(&sorted_texts);
+
+        // Restore original input order.
+        let mut results = vec![Vec::new(); texts.len()];
+        for (result, &orig_idx) in sorted_results.into_iter().zip(order.iter()) {
+            results[orig_idx] = result;
+        }
+        results
+    }
+
+    /// Core batched forward pass — all texts processed as one padded batch.
+    fn embed_batch_inner(&self, texts: &[&str]) -> Vec<Vec<f32>> {
+        let input = self.tokenizer.tokenize_batch(texts);
+        let bs = input.batch_size;
+        let sl = input.max_seq_len;
+
+        // 1. Gather embeddings on CPU into (B*S, 384) tensor
+        let hidden_cpu = self.gather_embeddings_batch(&input);
+
+        // 2. Upload to device (mask uploaded once, reused across all layers + pool)
+        let hidden = self.backend.upload(&hidden_cpu);
+        let mask = self.backend.upload_mask(&input.attention_mask);
+
+        // 3. Embedding layer norm
+        let mut hidden = self.backend.layer_norm(
+            &hidden,
+            &self.embed_ln_weight,
+            &self.embed_ln_bias,
+            LAYER_NORM_EPS,
+        );
+
+        // 4. Transformer layers
+        for layer in &self.layers {
+            hidden = self.transformer_layer_batched(layer, &hidden, &mask, bs, sl);
+        }
+
+        // 5. Batched mean pool
+        let pooled = self.backend.batched_mean_pool(&hidden, &mask, bs, sl);
+
+        // 6. L2 normalize each vector
+        pooled.into_iter().map(|v| l2_normalize(&v)).collect()
     }
 
     /// Embed a text string into a 384-dimensional vector.
@@ -218,8 +293,9 @@ impl EmbedModel {
         // 1. Gather embeddings (always on CPU — avoids uploading 45MB vocab table)
         let hidden_cpu = self.gather_embeddings(&input, seq_len);
 
-        // 2. Upload to device
+        // 2. Upload to device (mask uploaded once, reused across all layers)
         let hidden = self.backend.upload(&hidden_cpu);
+        let mask = self.backend.upload_mask(&input.attention_mask);
 
         // 3. Layer norm
         let mut hidden = self.backend.layer_norm(
@@ -231,11 +307,11 @@ impl EmbedModel {
 
         // 4. Transformer layers
         for layer in &self.layers {
-            hidden = self.transformer_layer(layer, &hidden, &input.attention_mask);
+            hidden = self.transformer_layer(layer, &hidden, &mask);
         }
 
         // 5. Mean pooling (returns host Vec)
-        let pooled = self.backend.mean_pool(&hidden, &input.attention_mask);
+        let pooled = self.backend.mean_pool(&hidden, &mask);
 
         // 6. L2 normalize (CPU, trivial for 384 elements)
         l2_normalize(&pooled)
@@ -263,11 +339,43 @@ impl EmbedModel {
         Tensor::from_slice(&data, seq_len, HIDDEN_SIZE)
     }
 
+    fn gather_embeddings_batch(&self, input: &BatchTokenizedInput) -> Tensor {
+        let bs = input.batch_size;
+        let sl = input.max_seq_len;
+        let total_rows = bs * sl;
+        let mut data = vec![0.0f32; total_rows * HIDDEN_SIZE];
+
+        for seq in 0..bs {
+            for pos in 0..sl {
+                let flat_idx = seq * sl + pos;
+                let token_id = input.input_ids[flat_idx] as usize;
+                let type_id = input.token_type_ids[flat_idx] as usize;
+                let mask = input.attention_mask[flat_idx];
+
+                // Skip padding positions (mask == 0) — they stay as zeros
+                if mask == 0 {
+                    continue;
+                }
+
+                let word_row = self.word_embeddings.row(token_id);
+                let pos_row = self.position_embeddings.row(pos);
+                let type_row = self.token_type_embeddings.row(type_id);
+
+                let offset = flat_idx * HIDDEN_SIZE;
+                for i in 0..HIDDEN_SIZE {
+                    data[offset + i] = word_row[i] + pos_row[i] + type_row[i];
+                }
+            }
+        }
+
+        Tensor::from_slice(&data, total_rows, HIDDEN_SIZE)
+    }
+
     fn transformer_layer(
         &self,
         layer: &TransformerLayer,
         hidden: &DeviceTensor,
-        attention_mask: &[u32],
+        attention_mask: &DeviceTensor,
     ) -> DeviceTensor {
         let seq_len = hidden.rows;
         let b = &self.backend;
@@ -281,33 +389,23 @@ impl EmbedModel {
         let mut v = b.matmul_transpose(hidden, &layer.v_weight);
         b.add_bias(&mut v, &layer.v_bias);
 
-        // Multi-head attention
+        // Multi-head attention: transpose heads into batch dimension
         let scale = 1.0 / (HEAD_DIM as f32).sqrt();
-        let mut attn_output = b.zeros(seq_len, HIDDEN_SIZE);
 
-        for head in 0..NUM_HEADS {
-            let offset = head * HEAD_DIM;
+        // (S, H*D) -> (H*S, D): each head becomes a separate "batch"
+        let q_t = b.transpose_heads(&q, 1, seq_len, NUM_HEADS, HEAD_DIM);
+        let k_t = b.transpose_heads(&k, 1, seq_len, NUM_HEADS, HEAD_DIM);
+        let v_t = b.transpose_heads(&v, 1, seq_len, NUM_HEADS, HEAD_DIM);
 
-            // Extract Q, K, V slices for this head
-            let q_head = b.slice_columns(&q, offset, offset + HEAD_DIM);
-            let k_head = b.slice_columns(&k, offset, offset + HEAD_DIM);
-            let v_head = b.slice_columns(&v, offset, offset + HEAD_DIM);
+        // Batched attention: all heads computed in parallel
+        let mut scores = b.batched_matmul_transpose(&q_t, &k_t, NUM_HEADS, seq_len);
+        b.scale(&mut scores, scale);
+        b.multi_head_batched_attention_mask(&mut scores, attention_mask, 1, seq_len, NUM_HEADS);
+        b.softmax_rows(&mut scores);
+        let context = b.batched_matmul(&scores, &v_t, NUM_HEADS, seq_len);
 
-            // Attention scores: Q * K^T / sqrt(d_k)
-            let mut scores = b.matmul_transpose(&q_head, &k_head);
-            b.scale(&mut scores, scale);
-
-            // Apply attention mask (set padding positions to -10000)
-            b.apply_attention_mask(&mut scores, attention_mask);
-
-            b.softmax_rows(&mut scores);
-
-            // Weighted sum: scores * V
-            let context = b.matmul(&scores, &v_head);
-
-            // Copy back to full hidden dim
-            b.scatter_columns(&mut attn_output, &context, offset);
-        }
+        // (H*S, D) -> (S, H*D): reassemble heads
+        let attn_output = b.untranspose_heads(&context, 1, seq_len, NUM_HEADS, HEAD_DIM);
 
         // Output projection
         let mut projected = b.matmul_transpose(&attn_output, &layer.attn_output_weight);
@@ -323,6 +421,83 @@ impl EmbedModel {
         );
 
         // FFN: intermediate
+        let mut intermediate = b.matmul_transpose(&normed_attn, &layer.intermediate_weight);
+        b.add_bias(&mut intermediate, &layer.intermediate_bias);
+        let intermediate = b.gelu(&intermediate);
+
+        // FFN: output
+        let mut output = b.matmul_transpose(&intermediate, &layer.output_weight);
+        b.add_bias(&mut output, &layer.output_bias);
+
+        // Residual + LayerNorm
+        let post_ffn = b.add_tensor(&output, &normed_attn);
+        b.layer_norm(
+            &post_ffn,
+            &layer.output_ln_weight,
+            &layer.output_ln_bias,
+            LAYER_NORM_EPS,
+        )
+    }
+
+    fn transformer_layer_batched(
+        &self,
+        layer: &TransformerLayer,
+        hidden: &DeviceTensor,
+        attention_mask: &DeviceTensor,
+        batch_size: usize,
+        seq_len: usize,
+    ) -> DeviceTensor {
+        let b = &self.backend;
+
+        // Self-attention: Q, K, V projections
+        // These work on the full (B*S, 384) tensor — single large matmul
+        let mut q = b.matmul_transpose(hidden, &layer.q_weight);
+        b.add_bias(&mut q, &layer.q_bias);
+        let mut k = b.matmul_transpose(hidden, &layer.k_weight);
+        b.add_bias(&mut k, &layer.k_bias);
+        let mut v = b.matmul_transpose(hidden, &layer.v_weight);
+        b.add_bias(&mut v, &layer.v_bias);
+
+        // Multi-head attention: transpose heads into batch dimension
+        let scale = 1.0 / (HEAD_DIM as f32).sqrt();
+        let total_batches = batch_size * NUM_HEADS;
+
+        // (B*S, H*D) -> (B*H*S, D): each head becomes a separate "batch"
+        let q_t = b.transpose_heads(&q, batch_size, seq_len, NUM_HEADS, HEAD_DIM);
+        let k_t = b.transpose_heads(&k, batch_size, seq_len, NUM_HEADS, HEAD_DIM);
+        let v_t = b.transpose_heads(&v, batch_size, seq_len, NUM_HEADS, HEAD_DIM);
+
+        // Batched attention: all heads computed in parallel
+        let mut scores = b.batched_matmul_transpose(&q_t, &k_t, total_batches, seq_len);
+        b.scale(&mut scores, scale);
+        b.multi_head_batched_attention_mask(
+            &mut scores,
+            attention_mask,
+            batch_size,
+            seq_len,
+            NUM_HEADS,
+        );
+        b.softmax_rows(&mut scores);
+        let context = b.batched_matmul(&scores, &v_t, total_batches, seq_len);
+
+        // (B*H*S, D) -> (B*S, H*D): reassemble heads
+        let attn_output =
+            b.untranspose_heads(&context, batch_size, seq_len, NUM_HEADS, HEAD_DIM);
+
+        // Output projection — single large matmul on (B*S, 384)
+        let mut projected = b.matmul_transpose(&attn_output, &layer.attn_output_weight);
+        b.add_bias(&mut projected, &layer.attn_output_bias);
+
+        // Residual + LayerNorm
+        let post_attn = b.add_tensor(&projected, hidden);
+        let normed_attn = b.layer_norm(
+            &post_attn,
+            &layer.attn_ln_weight,
+            &layer.attn_ln_bias,
+            LAYER_NORM_EPS,
+        );
+
+        // FFN: intermediate — single large matmul
         let mut intermediate = b.matmul_transpose(&normed_attn, &layer.intermediate_weight);
         b.add_bias(&mut intermediate, &layer.intermediate_bias);
         let intermediate = b.gelu(&intermediate);
