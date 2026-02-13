@@ -311,6 +311,63 @@ impl SegmentedHnswBackend {
     }
 
     // ========================================================================
+    // Segment Extraction / Adoption (Phase 2: Branch-Aware Merge)
+    // ========================================================================
+
+    /// Extract all sealed segments from this backend.
+    ///
+    /// Returns the sealed segments and resets the backend's segment list.
+    /// The global heap is NOT drained — callers must handle embeddings
+    /// separately (e.g., via KV-level merge which copies VectorRecords).
+    ///
+    /// Used during branch merge to transfer pre-built HNSW graphs from
+    /// the source branch to the target branch without full rebuild.
+    pub fn extract_segments(&mut self) -> Vec<(u64, HnswBackend, usize, Option<strata_core::BranchId>)> {
+        let sealed = std::mem::take(&mut self.sealed);
+        sealed
+            .into_iter()
+            .map(|s| (s.segment_id, s.hnsw, s.live_count, s.source_branch))
+            .collect()
+    }
+
+    /// Adopt sealed segments from another backend (e.g., after branch merge).
+    ///
+    /// Each adopted segment is re-tagged with a new segment_id from this
+    /// backend's counter to maintain ordering invariants, and optionally
+    /// tagged with the source branch for provenance tracking.
+    ///
+    /// NOTE: The caller must ensure that the VectorIds in the adopted segments
+    /// are valid in this backend's global heap. In the current implementation,
+    /// post_merge_reload_vectors() rebuilds from KV which is simpler and
+    /// always correct. This method is provided for future O(metadata)
+    /// segment adoption with VectorId remapping.
+    pub fn adopt_segments(
+        &mut self,
+        segments: Vec<(HnswBackend, usize, Option<strata_core::BranchId>)>,
+    ) {
+        for (hnsw, live_count, source_branch) in segments {
+            let segment_id = self.next_segment_id;
+            self.next_segment_id += 1;
+            self.sealed.push(SealedSegment {
+                segment_id,
+                hnsw,
+                live_count,
+                source_branch,
+            });
+        }
+    }
+
+    /// Get the number of sealed segments (for diagnostics / testing)
+    pub fn segment_count(&self) -> usize {
+        self.sealed.len()
+    }
+
+    /// Get the number of vectors in the active buffer (for diagnostics / testing)
+    pub fn active_buffer_len(&self) -> usize {
+        self.active.len()
+    }
+
+    // ========================================================================
     // Merge Results
     // ========================================================================
 
@@ -1341,5 +1398,95 @@ mod tests {
         let top3_ids: Vec<u64> = results.iter().map(|r| r.0.as_u64()).collect();
         assert!(top3_ids.contains(&9));
         assert!(top3_ids.contains(&2));
+    }
+
+    // ========================================================================
+    // Phase 2: extract_segments / adopt_segments
+    // ========================================================================
+
+    #[test]
+    fn test_extract_segments_drains_sealed() {
+        let mut backend = make_backend_with_threshold(3, DistanceMetric::Cosine, 2);
+
+        // Insert enough to seal one segment
+        backend
+            .insert_with_timestamp(VectorId::new(1), &[1.0, 0.0, 0.0], 100)
+            .unwrap();
+        backend
+            .insert_with_timestamp(VectorId::new(2), &[0.0, 1.0, 0.0], 200)
+            .unwrap();
+        assert_eq!(backend.segment_count(), 1);
+        assert!(backend.active.is_empty());
+
+        // Extract segments
+        let extracted = backend.extract_segments();
+        assert_eq!(extracted.len(), 1);
+        assert_eq!(backend.segment_count(), 0, "Sealed list should be drained");
+
+        // Extracted segment should have 2 live vectors
+        let (_seg_id, ref hnsw, live_count, ref source_branch) = extracted[0];
+        assert_eq!(live_count, 2);
+        assert!(source_branch.is_none());
+        assert_eq!(hnsw.len(), 2);
+    }
+
+    #[test]
+    fn test_adopt_segments_appends_with_new_ids() {
+        let mut source = make_backend_with_threshold(3, DistanceMetric::Cosine, 2);
+        let mut target = make_backend_with_threshold(3, DistanceMetric::Cosine, 2);
+
+        // Build segments on source
+        source
+            .insert_with_timestamp(VectorId::new(1), &[1.0, 0.0, 0.0], 100)
+            .unwrap();
+        source
+            .insert_with_timestamp(VectorId::new(2), &[0.0, 1.0, 0.0], 200)
+            .unwrap();
+        assert_eq!(source.segment_count(), 1);
+
+        // Build a segment on target too
+        target
+            .insert_with_timestamp(VectorId::new(10), &[0.0, 0.0, 1.0], 300)
+            .unwrap();
+        target
+            .insert_with_timestamp(VectorId::new(11), &[0.5, 0.5, 0.0], 400)
+            .unwrap();
+        assert_eq!(target.segment_count(), 1);
+
+        // Extract from source and adopt into target
+        let extracted = source.extract_segments();
+        let to_adopt: Vec<_> = extracted
+            .into_iter()
+            .map(|(_, hnsw, live, branch)| (hnsw, live, branch))
+            .collect();
+        target.adopt_segments(to_adopt);
+
+        // Target should now have 2 segments
+        assert_eq!(target.segment_count(), 2);
+    }
+
+    #[test]
+    fn test_segment_count_and_active_buffer_len() {
+        let mut backend = make_backend_with_threshold(3, DistanceMetric::Cosine, 3);
+
+        assert_eq!(backend.segment_count(), 0);
+        assert_eq!(backend.active_buffer_len(), 0);
+
+        // Insert 2 — still in active buffer
+        backend
+            .insert(VectorId::new(1), &[1.0, 0.0, 0.0])
+            .unwrap();
+        backend
+            .insert(VectorId::new(2), &[0.0, 1.0, 0.0])
+            .unwrap();
+        assert_eq!(backend.segment_count(), 0);
+        assert_eq!(backend.active_buffer_len(), 2);
+
+        // Insert 3rd — seals
+        backend
+            .insert(VectorId::new(3), &[0.0, 0.0, 1.0])
+            .unwrap();
+        assert_eq!(backend.segment_count(), 1);
+        assert_eq!(backend.active_buffer_len(), 0);
     }
 }
