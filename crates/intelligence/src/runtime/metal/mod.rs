@@ -4,12 +4,18 @@
 //! MSL compute kernels through the Metal framework via raw Objective-C FFI.
 //! No external Objective-C or Metal crate dependencies are required.
 
+use std::sync::Mutex;
+
 use super::backend::{ComputeBackend, DeviceTensor};
 use super::tensor::Tensor;
 use ffi::*;
 
 pub mod ffi;
 pub mod kernels;
+
+/// `MTLBarrierScopeBuffers` — ensures all buffer writes from prior dispatches
+/// are visible to subsequent dispatches within the same encoder.
+const MTL_BARRIER_SCOPE_BUFFERS: NSUInteger = 1;
 
 // ---------------------------------------------------------------------------
 // MetalBuffer — a reference-counted MTLBuffer wrapper
@@ -47,9 +53,11 @@ impl Drop for MetalBuffer {
 /// Holds the Metal device, command queue, selector cache, and pre-compiled
 /// pipeline state objects (PSOs) for every kernel in the MSL source.
 ///
-/// Each operation creates a fresh command buffer, encodes work, commits, and
-/// calls `waitUntilCompleted` — so all GPU work is serialised and results are
-/// available immediately on return.
+/// Uses deferred command buffer batching: multiple GPU dispatches are encoded
+/// into a single command buffer separated by memory barriers. The buffer is
+/// only committed (`flush()`) when the CPU needs to read results (download,
+/// mean_pool, batched_mean_pool). This reduces ~37 `waitUntilCompleted`
+/// stalls to ~1-2 per embedding.
 pub struct MetalBackend {
     device: Id,
     command_queue: Id,
@@ -71,9 +79,15 @@ pub struct MetalBackend {
     pso_batched_gemm: Id,
     pso_batched_attention_mask: Id,
     pso_batched_mean_pool: Id,
+    pso_transpose_heads: Id,
+    pso_untranspose_heads: Id,
+    pso_multi_head_batched_attention_mask: Id,
+    /// Active command buffer and compute encoder for deferred dispatch.
+    /// `None` means no open command buffer; dispatches create one lazily.
+    active_cmd: Mutex<Option<(Id, Id)>>,
 }
 
-// We synchronize every dispatch with waitUntilCompleted, so the backend can
+// We flush (waitUntilCompleted) before any CPU read, so the backend can
 // safely be shared across threads.
 unsafe impl Send for MetalBackend {}
 unsafe impl Sync for MetalBackend {}
@@ -81,6 +95,9 @@ unsafe impl Sync for MetalBackend {}
 impl Drop for MetalBackend {
     fn drop(&mut self) {
         unsafe {
+            // Flush any pending GPU work.
+            self.flush();
+
             let rel = sel_registerName(b"release\0".as_ptr() as _);
             // Release all PSOs
             for pso in [
@@ -100,6 +117,9 @@ impl Drop for MetalBackend {
                 self.pso_batched_gemm,
                 self.pso_batched_attention_mask,
                 self.pso_batched_mean_pool,
+                self.pso_transpose_heads,
+                self.pso_untranspose_heads,
+                self.pso_multi_head_batched_attention_mask,
             ] {
                 if pso != NIL {
                     msg_send_void(pso, rel);
@@ -175,9 +195,12 @@ impl MetalBackend {
                 "batched_gemm",
                 "batched_attention_mask",
                 "batched_mean_pool",
+                "transpose_heads",
+                "untranspose_heads",
+                "multi_head_batched_attention_mask",
             ];
 
-            let mut psos = [NIL; 16];
+            let mut psos = [NIL; 19];
             for (i, name) in kernel_names.iter().enumerate() {
                 let ns_name = ns_string(name);
                 let func = msg_send_id_id(library, sels.new_function_with_name, ns_name);
@@ -243,6 +266,10 @@ impl MetalBackend {
                 pso_batched_gemm: psos[13],
                 pso_batched_attention_mask: psos[14],
                 pso_batched_mean_pool: psos[15],
+                pso_transpose_heads: psos[16],
+                pso_untranspose_heads: psos[17],
+                pso_multi_head_batched_attention_mask: psos[18],
+                active_cmd: Mutex::new(None),
             })
         }
     }
@@ -327,24 +354,47 @@ impl MetalBackend {
     }
 
     // -------------------------------------------------------------------
-    // Dispatch helpers
+    // Deferred command buffer batching
     // -------------------------------------------------------------------
 
-    /// Create a command buffer, compute encoder, and set the pipeline.
-    /// Returns `(command_buffer, encoder)`.
-    unsafe fn begin_command(&self, pso: Id) -> (Id, Id) {
-        let cmd = msg_send_id(self.command_queue, self.sels.command_buffer);
-        let enc = msg_send_id(cmd, self.sels.compute_command_encoder);
+    /// Get or create the active command buffer and compute encoder, then set
+    /// the pipeline state. Inserts a memory barrier before the dispatch so
+    /// prior buffer writes are visible (cheap GPU-side fence, no CPU stall).
+    ///
+    /// Returns the encoder to bind buffers/bytes and dispatch on.
+    unsafe fn ensure_encoder(&self, pso: Id) -> Id {
+        let mut guard = self.active_cmd.lock().unwrap();
+        let (_, enc) = guard.get_or_insert_with(|| {
+            let cmd = msg_send_id(self.command_queue, self.sels.command_buffer);
+            assert!(!cmd.is_null(), "command_buffer returned nil");
+            let enc = msg_send_id(cmd, self.sels.compute_command_encoder);
+            assert!(!enc.is_null(), "compute_command_encoder returned nil");
+            (cmd, enc)
+        });
+        let enc = *enc;
+        // Memory barrier: ensure all buffer writes from prior dispatches are
+        // visible before this dispatch reads them.
+        msg_send_void_nsuint(enc, self.sels.memory_barrier_with_scope, MTL_BARRIER_SCOPE_BUFFERS);
+        // Set the pipeline for this dispatch.
         msg_send_void_id(enc, self.sels.set_compute_pipeline, pso);
-        (cmd, enc)
+        enc
     }
 
-    /// End encoding, commit, and wait for completion.
-    unsafe fn end_command(&self, cmd: Id, enc: Id) {
-        msg_send_void(enc, self.sels.end_encoding);
-        msg_send_void(cmd, self.sels.commit);
-        msg_send_void(cmd, self.sels.wait_until_completed);
+    /// Commit the active command buffer, wait for completion, and clear.
+    /// This is the only place `waitUntilCompleted` is called.
+    /// No-op if no command buffer is open.
+    unsafe fn flush(&self) {
+        let mut guard = self.active_cmd.lock().unwrap();
+        if let Some((cmd, enc)) = guard.take() {
+            msg_send_void(enc, self.sels.end_encoding);
+            msg_send_void(cmd, self.sels.commit);
+            msg_send_void(cmd, self.sels.wait_until_completed);
+        }
     }
+
+    // -------------------------------------------------------------------
+    // Bind helpers
+    // -------------------------------------------------------------------
 
     /// Bind a MTLBuffer at `index`.
     unsafe fn set_buffer(&self, enc: Id, buf: Id, index: usize) {
@@ -372,8 +422,12 @@ impl MetalBackend {
         self.set_bytes(enc, &val.to_ne_bytes(), index);
     }
 
+    // -------------------------------------------------------------------
+    // Dispatch helpers (deferred — no waitUntilCompleted)
+    // -------------------------------------------------------------------
+
     /// Dispatch a 1D grid: `ceil(n / threads)` threadgroups, each `threads` wide.
-    unsafe fn dispatch_1d(&self, enc: Id, cmd: Id, n: usize) {
+    unsafe fn dispatch_1d(&self, enc: Id, n: usize) {
         let threads = 256usize;
         let groups = (n + threads - 1) / threads;
         msg_send_dispatch(
@@ -382,14 +436,12 @@ impl MetalBackend {
             groups, 1, 1,   // threadgroups
             threads, 1, 1,  // threads per threadgroup
         );
-        self.end_command(cmd, enc);
     }
 
     /// Dispatch a 2D grid: ceil(width/tx) x ceil(height/ty) threadgroups.
     unsafe fn dispatch_2d(
         &self,
         enc: Id,
-        cmd: Id,
         width: usize,
         height: usize,
         tx: usize,
@@ -403,7 +455,6 @@ impl MetalBackend {
             gx, gy, 1,  // threadgroups
             tx, ty, 1,  // threads per threadgroup
         );
-        self.end_command(cmd, enc);
     }
 
     /// Dispatch with one threadgroup per row, `threads_per_group` threads each.
@@ -411,7 +462,6 @@ impl MetalBackend {
     unsafe fn dispatch_rows(
         &self,
         enc: Id,
-        cmd: Id,
         num_rows: usize,
         threads_per_group: usize,
     ) {
@@ -421,7 +471,6 @@ impl MetalBackend {
             num_rows, 1, 1,             // threadgroups
             threads_per_group, 1, 1,    // threads per threadgroup
         );
-        self.end_command(cmd, enc);
     }
 }
 
@@ -443,6 +492,7 @@ impl ComputeBackend for MetalBackend {
     }
 
     fn download(&self, dt: &DeviceTensor) -> Tensor {
+        unsafe { self.flush() };
         let count = dt.rows * dt.cols;
         let data = unsafe { self.read_buffer_f32(Self::buf_id(dt), count) };
         Tensor {
@@ -463,7 +513,7 @@ impl ComputeBackend for MetalBackend {
 
         unsafe {
             let out_buf = self.create_buffer_empty(out_bytes);
-            let (cmd, enc) = self.begin_command(self.pso_gemm);
+            let enc = self.ensure_encoder(self.pso_gemm);
 
             self.set_buffer(enc, Self::buf_id(a), 0);
             self.set_buffer(enc, Self::buf_id(b), 1);
@@ -472,7 +522,7 @@ impl ComputeBackend for MetalBackend {
             self.set_u32(enc, k as u32, 4);
             self.set_u32(enc, n as u32, 5);
 
-            self.dispatch_2d(enc, cmd, n, m, 16, 16);
+            self.dispatch_2d(enc, n, m, 16, 16);
 
             Self::wrap(out_buf, out_bytes, m, n)
         }
@@ -489,7 +539,7 @@ impl ComputeBackend for MetalBackend {
 
         unsafe {
             let out_buf = self.create_buffer_empty(out_bytes);
-            let (cmd, enc) = self.begin_command(self.pso_gemm_transpose);
+            let enc = self.ensure_encoder(self.pso_gemm_transpose);
 
             self.set_buffer(enc, Self::buf_id(a), 0);
             self.set_buffer(enc, Self::buf_id(b), 1);
@@ -498,7 +548,7 @@ impl ComputeBackend for MetalBackend {
             self.set_u32(enc, k as u32, 4);
             self.set_u32(enc, n as u32, 5);
 
-            self.dispatch_2d(enc, cmd, n, m, 16, 16);
+            self.dispatch_2d(enc, n, m, 16, 16);
 
             Self::wrap(out_buf, out_bytes, m, n)
         }
@@ -510,14 +560,14 @@ impl ComputeBackend for MetalBackend {
         assert_eq!(bias.cols, cols, "add_bias: bias width mismatch");
 
         unsafe {
-            let (cmd, enc) = self.begin_command(self.pso_add_bias);
+            let enc = self.ensure_encoder(self.pso_add_bias);
 
             self.set_buffer(enc, Self::buf_id(t), 0);
             self.set_buffer(enc, Self::buf_id(bias), 1);
             self.set_u32(enc, rows as u32, 2);
             self.set_u32(enc, cols as u32, 3);
 
-            self.dispatch_2d(enc, cmd, cols, rows, 16, 16);
+            self.dispatch_2d(enc, cols, rows, 16, 16);
         }
     }
 
@@ -527,14 +577,14 @@ impl ComputeBackend for MetalBackend {
 
         unsafe {
             let out_buf = self.create_buffer_empty(out_bytes);
-            let (cmd, enc) = self.begin_command(self.pso_add_tensor);
+            let enc = self.ensure_encoder(self.pso_add_tensor);
 
             self.set_buffer(enc, Self::buf_id(a), 0);
             self.set_buffer(enc, Self::buf_id(b), 1);
             self.set_buffer(enc, out_buf, 2);
             self.set_u32(enc, count as u32, 3);
 
-            self.dispatch_1d(enc, cmd, count);
+            self.dispatch_1d(enc, count);
 
             Self::wrap(out_buf, out_bytes, a.rows, a.cols)
         }
@@ -546,13 +596,13 @@ impl ComputeBackend for MetalBackend {
 
         unsafe {
             let out_buf = self.create_buffer_empty(out_bytes);
-            let (cmd, enc) = self.begin_command(self.pso_gelu);
+            let enc = self.ensure_encoder(self.pso_gelu);
 
             self.set_buffer(enc, Self::buf_id(t), 0);
             self.set_buffer(enc, out_buf, 1);
             self.set_u32(enc, count as u32, 2);
 
-            self.dispatch_1d(enc, cmd, count);
+            self.dispatch_1d(enc, count);
 
             Self::wrap(out_buf, out_bytes, t.rows, t.cols)
         }
@@ -574,7 +624,7 @@ impl ComputeBackend for MetalBackend {
 
         unsafe {
             let out_buf = self.create_buffer_empty(out_bytes);
-            let (cmd, enc) = self.begin_command(self.pso_layer_norm);
+            let enc = self.ensure_encoder(self.pso_layer_norm);
 
             self.set_buffer(enc, Self::buf_id(t), 0);
             self.set_buffer(enc, Self::buf_id(w), 1);
@@ -584,7 +634,7 @@ impl ComputeBackend for MetalBackend {
             self.set_u32(enc, cols as u32, 5);
             self.set_f32(enc, eps, 6);
 
-            self.dispatch_rows(enc, cmd, rows, threads_per_group);
+            self.dispatch_rows(enc, rows, threads_per_group);
 
             Self::wrap(out_buf, out_bytes, rows, cols)
         }
@@ -597,13 +647,13 @@ impl ComputeBackend for MetalBackend {
         let threads_per_group = (cols.next_power_of_two()).min(256);
 
         unsafe {
-            let (cmd, enc) = self.begin_command(self.pso_softmax_rows);
+            let enc = self.ensure_encoder(self.pso_softmax_rows);
 
             self.set_buffer(enc, Self::buf_id(t), 0);
             self.set_u32(enc, rows as u32, 1);
             self.set_u32(enc, cols as u32, 2);
 
-            self.dispatch_rows(enc, cmd, rows, threads_per_group);
+            self.dispatch_rows(enc, rows, threads_per_group);
         }
     }
 
@@ -611,13 +661,13 @@ impl ComputeBackend for MetalBackend {
         let count = t.rows * t.cols;
 
         unsafe {
-            let (cmd, enc) = self.begin_command(self.pso_scale);
+            let enc = self.ensure_encoder(self.pso_scale);
 
             self.set_buffer(enc, Self::buf_id(t), 0);
             self.set_f32(enc, factor, 1);
             self.set_u32(enc, count as u32, 2);
 
-            self.dispatch_1d(enc, cmd, count);
+            self.dispatch_1d(enc, count);
         }
     }
 
@@ -628,7 +678,7 @@ impl ComputeBackend for MetalBackend {
 
         unsafe {
             let out_buf = self.create_buffer_empty(out_bytes);
-            let (cmd, enc) = self.begin_command(self.pso_slice_columns);
+            let enc = self.ensure_encoder(self.pso_slice_columns);
 
             self.set_buffer(enc, Self::buf_id(t), 0);
             self.set_buffer(enc, out_buf, 1);
@@ -637,7 +687,7 @@ impl ComputeBackend for MetalBackend {
             self.set_u32(enc, width as u32, 4);
             self.set_u32(enc, rows as u32, 5);
 
-            self.dispatch_2d(enc, cmd, width, rows, 16, 16);
+            self.dispatch_2d(enc, width, rows, 16, 16);
 
             Self::wrap(out_buf, out_bytes, rows, width)
         }
@@ -647,7 +697,7 @@ impl ComputeBackend for MetalBackend {
         let rows = src.rows;
 
         unsafe {
-            let (cmd, enc) = self.begin_command(self.pso_scatter_columns);
+            let enc = self.ensure_encoder(self.pso_scatter_columns);
 
             self.set_buffer(enc, Self::buf_id(dst), 0);
             self.set_buffer(enc, Self::buf_id(src), 1);
@@ -656,7 +706,7 @@ impl ComputeBackend for MetalBackend {
             self.set_u32(enc, col_offset as u32, 4);
             self.set_u32(enc, rows as u32, 5);
 
-            self.dispatch_2d(enc, cmd, src.cols, rows, 16, 16);
+            self.dispatch_2d(enc, src.cols, rows, 16, 16);
         }
     }
 
@@ -679,14 +729,14 @@ impl ComputeBackend for MetalBackend {
         let cols = scores.cols;
 
         unsafe {
-            let (cmd, enc) = self.begin_command(self.pso_attention_mask);
+            let enc = self.ensure_encoder(self.pso_attention_mask);
 
             self.set_buffer(enc, Self::buf_id(scores), 0);
             self.set_buffer(enc, Self::buf_id(mask), 1);
             self.set_u32(enc, rows as u32, 2);
             self.set_u32(enc, cols as u32, 3);
 
-            self.dispatch_2d(enc, cmd, cols, rows, 16, 16);
+            self.dispatch_2d(enc, cols, rows, 16, 16);
         }
     }
 
@@ -697,7 +747,7 @@ impl ComputeBackend for MetalBackend {
 
         unsafe {
             let out_buf = self.create_buffer_empty(out_bytes);
-            let (cmd, enc) = self.begin_command(self.pso_mean_pool);
+            let enc = self.ensure_encoder(self.pso_mean_pool);
 
             self.set_buffer(enc, Self::buf_id(hidden), 0);
             self.set_buffer(enc, Self::buf_id(mask), 1);
@@ -705,7 +755,10 @@ impl ComputeBackend for MetalBackend {
             self.set_u32(enc, rows as u32, 3);
             self.set_u32(enc, cols as u32, 4);
 
-            self.dispatch_1d(enc, cmd, cols);
+            self.dispatch_1d(enc, cols);
+
+            // CPU needs the result — flush all pending GPU work.
+            self.flush();
 
             let result = self.read_buffer_f32(out_buf, cols);
 
@@ -729,7 +782,7 @@ impl ComputeBackend for MetalBackend {
 
         unsafe {
             let out_buf = self.create_buffer_empty(out_bytes);
-            let (cmd, enc) = self.begin_command(self.pso_batched_gemm_transpose);
+            let enc = self.ensure_encoder(self.pso_batched_gemm_transpose);
 
             self.set_buffer(enc, Self::buf_id(a), 0);
             self.set_buffer(enc, Self::buf_id(b), 1);
@@ -745,7 +798,6 @@ impl ComputeBackend for MetalBackend {
                 gx, gy, batch_size, // threadgroups
                 16, 16, 1,          // threads per threadgroup
             );
-            self.end_command(cmd, enc);
 
             Self::wrap(out_buf, out_bytes, batch_size * seq_len, seq_len)
         }
@@ -764,7 +816,7 @@ impl ComputeBackend for MetalBackend {
 
         unsafe {
             let out_buf = self.create_buffer_empty(out_bytes);
-            let (cmd, enc) = self.begin_command(self.pso_batched_gemm);
+            let enc = self.ensure_encoder(self.pso_batched_gemm);
 
             self.set_buffer(enc, Self::buf_id(a), 0);
             self.set_buffer(enc, Self::buf_id(b), 1);
@@ -780,7 +832,6 @@ impl ComputeBackend for MetalBackend {
                 gx, gy, batch_size, // threadgroups
                 16, 16, 1,          // threads per threadgroup
             );
-            self.end_command(cmd, enc);
 
             Self::wrap(out_buf, out_bytes, batch_size * seq_len, k)
         }
@@ -796,14 +847,14 @@ impl ComputeBackend for MetalBackend {
         let total_rows = batch_size * seq_len;
 
         unsafe {
-            let (cmd, enc) = self.begin_command(self.pso_batched_attention_mask);
+            let enc = self.ensure_encoder(self.pso_batched_attention_mask);
 
             self.set_buffer(enc, Self::buf_id(scores), 0);
             self.set_buffer(enc, Self::buf_id(mask), 1);
             self.set_u32(enc, total_rows as u32, 2);
             self.set_u32(enc, seq_len as u32, 3);
 
-            self.dispatch_2d(enc, cmd, seq_len, total_rows, 16, 16);
+            self.dispatch_2d(enc, seq_len, total_rows, 16, 16);
         }
     }
 
@@ -820,7 +871,7 @@ impl ComputeBackend for MetalBackend {
 
         unsafe {
             let out_buf = self.create_buffer_empty(out_bytes);
-            let (cmd, enc) = self.begin_command(self.pso_batched_mean_pool);
+            let enc = self.ensure_encoder(self.pso_batched_mean_pool);
 
             self.set_buffer(enc, Self::buf_id(hidden), 0);
             self.set_buffer(enc, Self::buf_id(mask), 1);
@@ -828,7 +879,10 @@ impl ComputeBackend for MetalBackend {
             self.set_u32(enc, seq_len as u32, 3);
             self.set_u32(enc, cols as u32, 4);
 
-            self.dispatch_rows(enc, cmd, batch_size, 256);
+            self.dispatch_rows(enc, batch_size, 256);
+
+            // CPU needs the result — flush all pending GPU work.
+            self.flush();
 
             let flat = self.read_buffer_f32(out_buf, out_count);
 
@@ -839,7 +893,464 @@ impl ComputeBackend for MetalBackend {
         }
     }
 
+    fn transpose_heads(
+        &self,
+        t: &DeviceTensor,
+        batch_size: usize,
+        seq_len: usize,
+        num_heads: usize,
+        head_dim: usize,
+    ) -> DeviceTensor {
+        let total_in_rows = batch_size * seq_len;
+        debug_assert_eq!(t.rows, total_in_rows);
+        debug_assert_eq!(t.cols, num_heads * head_dim);
+
+        let total_out_rows = batch_size * num_heads * seq_len;
+        let out_bytes = total_out_rows * head_dim * std::mem::size_of::<f32>();
+
+        unsafe {
+            let out_buf = self.create_buffer_empty(out_bytes);
+            let enc = self.ensure_encoder(self.pso_transpose_heads);
+
+            self.set_buffer(enc, Self::buf_id(t), 0);
+            self.set_buffer(enc, out_buf, 1);
+            self.set_u32(enc, batch_size as u32, 2);
+            self.set_u32(enc, seq_len as u32, 3);
+            self.set_u32(enc, num_heads as u32, 4);
+            self.set_u32(enc, head_dim as u32, 5);
+
+            // 3D grid: (head_dim, B*S, H)
+            let gx = (head_dim + 15) / 16;
+            let gy = (total_in_rows + 15) / 16;
+            msg_send_dispatch(
+                enc,
+                self.sels.dispatch_threadgroups,
+                gx, gy, num_heads, // threadgroups
+                16, 16, 1,         // threads per threadgroup
+            );
+
+            Self::wrap(out_buf, out_bytes, total_out_rows, head_dim)
+        }
+    }
+
+    fn untranspose_heads(
+        &self,
+        t: &DeviceTensor,
+        batch_size: usize,
+        seq_len: usize,
+        num_heads: usize,
+        head_dim: usize,
+    ) -> DeviceTensor {
+        debug_assert_eq!(t.rows, batch_size * num_heads * seq_len);
+        debug_assert_eq!(t.cols, head_dim);
+
+        let total_out_rows = batch_size * seq_len;
+        let out_cols = num_heads * head_dim;
+        let out_bytes = total_out_rows * out_cols * std::mem::size_of::<f32>();
+
+        unsafe {
+            let out_buf = self.create_buffer_empty(out_bytes);
+            let enc = self.ensure_encoder(self.pso_untranspose_heads);
+
+            self.set_buffer(enc, Self::buf_id(t), 0);
+            self.set_buffer(enc, out_buf, 1);
+            self.set_u32(enc, batch_size as u32, 2);
+            self.set_u32(enc, seq_len as u32, 3);
+            self.set_u32(enc, num_heads as u32, 4);
+            self.set_u32(enc, head_dim as u32, 5);
+
+            // 3D grid: (head_dim, B*S, H)
+            let gx = (head_dim + 15) / 16;
+            let gy = (total_out_rows + 15) / 16;
+            msg_send_dispatch(
+                enc,
+                self.sels.dispatch_threadgroups,
+                gx, gy, num_heads, // threadgroups
+                16, 16, 1,         // threads per threadgroup
+            );
+
+            Self::wrap(out_buf, out_bytes, total_out_rows, out_cols)
+        }
+    }
+
+    fn multi_head_batched_attention_mask(
+        &self,
+        scores: &mut DeviceTensor,
+        mask: &DeviceTensor,
+        batch_size: usize,
+        seq_len: usize,
+        num_heads: usize,
+    ) {
+        let total_rows = batch_size * num_heads * seq_len;
+
+        unsafe {
+            let enc = self.ensure_encoder(self.pso_multi_head_batched_attention_mask);
+
+            self.set_buffer(enc, Self::buf_id(scores), 0);
+            self.set_buffer(enc, Self::buf_id(mask), 1);
+            self.set_u32(enc, total_rows as u32, 2);
+            self.set_u32(enc, seq_len as u32, 3);
+            self.set_u32(enc, num_heads as u32, 4);
+
+            self.dispatch_2d(enc, seq_len, total_rows, 16, 16);
+        }
+    }
+
     fn name(&self) -> &'static str {
         "Metal"
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::tensor::Tensor;
+
+    fn backend() -> MetalBackend {
+        MetalBackend::try_new().expect("Metal device required for these tests")
+    }
+
+    /// CPU reference for transpose_heads: (B*S, H*D) -> (B*H*S, D)
+    fn cpu_transpose_heads(
+        data: &[f32],
+        batch_size: usize,
+        seq_len: usize,
+        num_heads: usize,
+        head_dim: usize,
+    ) -> Vec<f32> {
+        let mut out = vec![0.0f32; batch_size * num_heads * seq_len * head_dim];
+        for b in 0..batch_size {
+            for h in 0..num_heads {
+                for s in 0..seq_len {
+                    let src_off = (b * seq_len + s) * (num_heads * head_dim) + h * head_dim;
+                    let dst_off = (b * num_heads * seq_len + h * seq_len + s) * head_dim;
+                    out[dst_off..dst_off + head_dim]
+                        .copy_from_slice(&data[src_off..src_off + head_dim]);
+                }
+            }
+        }
+        out
+    }
+
+    /// CPU reference for untranspose_heads: (B*H*S, D) -> (B*S, H*D)
+    fn cpu_untranspose_heads(
+        data: &[f32],
+        batch_size: usize,
+        seq_len: usize,
+        num_heads: usize,
+        head_dim: usize,
+    ) -> Vec<f32> {
+        let mut out = vec![0.0f32; batch_size * seq_len * num_heads * head_dim];
+        for b in 0..batch_size {
+            for h in 0..num_heads {
+                for s in 0..seq_len {
+                    let src_off = (b * num_heads * seq_len + h * seq_len + s) * head_dim;
+                    let dst_off = (b * seq_len + s) * (num_heads * head_dim) + h * head_dim;
+                    out[dst_off..dst_off + head_dim]
+                        .copy_from_slice(&data[src_off..src_off + head_dim]);
+                }
+            }
+        }
+        out
+    }
+
+    /// CPU reference for multi_head_batched_attention_mask
+    fn cpu_multi_head_mask(
+        scores: &mut [f32],
+        mask: &[u32],
+        batch_size: usize,
+        seq_len: usize,
+        num_heads: usize,
+    ) {
+        let total_rows = batch_size * num_heads * seq_len;
+        let group_size = num_heads * seq_len;
+        for r in 0..total_rows {
+            let group = r / group_size;
+            for c in 0..seq_len {
+                let mask_idx = group * seq_len + c;
+                if mask[mask_idx] == 0 {
+                    scores[r * seq_len + c] = -10000.0;
+                }
+            }
+        }
+    }
+
+    fn assert_vecs_close(a: &[f32], b: &[f32], tol: f32, label: &str) {
+        assert_eq!(a.len(), b.len(), "{}: length mismatch {} vs {}", label, a.len(), b.len());
+        for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+            assert!(
+                (x - y).abs() <= tol,
+                "{}: mismatch at index {}: {} vs {} (diff {})",
+                label,
+                i,
+                x,
+                y,
+                (x - y).abs()
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // transpose_heads tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_transpose_heads_minilm_dims() {
+        // MiniLM-L6: 12 heads, 32 head_dim, batch=1, seq=7
+        let b = backend();
+        let (batch, seq, heads, dim) = (1, 7, 12, 32);
+        let n = batch * seq * heads * dim;
+        let data: Vec<f32> = (0..n).map(|i| i as f32 * 0.01).collect();
+
+        let input = b.upload(&Tensor::from_slice(&data, batch * seq, heads * dim));
+        let result = b.transpose_heads(&input, batch, seq, heads, dim);
+        let out = b.download(&result);
+
+        let expected = cpu_transpose_heads(&data, batch, seq, heads, dim);
+        assert_eq!(out.rows, batch * heads * seq);
+        assert_eq!(out.cols, dim);
+        assert_vecs_close(&out.data, &expected, 1e-6, "transpose_heads_minilm");
+    }
+
+    #[test]
+    fn test_transpose_heads_batched() {
+        // batch=4, seq=11 (not multiple of 16), heads=8, dim=16
+        let b = backend();
+        let (batch, seq, heads, dim) = (4, 11, 8, 16);
+        let n = batch * seq * heads * dim;
+        let data: Vec<f32> = (0..n).map(|i| (i as f32).sin()).collect();
+
+        let input = b.upload(&Tensor::from_slice(&data, batch * seq, heads * dim));
+        let result = b.transpose_heads(&input, batch, seq, heads, dim);
+        let out = b.download(&result);
+
+        let expected = cpu_transpose_heads(&data, batch, seq, heads, dim);
+        assert_eq!(out.rows, batch * heads * seq);
+        assert_eq!(out.cols, dim);
+        assert_vecs_close(&out.data, &expected, 1e-6, "transpose_heads_batched");
+    }
+
+    #[test]
+    fn test_transpose_heads_single_token() {
+        // Edge case: seq_len=1
+        let b = backend();
+        let (batch, seq, heads, dim) = (2, 1, 4, 8);
+        let n = batch * seq * heads * dim;
+        let data: Vec<f32> = (0..n).map(|i| i as f32).collect();
+
+        let input = b.upload(&Tensor::from_slice(&data, batch * seq, heads * dim));
+        let result = b.transpose_heads(&input, batch, seq, heads, dim);
+        let out = b.download(&result);
+
+        let expected = cpu_transpose_heads(&data, batch, seq, heads, dim);
+        assert_vecs_close(&out.data, &expected, 1e-6, "transpose_heads_single_token");
+    }
+
+    // ---------------------------------------------------------------
+    // untranspose_heads tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_untranspose_heads_minilm_dims() {
+        let b = backend();
+        let (batch, seq, heads, dim) = (1, 7, 12, 32);
+        let n = batch * heads * seq * dim;
+        let data: Vec<f32> = (0..n).map(|i| i as f32 * 0.01).collect();
+
+        let input = b.upload(&Tensor::from_slice(&data, batch * heads * seq, dim));
+        let result = b.untranspose_heads(&input, batch, seq, heads, dim);
+        let out = b.download(&result);
+
+        let expected = cpu_untranspose_heads(&data, batch, seq, heads, dim);
+        assert_eq!(out.rows, batch * seq);
+        assert_eq!(out.cols, heads * dim);
+        assert_vecs_close(&out.data, &expected, 1e-6, "untranspose_heads_minilm");
+    }
+
+    #[test]
+    fn test_untranspose_heads_batched() {
+        let b = backend();
+        let (batch, seq, heads, dim) = (4, 11, 8, 16);
+        let n = batch * heads * seq * dim;
+        let data: Vec<f32> = (0..n).map(|i| (i as f32).cos()).collect();
+
+        let input = b.upload(&Tensor::from_slice(&data, batch * heads * seq, dim));
+        let result = b.untranspose_heads(&input, batch, seq, heads, dim);
+        let out = b.download(&result);
+
+        let expected = cpu_untranspose_heads(&data, batch, seq, heads, dim);
+        assert_vecs_close(&out.data, &expected, 1e-6, "untranspose_heads_batched");
+    }
+
+    #[test]
+    fn test_transpose_untranspose_roundtrip() {
+        // transpose then untranspose should recover original data
+        let b = backend();
+        let (batch, seq, heads, dim) = (3, 9, 6, 16);
+        let n = batch * seq * heads * dim;
+        let data: Vec<f32> = (0..n).map(|i| i as f32 * 0.1).collect();
+
+        let input = b.upload(&Tensor::from_slice(&data, batch * seq, heads * dim));
+        let transposed = b.transpose_heads(&input, batch, seq, heads, dim);
+        let roundtrip = b.untranspose_heads(&transposed, batch, seq, heads, dim);
+        let out = b.download(&roundtrip);
+
+        assert_eq!(out.rows, batch * seq);
+        assert_eq!(out.cols, heads * dim);
+        assert_vecs_close(&out.data, &data, 1e-6, "roundtrip");
+    }
+
+    // ---------------------------------------------------------------
+    // multi_head_batched_attention_mask tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_multi_head_mask_basic() {
+        let b = backend();
+        let (batch, seq, heads) = (1, 4, 2);
+        let total_rows = batch * heads * seq;
+        // Scores: all ones
+        let mut scores_data = vec![1.0f32; total_rows * seq];
+        // Mask: [1,1,0,0] — first 2 tokens valid, last 2 padding
+        let mask_data: Vec<u32> = vec![1, 1, 0, 0];
+
+        // GPU
+        let mut scores_dt =
+            b.upload(&Tensor::from_slice(&scores_data, total_rows, seq));
+        let mask_dt = b.upload_mask(&mask_data);
+        b.multi_head_batched_attention_mask(
+            &mut scores_dt,
+            &mask_dt,
+            batch,
+            seq,
+            heads,
+        );
+        let gpu_out = b.download(&scores_dt);
+
+        // CPU reference
+        cpu_multi_head_mask(&mut scores_data, &mask_data, batch, seq, heads);
+
+        assert_vecs_close(&gpu_out.data, &scores_data, 1e-6, "multi_head_mask_basic");
+        // Verify masked positions are -10000
+        for r in 0..total_rows {
+            assert_eq!(gpu_out.data[r * seq + 2], -10000.0, "row {} col 2 should be masked", r);
+            assert_eq!(gpu_out.data[r * seq + 3], -10000.0, "row {} col 3 should be masked", r);
+            assert_eq!(gpu_out.data[r * seq + 0], 1.0, "row {} col 0 should be unmasked", r);
+            assert_eq!(gpu_out.data[r * seq + 1], 1.0, "row {} col 1 should be unmasked", r);
+        }
+    }
+
+    #[test]
+    fn test_multi_head_mask_multi_batch() {
+        // batch=2, different mask per batch sequence
+        let b = backend();
+        let (batch, seq, heads) = (2, 3, 4);
+        let total_rows = batch * heads * seq;
+        let mut scores_data = vec![5.0f32; total_rows * seq];
+        // Mask: batch 0 = [1,1,0], batch 1 = [1,0,0]
+        let mask_data: Vec<u32> = vec![1, 1, 0, 1, 0, 0];
+
+        let mut scores_dt =
+            b.upload(&Tensor::from_slice(&scores_data, total_rows, seq));
+        let mask_dt = b.upload_mask(&mask_data);
+        b.multi_head_batched_attention_mask(
+            &mut scores_dt,
+            &mask_dt,
+            batch,
+            seq,
+            heads,
+        );
+        let gpu_out = b.download(&scores_dt);
+
+        cpu_multi_head_mask(&mut scores_data, &mask_data, batch, seq, heads);
+        assert_vecs_close(&gpu_out.data, &scores_data, 1e-6, "multi_head_mask_multi_batch");
+    }
+
+    #[test]
+    fn test_multi_head_mask_minilm_dims() {
+        // Realistic: batch=1, seq=15, heads=12
+        let b = backend();
+        let (batch, seq, heads) = (1, 15, 12);
+        let total_rows = batch * heads * seq;
+        let mut scores_data: Vec<f32> =
+            (0..(total_rows * seq)).map(|i| (i as f32 * 0.001).sin()).collect();
+        // First 10 tokens valid, last 5 padding
+        let mut mask_data = vec![1u32; seq];
+        for i in 10..seq {
+            mask_data[i] = 0;
+        }
+
+        let mut scores_dt =
+            b.upload(&Tensor::from_slice(&scores_data, total_rows, seq));
+        let mask_dt = b.upload_mask(&mask_data);
+        b.multi_head_batched_attention_mask(
+            &mut scores_dt,
+            &mask_dt,
+            batch,
+            seq,
+            heads,
+        );
+        let gpu_out = b.download(&scores_dt);
+
+        cpu_multi_head_mask(&mut scores_data, &mask_data, batch, seq, heads);
+        assert_vecs_close(&gpu_out.data, &scores_data, 1e-6, "multi_head_mask_minilm");
+    }
+
+    // ---------------------------------------------------------------
+    // Command buffer batching tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_chained_operations_correctness() {
+        // Verify that deferred dispatch produces correct results across
+        // multiple chained operations (no premature reads of in-flight data).
+        let b = backend();
+        let data = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+
+        // Chain: upload → matmul → add_bias → gelu → download
+        let a = b.upload(&Tensor::from_slice(&[1.0, 0.0, 0.0, 1.0], 2, 2));
+        let x = b.upload(&Tensor::from_slice(&data, 3, 2));
+        let mut result = b.matmul(&x, &a); // identity matmul
+        let bias = b.upload_1d(&[10.0, 20.0]);
+        b.add_bias(&mut result, &bias);
+        let result = b.gelu(&result);
+        let out = b.download(&result);
+
+        // After identity matmul: same as input
+        // After add_bias: [11,22, 13,24, 15,26]
+        // After gelu: gelu(x) ≈ x for large positive x
+        assert_eq!(out.rows, 3);
+        assert_eq!(out.cols, 2);
+        for val in &out.data {
+            assert!(*val > 0.0, "GELU of positive input should be positive, got {}", val);
+        }
+        // gelu(11) ≈ 11.0 (very close for large inputs)
+        assert!(
+            (out.data[0] - 11.0).abs() < 0.01,
+            "gelu(11) should be ~11.0, got {}",
+            out.data[0]
+        );
+    }
+
+    #[test]
+    fn test_multiple_flushes() {
+        // Ensure multiple download (flush) calls work correctly
+        let b = backend();
+        let data = vec![1.0f32, 2.0, 3.0, 4.0];
+        let t1 = b.upload(&Tensor::from_slice(&data, 2, 2));
+
+        // First chain + download
+        let sum1 = b.add_tensor(&t1, &t1);
+        let out1 = b.download(&sum1);
+        assert_vecs_close(&out1.data, &[2.0, 4.0, 6.0, 8.0], 1e-6, "first_flush");
+
+        // Second chain + download (reuses same backend, new command buffer)
+        let sum2 = b.add_tensor(&sum1, &t1);
+        let out2 = b.download(&sum2);
+        assert_vecs_close(&out2.data, &[3.0, 6.0, 9.0, 12.0], 1e-6, "second_flush");
     }
 }

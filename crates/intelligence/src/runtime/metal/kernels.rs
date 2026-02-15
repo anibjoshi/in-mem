@@ -134,6 +134,8 @@ kernel void gelu(
     float x = input[tid];
     const float SQRT_2_OVER_PI = 0.7978845608f;
     float inner = SQRT_2_OVER_PI * (x + 0.044715f * x * x * x);
+    // Clamp before tanh to avoid NaN from fast-math exp overflow
+    inner = clamp(inner, -10.0f, 10.0f);
     output[tid] = 0.5f * x * (1.0f + metal::tanh(inner));
 }
 
@@ -401,7 +403,7 @@ kernel void batched_gemm_transpose(
     constant     uint&  S       [[buffer(3)]],
     constant     uint&  K       [[buffer(4)]],
     uint3 tgid [[threadgroup_position_in_grid]],
-    uint2 lid  [[thread_position_in_threadgroup]])
+    uint3 lid  [[thread_position_in_threadgroup]])
 {
     uint batch = tgid.z;
     uint row   = tgid.y * TILE + lid.y;
@@ -456,7 +458,7 @@ kernel void batched_gemm(
     constant     uint&  S       [[buffer(3)]],
     constant     uint&  K       [[buffer(4)]],
     uint3 tgid [[threadgroup_position_in_grid]],
-    uint2 lid  [[thread_position_in_threadgroup]])
+    uint3 lid  [[thread_position_in_threadgroup]])
 {
     uint batch = tgid.z;
     uint row   = tgid.y * TILE + lid.y;
@@ -515,6 +517,95 @@ kernel void batched_attention_mask(
     if (r >= total_rows || c >= seq_len) return;
     uint batch = r / seq_len;
     if (mask[batch * seq_len + c] == 0u) {
+        scores[r * seq_len + c] = -10000.0f;
+    }
+}
+
+// -----------------------------------------------------------------------
+// transpose_heads — rearrange (B*S, H*D) -> (B*H*S, D)
+//   Moves head dimension into the batch dimension for batched attention.
+//   2D grid: (ceil(D/16), ceil(B*S/16)), with H in z dimension.
+// -----------------------------------------------------------------------
+kernel void transpose_heads(
+    device const float* src       [[buffer(0)]],
+    device       float* dst       [[buffer(1)]],
+    constant     uint&  batch_size [[buffer(2)]],
+    constant     uint&  seq_len   [[buffer(3)]],
+    constant     uint&  num_heads [[buffer(4)]],
+    constant     uint&  head_dim  [[buffer(5)]],
+    uint3 gid [[thread_position_in_grid]])
+{
+    uint d = gid.x;   // column in head_dim
+    uint s = gid.y;   // row in B*S space (flattened batch*seq)
+    uint h = gid.z;   // head index
+
+    if (d >= head_dim || s >= batch_size * seq_len) return;
+
+    uint b = s / seq_len;
+    uint seq = s % seq_len;
+
+    // src layout: [b*S+seq, h*D+d]  — row (b*S+seq), col (h*D+d)
+    uint src_idx = s * (num_heads * head_dim) + h * head_dim + d;
+    // dst layout: [b*H*S + h*S + seq, d]
+    uint dst_idx = (b * num_heads * seq_len + h * seq_len + seq) * head_dim + d;
+
+    dst[dst_idx] = src[src_idx];
+}
+
+// -----------------------------------------------------------------------
+// untranspose_heads — rearrange (B*H*S, D) -> (B*S, H*D)
+//   Inverse of transpose_heads.
+//   2D grid: (ceil(D/16), ceil(B*S/16)), with H in z dimension.
+// -----------------------------------------------------------------------
+kernel void untranspose_heads(
+    device const float* src       [[buffer(0)]],
+    device       float* dst       [[buffer(1)]],
+    constant     uint&  batch_size [[buffer(2)]],
+    constant     uint&  seq_len   [[buffer(3)]],
+    constant     uint&  num_heads [[buffer(4)]],
+    constant     uint&  head_dim  [[buffer(5)]],
+    uint3 gid [[thread_position_in_grid]])
+{
+    uint d = gid.x;   // column in head_dim
+    uint s = gid.y;   // row in B*S space (flattened batch*seq)
+    uint h = gid.z;   // head index
+
+    if (d >= head_dim || s >= batch_size * seq_len) return;
+
+    uint b = s / seq_len;
+    uint seq = s % seq_len;
+
+    // src layout: [b*H*S + h*S + seq, d]
+    uint src_idx = (b * num_heads * seq_len + h * seq_len + seq) * head_dim + d;
+    // dst layout: [b*S+seq, h*D+d]
+    uint dst_idx = s * (num_heads * head_dim) + h * head_dim + d;
+
+    dst[dst_idx] = src[src_idx];
+}
+
+// -----------------------------------------------------------------------
+// multi_head_batched_attention_mask — masking for (B*H*S, S) scores
+//   Every H consecutive batches share one mask row.
+//   For row r: group = r / (H * S), mask_idx = group * S + col.
+//   2D grid: (ceil(S/16), ceil(total_rows/16))
+// -----------------------------------------------------------------------
+kernel void multi_head_batched_attention_mask(
+    device       float* scores     [[buffer(0)]],
+    device const uint*  mask       [[buffer(1)]],
+    constant     uint&  total_rows [[buffer(2)]],
+    constant     uint&  seq_len    [[buffer(3)]],
+    constant     uint&  num_heads  [[buffer(4)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    uint c = gid.x;
+    uint r = gid.y;
+    if (r >= total_rows || c >= seq_len) return;
+
+    uint group_size = num_heads * seq_len;
+    uint group = r / group_size;
+    uint mask_idx = group * seq_len + c;
+
+    if (mask[mask_idx] == 0u) {
         scores[r * seq_len + c] = -10000.0f;
     }
 }

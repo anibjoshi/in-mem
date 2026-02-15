@@ -163,8 +163,11 @@ pub unsafe fn msg_send_set_bytes(
     f(obj, sel, ptr, len, index);
 }
 
-/// MTLSize is passed by value as three NSUInteger fields.
 /// `[encoder dispatchThreadgroups:groups threadsPerThreadgroup:threads]`
+///
+/// On ARM64, MTLSize (3 × NSUInteger = 24 bytes) exceeds the 16-byte
+/// threshold for passing structs in registers, so it must be passed
+/// **by pointer** through `objc_msgSend`.
 pub unsafe fn msg_send_dispatch(
     obj: Id,
     sel: Sel,
@@ -175,17 +178,40 @@ pub unsafe fn msg_send_dispatch(
     ty: NSUInteger,
     tz: NSUInteger,
 ) {
-    let f: unsafe extern "C" fn(
-        Id,
-        Sel,
-        NSUInteger,
-        NSUInteger,
-        NSUInteger,
-        NSUInteger,
-        NSUInteger,
-        NSUInteger,
-    ) = std::mem::transmute(objc_msgSend as *const c_void);
-    f(obj, sel, gx, gy, gz, tx, ty, tz);
+    #[repr(C)]
+    struct MTLSize {
+        width: NSUInteger,
+        height: NSUInteger,
+        depth: NSUInteger,
+    }
+    let groups = MTLSize { width: gx, height: gy, depth: gz };
+    let threads = MTLSize { width: tx, height: ty, depth: tz };
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        // ARM64 ABI: structs > 16 bytes are passed by reference
+        let f: unsafe extern "C" fn(Id, Sel, *const MTLSize, *const MTLSize) =
+            std::mem::transmute(objc_msgSend as *const c_void);
+        f(obj, sel, &groups, &threads);
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        // x86_64: structs are decomposed into registers
+        let f: unsafe extern "C" fn(
+            Id, Sel,
+            NSUInteger, NSUInteger, NSUInteger,
+            NSUInteger, NSUInteger, NSUInteger,
+        ) = std::mem::transmute(objc_msgSend as *const c_void);
+        f(obj, sel, gx, gy, gz, tx, ty, tz);
+    }
+}
+
+/// `[obj sel:n]` -> `void`  (one NSUInteger arg, void return, e.g. memoryBarrierWithScope:)
+pub unsafe fn msg_send_void_nsuint(obj: Id, sel: Sel, n: NSUInteger) {
+    let f: unsafe extern "C" fn(Id, Sel, NSUInteger) =
+        std::mem::transmute(objc_msgSend as *const c_void);
+    f(obj, sel, n);
 }
 
 /// `[obj sel]` -> `void`  (no args, void return)
@@ -244,6 +270,9 @@ pub struct Selectors {
     pub commit: Sel,
     pub wait_until_completed: Sel,
 
+    /// `memoryBarrierWithScope:` (GPU-side memory barrier)
+    pub memory_barrier_with_scope: Sel,
+
     // MTLBuffer
     pub contents: Sel,
     pub length: Sel,
@@ -294,6 +323,9 @@ impl Selectors {
             end_encoding: sel_registerName(b"endEncoding\0".as_ptr() as _),
             commit: sel_registerName(b"commit\0".as_ptr() as _),
             wait_until_completed: sel_registerName(b"waitUntilCompleted\0".as_ptr() as _),
+            memory_barrier_with_scope: sel_registerName(
+                b"memoryBarrierWithScope:\0".as_ptr() as _,
+            ),
             contents: sel_registerName(b"contents\0".as_ptr() as _),
             length: sel_registerName(b"length\0".as_ptr() as _),
             release: sel_registerName(b"release\0".as_ptr() as _),
