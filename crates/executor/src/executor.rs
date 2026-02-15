@@ -3,6 +3,7 @@
 //! The Executor is a stateless dispatcher that routes commands to the
 //! appropriate primitive operations and converts results to outputs.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -49,23 +50,66 @@ use crate::{Command, Error, Output, Result};
 pub struct Executor {
     primitives: Arc<Primitives>,
     access_mode: AccessMode,
+    /// Shutdown flag for the embed refresh timer thread.
+    embed_refresh_shutdown: Arc<AtomicBool>,
+    /// Handle for the embed refresh timer thread (joined on drop).
+    embed_refresh_handle: Option<std::thread::JoinHandle<()>>,
 }
+
+/// Interval between automatic embed buffer flushes (Elasticsearch-style NRT refresh).
+const EMBED_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl Executor {
     /// Create a new executor from a database instance.
     pub fn new(db: Arc<Database>) -> Self {
-        Self {
-            primitives: Arc::new(Primitives::new(db)),
-            access_mode: AccessMode::ReadWrite,
-        }
+        Self::new_with_mode(db, AccessMode::ReadWrite)
     }
 
     /// Create a new executor with an explicit access mode.
     pub fn new_with_mode(db: Arc<Database>, access_mode: AccessMode) -> Self {
+        let primitives = Arc::new(Primitives::new(db));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let handle = Self::spawn_embed_refresh_thread(&primitives, &shutdown);
         Self {
-            primitives: Arc::new(Primitives::new(db)),
+            primitives,
             access_mode,
+            embed_refresh_shutdown: shutdown,
+            embed_refresh_handle: Some(handle),
         }
+    }
+
+    /// Spawn a background thread that flushes the embed buffer every 1 second.
+    ///
+    /// This implements Elasticsearch-style near-real-time (NRT) refresh:
+    /// embeddings become searchable within ~1 second of the write, even if
+    /// the buffer hasn't reached `batch_size`.
+    fn spawn_embed_refresh_thread(
+        primitives: &Arc<Primitives>,
+        shutdown: &Arc<AtomicBool>,
+    ) -> std::thread::JoinHandle<()> {
+        let p = Arc::clone(primitives);
+        let stop = Arc::clone(shutdown);
+        std::thread::Builder::new()
+            .name("strata-embed-refresh".into())
+            .spawn(move || {
+                while !stop.load(Ordering::Acquire) {
+                    std::thread::sleep(EMBED_REFRESH_INTERVAL);
+                    if stop.load(Ordering::Acquire) {
+                        break;
+                    }
+                    if !p.db.auto_embed_enabled() {
+                        continue;
+                    }
+                    // Submit flush to the scheduler so it runs on a worker thread,
+                    // keeping the timer thread lightweight.
+                    let p_clone = Arc::clone(&p);
+                    let _ = p.db.scheduler().submit(
+                        strata_engine::TaskPriority::Normal,
+                        move || crate::handlers::embed_hook::flush_embed_buffer(&p_clone),
+                    );
+                }
+            })
+            .expect("failed to spawn embed refresh thread")
     }
 
     /// Returns the access mode of this executor.
@@ -840,6 +884,12 @@ impl Executor {
 
 impl Drop for Executor {
     fn drop(&mut self) {
+        // Stop the embed refresh timer thread.
+        self.embed_refresh_shutdown.store(true, Ordering::Release);
+        if let Some(handle) = self.embed_refresh_handle.take() {
+            let _ = handle.join();
+        }
+
         // Drain any pending embeddings so they aren't silently lost when the
         // executor is dropped without an explicit flush.
         crate::handlers::embed_hook::flush_embed_buffer(&self.primitives);
