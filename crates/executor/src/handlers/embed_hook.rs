@@ -132,7 +132,17 @@ pub fn maybe_embed_text(
     };
 
     if should_flush {
-        flush_embed_buffer(p);
+        let p_clone = Arc::clone(p);
+        if p.db
+            .scheduler()
+            .submit(strata_engine::TaskPriority::Normal, move || {
+                flush_embed_buffer(&p_clone)
+            })
+            .is_err()
+        {
+            // Backpressure or shutdown — fall back to synchronous flush
+            flush_embed_buffer(p);
+        }
     }
 }
 
@@ -372,8 +382,10 @@ mod tests {
         // because threshold not reached.
         assert_eq!(buffer_len(&p), batch_size - 1);
 
-        // Push one more item — reaches batch_size, triggers auto-flush.
+        // Push one more item — reaches batch_size, triggers async auto-flush.
         push_n(&p, 1);
+        // Wait for the background flush task to complete.
+        p.db.scheduler().drain();
         // The flush drains the buffer (even though model load fails, the
         // drain via mem::take already happened).
         assert_eq!(buffer_len(&p), 0);

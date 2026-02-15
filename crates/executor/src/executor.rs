@@ -125,6 +125,7 @@ impl Executor {
             }
             Command::Flush => {
                 crate::handlers::embed_hook::flush_embed_buffer(&self.primitives);
+                self.primitives.db.scheduler().drain();
                 convert_result(self.primitives.db.flush())?;
                 Ok(Output::Unit)
             }
