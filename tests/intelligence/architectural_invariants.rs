@@ -8,7 +8,8 @@ use strata_core::search_types::{PrimitiveType, SearchRequest, SearchResponse};
 use strata_core::types::BranchId;
 use strata_core::value::Value;
 use strata_engine::{KVStore, BranchIndex};
-use strata_intelligence::{BM25LiteScorer, DatabaseSearchExt, Fuser, HybridSearch, RRFFuser, Scorer};
+use strata_engine::search::{BM25LiteScorer, Scorer};
+use strata_search::{DatabaseSearchExt, Fuser, HybridSearch, RRFFuser};
 use std::collections::HashSet;
 use std::sync::Arc;
 

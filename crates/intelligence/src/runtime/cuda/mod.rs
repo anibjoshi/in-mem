@@ -129,7 +129,8 @@ impl CudaBackend {
         macro_rules! get_fn {
             ($name:expr) => {{
                 let cname = concat!($name, "\0");
-                let cstr = unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(cname.as_bytes()) };
+                let cstr =
+                    unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(cname.as_bytes()) };
                 api.module_get_function(module, cstr)?
             }};
         }
@@ -699,11 +700,7 @@ impl ComputeBackend for CudaBackend {
             &mut p_col_start as *mut _ as *mut c_void,
         ];
 
-        let grid = (
-            Self::div_ceil(dst_cols, 16),
-            Self::div_ceil(rows, 16),
-            1,
-        );
+        let grid = (Self::div_ceil(dst_cols, 16), Self::div_ceil(rows, 16), 1);
         let block = (16, 16, 1);
         unsafe {
             self.launch(self.fn_slice_columns, grid, block, 0, &mut params);
@@ -737,11 +734,7 @@ impl ComputeBackend for CudaBackend {
             &mut p_col_offset as *mut _ as *mut c_void,
         ];
 
-        let grid = (
-            Self::div_ceil(src_cols, 16),
-            Self::div_ceil(rows, 16),
-            1,
-        );
+        let grid = (Self::div_ceil(src_cols, 16), Self::div_ceil(rows, 16), 1);
         let block = (16, 16, 1);
         unsafe {
             self.launch(self.fn_scatter_columns, grid, block, 0, &mut params);
@@ -1494,7 +1487,9 @@ mod tests {
     fn cuda_vs_cpu_add_tensor() {
         let cuda = match try_cuda() {
             Some(b) => b,
-            None => { return; }
+            None => {
+                return;
+            }
         };
         let cpu = CpuBackend;
 
@@ -1515,7 +1510,9 @@ mod tests {
     fn cuda_vs_cpu_scale() {
         let cuda = match try_cuda() {
             Some(b) => b,
-            None => { return; }
+            None => {
+                return;
+            }
         };
         let cpu = CpuBackend;
 
@@ -1539,7 +1536,9 @@ mod tests {
     fn cuda_vs_cpu_batched_matmul_transpose() {
         let cuda = match try_cuda() {
             Some(b) => b,
-            None => { return; }
+            None => {
+                return;
+            }
         };
         let cpu = CpuBackend;
 
@@ -1552,23 +1551,28 @@ mod tests {
         let a = Tensor::from_slice(&a_data, 6, 4);
         let b = Tensor::from_slice(&b_data, 6, 4);
 
-        let cpu_r = cpu.download(&cpu.batched_matmul_transpose(
-            &cpu.upload(&a), &cpu.upload(&b), 2, 3));
-        let cuda_r = cuda.download(&cuda.batched_matmul_transpose(
-            &cuda.upload(&a), &cuda.upload(&b), 2, 3));
+        let cpu_r =
+            cpu.download(&cpu.batched_matmul_transpose(&cpu.upload(&a), &cpu.upload(&b), 2, 3));
+        let cuda_r =
+            cuda.download(&cuda.batched_matmul_transpose(&cuda.upload(&a), &cuda.upload(&b), 2, 3));
 
         let diff = max_abs_diff(&cpu_r.data, &cuda_r.data);
         eprintln!("batched_matmul_transpose max diff: {diff}");
         eprintln!("CPU: {:?}", &cpu_r.data);
         eprintln!("CUDA: {:?}", &cuda_r.data);
-        assert!(diff < 1e-3, "batched_matmul_transpose: max abs diff = {diff}");
+        assert!(
+            diff < 1e-3,
+            "batched_matmul_transpose: max abs diff = {diff}"
+        );
     }
 
     #[test]
     fn cuda_vs_cpu_batched_matmul() {
         let cuda = match try_cuda() {
             Some(b) => b,
-            None => { return; }
+            None => {
+                return;
+            }
         };
         let cpu = CpuBackend;
 
@@ -1581,10 +1585,8 @@ mod tests {
         let a = Tensor::from_slice(&a_data, 6, 3);
         let b = Tensor::from_slice(&b_data, 6, 4);
 
-        let cpu_r = cpu.download(&cpu.batched_matmul(
-            &cpu.upload(&a), &cpu.upload(&b), 2, 3));
-        let cuda_r = cuda.download(&cuda.batched_matmul(
-            &cuda.upload(&a), &cuda.upload(&b), 2, 3));
+        let cpu_r = cpu.download(&cpu.batched_matmul(&cpu.upload(&a), &cpu.upload(&b), 2, 3));
+        let cuda_r = cuda.download(&cuda.batched_matmul(&cuda.upload(&a), &cuda.upload(&b), 2, 3));
 
         let diff = max_abs_diff(&cpu_r.data, &cuda_r.data);
         eprintln!("batched_matmul max diff: {diff}");
@@ -1597,7 +1599,9 @@ mod tests {
     fn cuda_vs_cpu_batched_attention_mask() {
         let cuda = match try_cuda() {
             Some(b) => b,
-            None => { return; }
+            None => {
+                return;
+            }
         };
         let cpu = CpuBackend;
 
@@ -1628,7 +1632,9 @@ mod tests {
     fn cuda_vs_cpu_batched_mean_pool() {
         let cuda = match try_cuda() {
             Some(b) => b,
-            None => { return; }
+            None => {
+                return;
+            }
         };
         let cpu = CpuBackend;
 
@@ -1638,10 +1644,8 @@ mod tests {
         let t = Tensor::from_slice(&data, 6, 4);
         let mask = vec![1u32, 1, 0, 1, 1, 1];
 
-        let cpu_r = cpu.batched_mean_pool(
-            &cpu.upload(&t), &cpu.upload_mask(&mask), 2, 3);
-        let cuda_r = cuda.batched_mean_pool(
-            &cuda.upload(&t), &cuda.upload_mask(&mask), 2, 3);
+        let cpu_r = cpu.batched_mean_pool(&cpu.upload(&t), &cpu.upload_mask(&mask), 2, 3);
+        let cuda_r = cuda.batched_mean_pool(&cuda.upload(&t), &cuda.upload_mask(&mask), 2, 3);
 
         eprintln!("batched_mean_pool:");
         for (i, (c, g)) in cpu_r.iter().zip(cuda_r.iter()).enumerate() {
@@ -1656,12 +1660,13 @@ mod tests {
     fn cuda_vs_cpu_full_embed() {
         let cuda = match CudaBackend::try_new() {
             Ok(b) => b,
-            Err(_) => { return; }
+            Err(_) => {
+                return;
+            }
         };
 
         let home = std::env::var("HOME").unwrap();
-        let model_dir = std::path::PathBuf::from(home)
-            .join(".stratadb/models/minilm-l6-v2");
+        let model_dir = std::path::PathBuf::from(home).join(".stratadb/models/minilm-l6-v2");
         let safetensors_path = model_dir.join("model.safetensors");
         let vocab_path = model_dir.join("vocab.txt");
 
@@ -1687,7 +1692,8 @@ mod tests {
             EmbedModel::load_with_backend_for_test(&safetensors_bytes, &vocab_text, cuda_backend)
                 .unwrap();
 
-        let text = "This is a test sentence for embedding comparison between CPU and CUDA backends.";
+        let text =
+            "This is a test sentence for embedding comparison between CPU and CUDA backends.";
 
         let cpu_result = cpu_model.embed(text);
         let cuda_result = cuda_model.embed(text);
@@ -1720,12 +1726,13 @@ mod tests {
     fn cuda_vs_cpu_full_embed_batch() {
         let cuda = match CudaBackend::try_new() {
             Ok(b) => b,
-            Err(_) => { return; }
+            Err(_) => {
+                return;
+            }
         };
 
         let home = std::env::var("HOME").unwrap();
-        let model_dir = std::path::PathBuf::from(home)
-            .join(".stratadb/models/minilm-l6-v2");
+        let model_dir = std::path::PathBuf::from(home).join(".stratadb/models/minilm-l6-v2");
         let safetensors_path = model_dir.join("model.safetensors");
         let vocab_path = model_dir.join("vocab.txt");
 
@@ -1763,7 +1770,11 @@ mod tests {
         assert_eq!(cpu_results.len(), cuda_results.len());
         for (i, (cpu_vec, cuda_vec)) in cpu_results.iter().zip(cuda_results.iter()).enumerate() {
             let diff = max_abs_diff(cpu_vec, cuda_vec);
-            let dot: f32 = cpu_vec.iter().zip(cuda_vec.iter()).map(|(a, b)| a * b).sum();
+            let dot: f32 = cpu_vec
+                .iter()
+                .zip(cuda_vec.iter())
+                .map(|(a, b)| a * b)
+                .sum();
             let norm_a: f32 = cpu_vec.iter().map(|x| x * x).sum::<f32>().sqrt();
             let norm_b: f32 = cuda_vec.iter().map(|x| x * x).sum::<f32>().sqrt();
             let cosine_sim = dot / (norm_a * norm_b);

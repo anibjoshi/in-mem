@@ -516,8 +516,13 @@ impl HnswGraph {
         // Paper lines 7-16: at each layer, find neighbors and create connections
         let start_layer = level.min(self.max_level);
         for layer in (0..=start_layer).rev() {
-            let candidates =
-                self.search_layer(embedding, current_entry, self.config.ef_construction, layer, heap);
+            let candidates = self.search_layer(
+                embedding,
+                current_entry,
+                self.config.ef_construction,
+                layer,
+                heap,
+            );
 
             // Paper line 9: SELECT-NEIGHBORS(q, W, M) — use M, not Mmax
             let selected = self.select_neighbors(&candidates, self.config.m);
@@ -687,6 +692,7 @@ impl HnswGraph {
     // ========================================================================
 
     /// Check if a vector exists and is alive (not soft-deleted) in this graph
+    #[allow(dead_code)]
     pub(crate) fn contains(&self, id: VectorId) -> bool {
         self.nodes.get(&id).is_some_and(|n| !n.is_deleted())
     }
@@ -734,6 +740,7 @@ impl HnswGraph {
     }
 
     /// Count of non-deleted nodes in the graph
+    #[allow(dead_code)]
     pub(crate) fn len(&self) -> usize {
         self.nodes.values().filter(|n| !n.is_deleted()).count()
     }
@@ -1289,17 +1296,12 @@ impl CompactHnswGraph {
 
     /// Check if a vector exists and is alive
     pub(crate) fn contains(&self, id: VectorId) -> bool {
-        self.nodes
-            .get(&id)
-            .is_some_and(|n| n.deleted_at.is_none())
+        self.nodes.get(&id).is_some_and(|n| n.deleted_at.is_none())
     }
 
     /// Soft-delete a vector. Returns true if it was alive.
     pub(crate) fn delete_with_timestamp(&mut self, id: VectorId, deleted_at: u64) -> bool {
-        let was_alive = self
-            .nodes
-            .get(&id)
-            .is_some_and(|n| n.deleted_at.is_none());
+        let was_alive = self.nodes.get(&id).is_some_and(|n| n.deleted_at.is_none());
         if let Some(node) = self.nodes.get_mut(&id) {
             node.deleted_at = Some(deleted_at);
         }
@@ -1319,11 +1321,13 @@ impl CompactHnswGraph {
     }
 
     /// Number of nodes in the graph (including soft-deleted)
+    #[allow(dead_code)]
     pub(crate) fn len(&self) -> usize {
         self.nodes.len()
     }
 
     /// Whether the neighbor data is backed by a memory-mapped file.
+    #[allow(dead_code)]
     pub(crate) fn is_neighbor_data_mmap(&self) -> bool {
         self.neighbor_data.is_mmap()
     }
@@ -1438,7 +1442,8 @@ impl VectorIndexBackend for HnswBackend {
         }
 
         // Insert into graph with timestamp
-        self.graph.insert_into_graph(id, embedding, created_at, &self.heap);
+        self.graph
+            .insert_into_graph(id, embedding, created_at, &self.heap);
 
         Ok(())
     }
@@ -1483,7 +1488,8 @@ impl VectorIndexBackend for HnswBackend {
     }
 
     fn search_at(&self, query: &[f32], k: usize, as_of_ts: u64) -> Vec<(VectorId, f32)> {
-        self.graph.search_at_with_heap(query, k, as_of_ts, &self.heap)
+        self.graph
+            .search_at_with_heap(query, k, as_of_ts, &self.heap)
     }
 
     fn search_in_range(
@@ -1536,7 +1542,7 @@ impl VectorIndexBackend for HnswBackend {
         let graph_bytes = self.graph.memory_usage();
         let heap_overhead =
             self.heap.len() * (std::mem::size_of::<VectorId>() + std::mem::size_of::<usize>() + 64);
-        let free_slots_bytes = self.heap.free_slots().len() * std::mem::size_of::<usize>();
+        let free_slots_bytes = std::mem::size_of_val(self.heap.free_slots());
 
         embedding_bytes + graph_bytes + heap_overhead + free_slots_bytes
     }

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use chrono::DateTime;
 use strata_engine::search::{PrimitiveType, SearchResponse};
 use strata_engine::{SearchBudget, SearchMode, SearchRequest};
-use strata_intelligence::HybridSearch;
+use strata_search::HybridSearch;
 use tracing::debug;
 
 use crate::bridge::{to_core_branch_id, Primitives};
@@ -77,11 +77,7 @@ pub fn search(
     });
 
     // Parse time_range
-    let parsed_time_range = sq
-        .time_range
-        .as_ref()
-        .map(|tr| parse_time_range(tr))
-        .transpose()?;
+    let parsed_time_range = sq.time_range.as_ref().map(parse_time_range).transpose()?;
 
     let mut req = SearchRequest::new(core_branch_id, &sq.query);
     if let Some(top_k) = sq.k {
@@ -107,7 +103,7 @@ pub fn search(
     };
     req = req.with_mode(mode);
 
-    let hybrid = HybridSearch::new(p.db.clone());
+    let hybrid = build_hybrid_search(&p.db);
 
     // Check if a model is configured for query expansion
     let has_model = has_model_configured(&p.db);
@@ -202,17 +198,17 @@ fn has_model_configured(db: &Arc<strata_engine::Database>) -> bool {
 fn try_expand(
     db: &Arc<strata_engine::Database>,
     query: &str,
-) -> Option<Vec<strata_intelligence::expand::ExpandedQuery>> {
+) -> Option<Vec<strata_search::expand::ExpandedQuery>> {
     let config = db.config().model?;
 
-    let expander = strata_intelligence::expand::ApiExpander::new(
+    let expander = strata_search::expand::ApiExpander::new(
         &config.endpoint,
         &config.model,
         config.api_key.as_deref(),
         config.timeout_ms,
     );
 
-    match strata_intelligence::expand::QueryExpander::expand(&expander, query) {
+    match strata_search::expand::QueryExpander::expand(&expander, query) {
         Ok(expanded) if !expanded.queries.is_empty() => Some(expanded.queries),
         Ok(_) => {
             debug!(target: "strata::search", "Expansion returned empty, falling back");
@@ -261,7 +257,7 @@ fn try_rerank(
         return response;
     }
 
-    let reranker = strata_intelligence::rerank::ApiReranker::new(
+    let reranker = strata_search::rerank::ApiReranker::new(
         &config.endpoint,
         &config.model,
         config.api_key.as_deref(),
@@ -270,7 +266,7 @@ fn try_rerank(
 
     let snippet_refs: Vec<(usize, &str)> = snippets.iter().map(|(i, s)| (*i, s.as_str())).collect();
 
-    match strata_intelligence::rerank::Reranker::rerank(&reranker, query, &snippet_refs) {
+    match strata_search::rerank::Reranker::rerank(&reranker, query, &snippet_refs) {
         Ok(scores) if !scores.is_empty() => {
             debug!(
                 target: "strata::search",
@@ -278,7 +274,7 @@ fn try_rerank(
                 score_count = scores.len(),
                 "Re-ranking applied"
             );
-            response.hits = strata_intelligence::rerank::blend_scores(response.hits, &scores);
+            response.hits = strata_search::rerank::blend_scores(response.hits, &scores);
             response
         }
         Ok(_) => {
@@ -300,6 +296,35 @@ fn has_strong_signal(response: &strata_engine::search::SearchResponse) -> bool {
     let top_score = response.hits[0].score;
     let second_score = response.hits.get(1).map(|h| h.score).unwrap_or(0.0);
     top_score >= STRONG_SIGNAL_SCORE && (top_score - second_score) >= STRONG_SIGNAL_GAP
+}
+
+// ============================================================================
+// Embedder bridge: wires strata-intelligence embed into strata-search trait
+// ============================================================================
+
+#[cfg(feature = "embed")]
+struct IntelligenceEmbedder {
+    db: Arc<strata_engine::Database>,
+}
+
+#[cfg(feature = "embed")]
+impl strata_search::QueryEmbedder for IntelligenceEmbedder {
+    fn embed(&self, text: &str) -> Option<Vec<f32>> {
+        strata_intelligence::embed::embed_query(&self.db, text)
+    }
+}
+
+/// Build a HybridSearch, injecting the embedder when the embed feature is active.
+fn build_hybrid_search(db: &Arc<strata_engine::Database>) -> HybridSearch {
+    #[cfg(feature = "embed")]
+    {
+        let embedder = Arc::new(IntelligenceEmbedder { db: db.clone() });
+        HybridSearch::with_embedder(db.clone(), embedder)
+    }
+    #[cfg(not(feature = "embed"))]
+    {
+        HybridSearch::new(db.clone())
+    }
 }
 
 /// Format an EntityRef into (entity_string, primitive_string) for display

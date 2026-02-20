@@ -294,20 +294,12 @@ pub fn embed_status(p: &Arc<Primitives>) -> EmbedStatusInfo {
     let (pending, total_queued, total_embedded, total_failed) =
         match p.db.extension::<EmbedBuffer>() {
             Ok(buf) => {
-                let pending = buf
-                    .pending
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .len();
-                let queued = buf
-                    .total_queued
-                    .load(std::sync::atomic::Ordering::Relaxed);
+                let pending = buf.pending.lock().unwrap_or_else(|e| e.into_inner()).len();
+                let queued = buf.total_queued.load(std::sync::atomic::Ordering::Relaxed);
                 let embedded = buf
                     .total_embedded
                     .load(std::sync::atomic::Ordering::Relaxed);
-                let failed = buf
-                    .total_failed
-                    .load(std::sync::atomic::Ordering::Relaxed);
+                let failed = buf.total_failed.load(std::sync::atomic::Ordering::Relaxed);
                 (pending, queued, embedded, failed)
             }
             Err(_) => (0, 0, 0, 0),
@@ -624,9 +616,7 @@ mod tests {
         let executor = Executor::new(db);
 
         // Ensure the default branch exists.
-        executor
-            .execute(crate::Command::Ping)
-            .expect("ping works");
+        executor.execute(crate::Command::Ping).expect("ping works");
 
         let branch_id = BranchId::default();
         let p = executor.primitives().clone();
@@ -665,9 +655,7 @@ mod tests {
         db.set_auto_embed(true);
         let executor = Executor::new(db);
 
-        executor
-            .execute(crate::Command::Ping)
-            .expect("ping works");
+        executor.execute(crate::Command::Ping).expect("ping works");
 
         let branch_id = BranchId::default();
         let p = executor.primitives().clone();
@@ -705,9 +693,7 @@ mod tests {
         db.set_auto_embed(true);
         let executor = Executor::new(db);
 
-        executor
-            .execute(crate::Command::Ping)
-            .expect("ping works");
+        executor.execute(crate::Command::Ping).expect("ping works");
 
         let branch_id = BranchId::default();
         let p = executor.primitives().clone();
@@ -794,9 +780,7 @@ mod tests {
         db.set_auto_embed(true);
         let executor = Executor::new(db);
 
-        executor
-            .execute(crate::Command::Ping)
-            .expect("ping works");
+        executor.execute(crate::Command::Ping).expect("ping works");
 
         // Check initial status via Command.
         match executor

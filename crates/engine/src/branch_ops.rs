@@ -1203,8 +1203,7 @@ mod tests {
         assert_eq!(source_results.len(), 3, "Source should have 3 vectors");
 
         // Merge source into target (LWW)
-        let info =
-            merge_branches(&db, "source", "target", MergeStrategy::LastWriterWins).unwrap();
+        let info = merge_branches(&db, "source", "target", MergeStrategy::LastWriterWins).unwrap();
         assert!(info.keys_applied > 0, "Should have applied some keys");
 
         // Target should now be able to search the merged vectors
@@ -1284,8 +1283,14 @@ mod tests {
         );
 
         let keys: Vec<&str> = results.iter().map(|r| r.key.as_str()).collect();
-        assert!(keys.contains(&"from_source"), "Should contain source vector");
-        assert!(keys.contains(&"from_target"), "Should contain target vector");
+        assert!(
+            keys.contains(&"from_source"),
+            "Should contain source vector"
+        );
+        assert!(
+            keys.contains(&"from_target"),
+            "Should contain target vector"
+        );
     }
 
     #[test]
@@ -1295,16 +1300,9 @@ mod tests {
         let branch_index = BranchIndex::new(db.clone());
         branch_index.create_branch("source").unwrap();
 
-        write_kv(
-            &db,
-            "source",
-            "default",
-            "k1",
-            Value::String("v1".into()),
-        );
+        write_kv(&db, "source", "default", "k1", Value::String("v1".into()));
 
-        let info =
-            merge_branches(&db, "source", "target", MergeStrategy::LastWriterWins).unwrap();
+        let info = merge_branches(&db, "source", "target", MergeStrategy::LastWriterWins).unwrap();
         assert!(info.keys_applied >= 1);
 
         // No vector collections means no error
@@ -1430,7 +1428,11 @@ mod tests {
             .unwrap()
             .expect("v1 should exist after merge")
             .value;
-        assert_eq!(entry.metadata, Some(metadata), "Metadata must survive merge");
+        assert_eq!(
+            entry.metadata,
+            Some(metadata),
+            "Metadata must survive merge"
+        );
     }
 
     #[test]
@@ -1507,24 +1509,10 @@ mod tests {
             .create_collection(source_id, "default", "docs", config)
             .unwrap();
         store
-            .insert(
-                source_id,
-                "default",
-                "docs",
-                "v1",
-                &[1.0, 0.0, 0.0],
-                None,
-            )
+            .insert(source_id, "default", "docs", "v1", &[1.0, 0.0, 0.0], None)
             .unwrap();
         store
-            .insert(
-                source_id,
-                "default",
-                "docs",
-                "v2",
-                &[0.0, 1.0, 0.0],
-                None,
-            )
+            .insert(source_id, "default", "docs", "v2", &[0.0, 1.0, 0.0], None)
             .unwrap();
 
         // Fork

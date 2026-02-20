@@ -270,10 +270,7 @@ impl KVStore {
         }
 
         // All items succeed with the same commit version
-        let results = entries
-            .iter()
-            .map(|_| Ok(version))
-            .collect();
+        let results = entries.iter().map(|_| Ok(version)).collect();
 
         Ok(results)
     }
@@ -356,11 +353,7 @@ impl crate::search::Searchable for KVStore {
                         Some(r) => r,
                         None => continue,
                     };
-                    if let EntityRef::Kv {
-                        branch_id,
-                        ref key,
-                    } = doc_ref
-                    {
+                    if let EntityRef::Kv { branch_id, ref key } = doc_ref {
                         if branch_id == req.branch_id {
                             let tf_entry = candidate_tfs
                                 .entry(key.clone())

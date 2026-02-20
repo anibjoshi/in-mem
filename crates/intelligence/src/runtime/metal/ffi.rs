@@ -65,8 +65,7 @@ extern "C" {}
 
 /// `[obj sel]` -> `Id`  (no extra args)
 pub unsafe fn msg_send_id(obj: Id, sel: Sel) -> Id {
-    let f: unsafe extern "C" fn(Id, Sel) -> Id =
-        std::mem::transmute(objc_msgSend as *const c_void);
+    let f: unsafe extern "C" fn(Id, Sel) -> Id = std::mem::transmute(objc_msgSend as *const c_void);
     f(obj, sel)
 }
 
@@ -132,8 +131,7 @@ pub unsafe fn msg_send_new_buffer_length(
 
 /// `[encoder setComputePipelineState:pso]`  (void return, one Id arg)
 pub unsafe fn msg_send_void_id(obj: Id, sel: Sel, arg: Id) {
-    let f: unsafe extern "C" fn(Id, Sel, Id) =
-        std::mem::transmute(objc_msgSend as *const c_void);
+    let f: unsafe extern "C" fn(Id, Sel, Id) = std::mem::transmute(objc_msgSend as *const c_void);
     f(obj, sel, arg);
 }
 
@@ -184,8 +182,16 @@ pub unsafe fn msg_send_dispatch(
         height: NSUInteger,
         depth: NSUInteger,
     }
-    let groups = MTLSize { width: gx, height: gy, depth: gz };
-    let threads = MTLSize { width: tx, height: ty, depth: tz };
+    let groups = MTLSize {
+        width: gx,
+        height: gy,
+        depth: gz,
+    };
+    let threads = MTLSize {
+        width: tx,
+        height: ty,
+        depth: tz,
+    };
 
     #[cfg(target_arch = "aarch64")]
     {
@@ -199,9 +205,14 @@ pub unsafe fn msg_send_dispatch(
     {
         // x86_64: structs are decomposed into registers
         let f: unsafe extern "C" fn(
-            Id, Sel,
-            NSUInteger, NSUInteger, NSUInteger,
-            NSUInteger, NSUInteger, NSUInteger,
+            Id,
+            Sel,
+            NSUInteger,
+            NSUInteger,
+            NSUInteger,
+            NSUInteger,
+            NSUInteger,
+            NSUInteger,
         ) = std::mem::transmute(objc_msgSend as *const c_void);
         f(obj, sel, gx, gy, gz, tx, ty, tz);
     }
@@ -306,15 +317,11 @@ impl Selectors {
                 b"newBufferWithBytes:length:options:\0".as_ptr() as _,
             ),
             new_buffer_with_length: sel_registerName(
-                b"newBufferWithLength:options:\0".as_ptr() as _,
+                b"newBufferWithLength:options:\0".as_ptr() as _
             ),
             command_buffer: sel_registerName(b"commandBuffer\0".as_ptr() as _),
-            compute_command_encoder: sel_registerName(
-                b"computeCommandEncoder\0".as_ptr() as _,
-            ),
-            set_compute_pipeline: sel_registerName(
-                b"setComputePipelineState:\0".as_ptr() as _,
-            ),
+            compute_command_encoder: sel_registerName(b"computeCommandEncoder\0".as_ptr() as _),
+            set_compute_pipeline: sel_registerName(b"setComputePipelineState:\0".as_ptr() as _),
             set_buffer: sel_registerName(b"setBuffer:offset:atIndex:\0".as_ptr() as _),
             set_bytes: sel_registerName(b"setBytes:length:atIndex:\0".as_ptr() as _),
             dispatch_threadgroups: sel_registerName(
@@ -323,9 +330,7 @@ impl Selectors {
             end_encoding: sel_registerName(b"endEncoding\0".as_ptr() as _),
             commit: sel_registerName(b"commit\0".as_ptr() as _),
             wait_until_completed: sel_registerName(b"waitUntilCompleted\0".as_ptr() as _),
-            memory_barrier_with_scope: sel_registerName(
-                b"memoryBarrierWithScope:\0".as_ptr() as _,
-            ),
+            memory_barrier_with_scope: sel_registerName(b"memoryBarrierWithScope:\0".as_ptr() as _),
             contents: sel_registerName(b"contents\0".as_ptr() as _),
             length: sel_registerName(b"length\0".as_ptr() as _),
             release: sel_registerName(b"release\0".as_ptr() as _),

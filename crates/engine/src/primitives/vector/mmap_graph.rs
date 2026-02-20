@@ -47,7 +47,9 @@ use std::io::Write;
 use std::path::Path;
 
 use crate::primitives::vector::error::VectorError;
-use crate::primitives::vector::hnsw::{CompactHnswGraph, CompactHnswNode, HnswConfig, NeighborData};
+use crate::primitives::vector::hnsw::{
+    CompactHnswGraph, CompactHnswNode, HnswConfig, NeighborData,
+};
 use crate::primitives::vector::types::VectorId;
 use crate::primitives::vector::VectorConfig;
 
@@ -67,10 +69,7 @@ fn align8(n: usize) -> usize {
 ///
 /// Creates an mmap-compatible file at `path`. The file can be opened with
 /// [`open_graph_file`] on subsequent starts to avoid rebuilding the graph.
-pub(crate) fn write_graph_file(
-    path: &Path,
-    graph: &CompactHnswGraph,
-) -> Result<(), VectorError> {
+pub(crate) fn write_graph_file(path: &Path, graph: &CompactHnswGraph) -> Result<(), VectorError> {
     // Ensure parent directory exists
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| VectorError::Io(e.to_string()))?;
@@ -145,10 +144,7 @@ pub(crate) fn write_graph_file(
 
     // Neighbor data (u64 LE values, directly reinterpretable on LE platforms)
     let bytes = unsafe {
-        std::slice::from_raw_parts(
-            neighbor_data.as_ptr() as *const u8,
-            neighbor_data.len() * 8,
-        )
+        std::slice::from_raw_parts(neighbor_data.as_ptr() as *const u8, neighbor_data.len() * 8)
     };
     file.write_all(bytes)
         .map_err(|e| VectorError::Io(e.to_string()))?;
@@ -221,15 +217,17 @@ pub(crate) fn open_graph_file(
     // reserved at 40..48 (ignored)
 
     // Validate file size (with overflow protection for untrusted file values)
-    let neighbor_data_offset = align8(HEADER_SIZE.checked_add(node_section_size).ok_or_else(|| {
-        VectorError::Serialization("node_section_size overflow".into())
-    })?);
-    let neighbor_bytes = neighbor_data_len.checked_mul(8).ok_or_else(|| {
-        VectorError::Serialization("neighbor_data_len overflow".into())
-    })?;
-    let expected_size = neighbor_data_offset.checked_add(neighbor_bytes).ok_or_else(|| {
-        VectorError::Serialization("file size overflow".into())
-    })?;
+    let neighbor_data_offset = align8(
+        HEADER_SIZE
+            .checked_add(node_section_size)
+            .ok_or_else(|| VectorError::Serialization("node_section_size overflow".into()))?,
+    );
+    let neighbor_bytes = neighbor_data_len
+        .checked_mul(8)
+        .ok_or_else(|| VectorError::Serialization("neighbor_data_len overflow".into()))?;
+    let expected_size = neighbor_data_offset
+        .checked_add(neighbor_bytes)
+        .ok_or_else(|| VectorError::Serialization("file size overflow".into()))?;
     if mmap.len() < expected_size {
         return Err(VectorError::Serialization(format!(
             "graph mmap file truncated: {} < {}",
@@ -352,10 +350,7 @@ mod tests {
         assert_eq!(original.nodes.len(), loaded.nodes.len());
         assert_eq!(original.entry_point, loaded.entry_point);
         assert_eq!(original.max_level, loaded.max_level);
-        assert_eq!(
-            original.neighbor_data.len(),
-            loaded.neighbor_data.len()
-        );
+        assert_eq!(original.neighbor_data.len(), loaded.neighbor_data.len());
 
         // Verify neighbor data content matches
         let orig_data = original.neighbor_data.as_slice();
@@ -512,8 +507,7 @@ mod tests {
         // Then first layer: start(4) + count(4)
         // Set count to 0xFFFF (way beyond neighbor_data_len)
         let layer_count_offset = HEADER_SIZE + 32 + 4; // after start(4) of first layer
-        data[layer_count_offset..layer_count_offset + 4]
-            .copy_from_slice(&0xFFFFu32.to_le_bytes());
+        data[layer_count_offset..layer_count_offset + 4].copy_from_slice(&0xFFFFu32.to_le_bytes());
 
         std::fs::write(&path, &data).unwrap();
 

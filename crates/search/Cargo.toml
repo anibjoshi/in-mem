@@ -1,5 +1,5 @@
 [package]
-name = "strata-intelligence"
+name = "strata-search"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,13 +7,12 @@ authors.workspace = true
 license = "BUSL-1.1"
 repository.workspace = true
 publish = false
-description = "Embedding and inference infrastructure for Strata"
+description = "Pluggable search orchestration for Strata"
 
 [features]
 default = []
-embed = ["dep:ureq", "dep:tar", "dep:zstd"]
-embed-cuda = ["embed"]
-embed-metal = ["embed"]
+expand = ["dep:ureq"]
+rerank = ["dep:ureq"]
 
 [dependencies]
 strata-core = { path = "../core" }
@@ -21,10 +20,7 @@ strata-engine = { path = "../engine" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
-once_cell = { workspace = true }
 ureq = { workspace = true, optional = true }
-tar = { workspace = true, optional = true }
-zstd = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

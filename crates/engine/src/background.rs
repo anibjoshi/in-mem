@@ -223,7 +223,10 @@ struct ActiveTaskGuard<'a> {
 
 impl<'a> Drop for ActiveTaskGuard<'a> {
     fn drop(&mut self) {
-        let prev_active = self.inner.active_tasks.fetch_sub(1, AtomicOrdering::Release);
+        let prev_active = self
+            .inner
+            .active_tasks
+            .fetch_sub(1, AtomicOrdering::Release);
         self.inner
             .tasks_completed
             .fetch_add(1, AtomicOrdering::Relaxed);
@@ -266,7 +269,9 @@ fn worker_loop(inner: &SchedulerInner) {
         if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task.work)) {
             error!(
                 "background task panicked: {:?}",
-                e.downcast_ref::<&str>().copied().unwrap_or("(non-string panic)")
+                e.downcast_ref::<&str>()
+                    .copied()
+                    .unwrap_or("(non-string panic)")
             );
         }
 
@@ -571,9 +576,7 @@ mod tests {
     #[test]
     fn test_shutdown_is_idempotent() {
         let scheduler = BackgroundScheduler::new(2, 4096);
-        scheduler
-            .submit(TaskPriority::Normal, || {})
-            .unwrap();
+        scheduler.submit(TaskPriority::Normal, || {}).unwrap();
         scheduler.drain();
 
         // Multiple shutdowns should not panic or deadlock

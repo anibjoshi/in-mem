@@ -4,7 +4,7 @@
 
 use strata_core::search_types::{DocRef, PrimitiveType, SearchHit, SearchResponse, SearchStats};
 use strata_core::types::BranchId;
-use strata_intelligence::{Fuser, RRFFuser};
+use strata_search::{Fuser, RRFFuser};
 
 // ============================================================================
 // Test Helpers

@@ -175,9 +175,10 @@ impl Strata {
                 model.timeout_ms = ms;
             }
         }
-        cfg.embed_batch_size = Some(opts.embed_batch_size.unwrap_or(
-            cfg.embed_batch_size.unwrap_or(512),
-        ));
+        cfg.embed_batch_size = Some(
+            opts.embed_batch_size
+                .unwrap_or(cfg.embed_batch_size.unwrap_or(512)),
+        );
 
         let db = Database::open_with_config(&data_dir, cfg).map_err(|e| Error::Internal {
             reason: format!("Failed to open database: {}", e),
@@ -1062,7 +1063,9 @@ mod tests {
         {
             let db = Strata::open(dir.path()).unwrap();
             let cfg = db.config();
-            let model = cfg.model.expect("model config should persist across reopen");
+            let model = cfg
+                .model
+                .expect("model config should persist across reopen");
             assert_eq!(model.endpoint, "http://localhost:11434/v1");
             assert_eq!(model.model, "qwen3:1.7b");
             assert_eq!(model.timeout_ms, 5000);

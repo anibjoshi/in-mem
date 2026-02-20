@@ -296,6 +296,26 @@ fn format_raw(output: &Output) -> String {
             (None, Some(l)) => format!("\t{}", l),
             (None, None) => String::new(),
         },
+        Output::EmbedStatus(info) => {
+            format!(
+                "{}\t{}\t{}\t{}\t{}\t{}",
+                info.auto_embed,
+                info.pending,
+                info.total_queued,
+                info.total_embedded,
+                info.total_failed,
+                info.scheduler_queue_depth
+            )
+        }
+        Output::BatchResults(results) => results
+            .iter()
+            .map(|r| match (&r.version, &r.error) {
+                (Some(v), _) => v.to_string(),
+                (_, Some(e)) => format!("ERR:{}", e),
+                _ => "ERR".to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
     }
 }
 
@@ -548,6 +568,34 @@ fn format_human(output: &Output) -> String {
             (None, Some(l)) => format!("oldest: (none)  latest: {}", l),
             (None, None) => "(no data)".to_string(),
         },
+        Output::EmbedStatus(info) => {
+            format!(
+                "auto_embed: {}\npending: {}\ntotal_queued: {}\ntotal_embedded: {}\ntotal_failed: {}\nscheduler_queue_depth: {}\nscheduler_active_tasks: {}",
+                info.auto_embed,
+                info.pending,
+                info.total_queued,
+                info.total_embedded,
+                info.total_failed,
+                info.scheduler_queue_depth,
+                info.scheduler_active_tasks
+            )
+        }
+        Output::BatchResults(results) => {
+            if results.is_empty() {
+                "(empty list)".to_string()
+            } else {
+                results
+                    .iter()
+                    .enumerate()
+                    .map(|(i, r)| match (&r.version, &r.error) {
+                        (Some(v), _) => format!("{}) OK (v{})", i + 1, v),
+                        (_, Some(e)) => format!("{}) ERR: {}", i + 1, e),
+                        _ => format!("{}) ERR", i + 1),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+        }
     }
 }
 

@@ -139,6 +139,7 @@ impl ActiveBuffer {
     }
 
     /// Drain all entries, returning (ids, timestamps) sorted by VectorId
+    #[allow(clippy::type_complexity)]
     fn drain_sorted(&mut self) -> (Vec<VectorId>, BTreeMap<VectorId, (u64, Option<u64>)>) {
         let mut ids = std::mem::take(&mut self.ids);
         ids.sort();
@@ -458,7 +459,10 @@ impl SegmentedHnswBackend {
     ///
     /// Used during branch merge to transfer pre-built HNSW graphs from
     /// the source branch to the target branch without full rebuild.
-    pub(crate) fn extract_segments(&mut self) -> Vec<(u64, CompactHnswGraph, usize, Option<strata_core::BranchId>)> {
+    #[allow(dead_code)]
+    pub(crate) fn extract_segments(
+        &mut self,
+    ) -> Vec<(u64, CompactHnswGraph, usize, Option<strata_core::BranchId>)> {
         let sealed = std::mem::take(&mut self.sealed);
         sealed
             .into_iter()
@@ -477,6 +481,7 @@ impl SegmentedHnswBackend {
     /// post_merge_reload_vectors() rebuilds from KV which is simpler and
     /// always correct. This method is provided for future O(metadata)
     /// segment adoption with VectorId remapping.
+    #[allow(dead_code)]
     pub(crate) fn adopt_segments(
         &mut self,
         segments: Vec<(CompactHnswGraph, usize, Option<strata_core::BranchId>)>,
@@ -691,14 +696,19 @@ impl VectorIndexBackend for SegmentedHnswBackend {
             let sealed_results: Vec<Vec<(VectorId, f32)>> = SEARCH_POOL.install(|| {
                 self.sealed
                     .par_iter()
-                    .map(|seg| seg.graph.search_at_with_heap(query, k, as_of_ts, &self.heap))
+                    .map(|seg| {
+                        seg.graph
+                            .search_at_with_heap(query, k, as_of_ts, &self.heap)
+                    })
                     .filter(|r| !r.is_empty())
                     .collect()
             });
             result_sets.extend(sealed_results);
         } else {
             for seg in &self.sealed {
-                let seg_results = seg.graph.search_at_with_heap(query, k, as_of_ts, &self.heap);
+                let seg_results = seg
+                    .graph
+                    .search_at_with_heap(query, k, as_of_ts, &self.heap);
                 if !seg_results.is_empty() {
                     result_sets.push(seg_results);
                 }
@@ -734,14 +744,19 @@ impl VectorIndexBackend for SegmentedHnswBackend {
             let sealed_results: Vec<Vec<(VectorId, f32)>> = SEARCH_POOL.install(|| {
                 self.sealed
                     .par_iter()
-                    .map(|seg| seg.graph.search_in_range_with_heap(query, k, start_ts, end_ts, &self.heap))
+                    .map(|seg| {
+                        seg.graph
+                            .search_in_range_with_heap(query, k, start_ts, end_ts, &self.heap)
+                    })
                     .filter(|r| !r.is_empty())
                     .collect()
             });
             result_sets.extend(sealed_results);
         } else {
             for seg in &self.sealed {
-                let seg_results = seg.graph.search_in_range_with_heap(query, k, start_ts, end_ts, &self.heap);
+                let seg_results = seg
+                    .graph
+                    .search_in_range_with_heap(query, k, start_ts, end_ts, &self.heap);
                 if !seg_results.is_empty() {
                     result_sets.push(seg_results);
                 }
@@ -784,7 +799,7 @@ impl VectorIndexBackend for SegmentedHnswBackend {
         let heap_bytes = self.heap.anon_data_bytes();
         let heap_overhead =
             self.heap.len() * (std::mem::size_of::<VectorId>() + std::mem::size_of::<usize>() + 64);
-        let free_slots_bytes = self.heap.free_slots().len() * std::mem::size_of::<usize>();
+        let free_slots_bytes = std::mem::size_of_val(self.heap.free_slots());
 
         // Active buffer
         let active_bytes = self.active.ids.capacity() * std::mem::size_of::<VectorId>()
@@ -822,8 +837,7 @@ impl VectorIndexBackend for SegmentedHnswBackend {
             .collect();
 
         if live_ids.len() >= self.config.seal_threshold {
-            let chunks: Vec<&[VectorId]> =
-                live_ids.chunks(self.config.seal_threshold).collect();
+            let chunks: Vec<&[VectorId]> = live_ids.chunks(self.config.seal_threshold).collect();
             let num_chunks = chunks.len();
 
             for (i, chunk) in chunks.into_iter().enumerate() {
@@ -839,15 +853,13 @@ impl VectorIndexBackend for SegmentedHnswBackend {
                     }
                 } else {
                     // Build sealed segment (graph-only, no embedding duplication)
-                    let mut graph =
-                        HnswGraph::new(&self.vector_config, self.config.hnsw.clone());
+                    let mut graph = HnswGraph::new(&self.vector_config, self.config.hnsw.clone());
                     let mut live_count = 0;
 
                     for &id in chunk {
                         if let Some(embedding) = self.heap.get(id) {
                             let embedding = embedding.to_vec();
-                            let created_at =
-                                all_timestamps.get(&id).map(|t| t.0).unwrap_or(0);
+                            let created_at = all_timestamps.get(&id).map(|t| t.0).unwrap_or(0);
                             graph.insert_into_graph(id, &embedding, created_at, &self.heap);
                             if let Some(&(_, Some(deleted_at))) = all_timestamps.get(&id) {
                                 graph.delete_with_timestamp(id, deleted_at);
@@ -955,8 +967,7 @@ impl VectorIndexBackend for SegmentedHnswBackend {
         if let Some(parent) = manifest_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| VectorError::Io(e.to_string()))?;
         }
-        std::fs::write(&manifest_path, &manifest)
-            .map_err(|e| VectorError::Io(e.to_string()))?;
+        std::fs::write(&manifest_path, &manifest).map_err(|e| VectorError::Io(e.to_string()))?;
 
         Ok(())
     }
@@ -1061,9 +1072,7 @@ impl VectorIndexBackend for SegmentedHnswBackend {
             .iter()
             .flat_map(|seg| seg.graph.nodes.keys().copied())
             .collect();
-        self.active
-            .ids
-            .retain(|id| !sealed_ids.contains(id));
+        self.active.ids.retain(|id| !sealed_ids.contains(id));
         self.active
             .timestamps
             .retain(|id, _| !sealed_ids.contains(id));
@@ -1099,15 +1108,9 @@ mod tests {
     fn test_basic_insert_search() {
         let mut backend = make_backend(3, DistanceMetric::Cosine);
 
-        backend
-            .insert(VectorId::new(1), &[1.0, 0.0, 0.0])
-            .unwrap();
-        backend
-            .insert(VectorId::new(2), &[0.0, 1.0, 0.0])
-            .unwrap();
-        backend
-            .insert(VectorId::new(3), &[0.9, 0.1, 0.0])
-            .unwrap();
+        backend.insert(VectorId::new(1), &[1.0, 0.0, 0.0]).unwrap();
+        backend.insert(VectorId::new(2), &[0.0, 1.0, 0.0]).unwrap();
+        backend.insert(VectorId::new(3), &[0.9, 0.1, 0.0]).unwrap();
 
         assert_eq!(backend.len(), 3);
 
@@ -1121,15 +1124,9 @@ mod tests {
     fn test_delete() {
         let mut backend = make_backend(3, DistanceMetric::Cosine);
 
-        backend
-            .insert(VectorId::new(1), &[1.0, 0.0, 0.0])
-            .unwrap();
-        backend
-            .insert(VectorId::new(2), &[0.0, 1.0, 0.0])
-            .unwrap();
-        backend
-            .insert(VectorId::new(3), &[0.0, 0.0, 1.0])
-            .unwrap();
+        backend.insert(VectorId::new(1), &[1.0, 0.0, 0.0]).unwrap();
+        backend.insert(VectorId::new(2), &[0.0, 1.0, 0.0]).unwrap();
+        backend.insert(VectorId::new(3), &[0.0, 0.0, 1.0]).unwrap();
 
         let existed = backend.delete(VectorId::new(1)).unwrap();
         assert!(existed);
@@ -1157,12 +1154,8 @@ mod tests {
         assert_eq!(backend.len(), 4);
 
         // Insert 2 more — active buffer only
-        backend
-            .insert(VectorId::new(5), &[5.0, 0.0, 0.0])
-            .unwrap();
-        backend
-            .insert(VectorId::new(6), &[6.0, 0.0, 0.0])
-            .unwrap();
+        backend.insert(VectorId::new(5), &[5.0, 0.0, 0.0]).unwrap();
+        backend.insert(VectorId::new(6), &[6.0, 0.0, 0.0]).unwrap();
 
         assert_eq!(backend.sealed.len(), 1);
         assert_eq!(backend.active.len(), 2);
@@ -1178,27 +1171,17 @@ mod tests {
         let mut backend = make_backend_with_threshold(3, DistanceMetric::Cosine, 3);
 
         // Segment 1: vectors 1-3
-        backend
-            .insert(VectorId::new(1), &[1.0, 0.0, 0.0])
-            .unwrap();
-        backend
-            .insert(VectorId::new(2), &[0.9, 0.1, 0.0])
-            .unwrap();
-        backend
-            .insert(VectorId::new(3), &[0.0, 1.0, 0.0])
-            .unwrap();
+        backend.insert(VectorId::new(1), &[1.0, 0.0, 0.0]).unwrap();
+        backend.insert(VectorId::new(2), &[0.9, 0.1, 0.0]).unwrap();
+        backend.insert(VectorId::new(3), &[0.0, 1.0, 0.0]).unwrap();
         assert_eq!(backend.sealed.len(), 1);
 
         // Segment 2: vectors 4-6
         backend
             .insert(VectorId::new(4), &[0.95, 0.05, 0.0])
             .unwrap();
-        backend
-            .insert(VectorId::new(5), &[0.0, 0.0, 1.0])
-            .unwrap();
-        backend
-            .insert(VectorId::new(6), &[0.8, 0.2, 0.0])
-            .unwrap();
+        backend.insert(VectorId::new(5), &[0.0, 0.0, 1.0]).unwrap();
+        backend.insert(VectorId::new(6), &[0.8, 0.2, 0.0]).unwrap();
         assert_eq!(backend.sealed.len(), 2);
 
         // Active buffer: vector 7
@@ -1229,9 +1212,7 @@ mod tests {
     fn test_update_vector_in_active_buffer() {
         let mut backend = make_backend(3, DistanceMetric::Cosine);
 
-        backend
-            .insert(VectorId::new(1), &[1.0, 0.0, 0.0])
-            .unwrap();
+        backend.insert(VectorId::new(1), &[1.0, 0.0, 0.0]).unwrap();
 
         // Update: change direction completely
         backend
@@ -1292,7 +1273,11 @@ mod tests {
         // Search for [1,0,0]: no vector matches well anymore
         // (id=1 was the only [1,0,0] and is now [0,0,1]; all vectors are orthogonal)
         let results = backend.search(&[1.0, 0.0, 0.0], 1);
-        assert!(results[0].1.abs() < 1e-6, "Expected ~0 score, got {}", results[0].1);
+        assert!(
+            results[0].1.abs() < 1e-6,
+            "Expected ~0 score, got {}",
+            results[0].1
+        );
     }
 
     #[test]
@@ -1314,9 +1299,7 @@ mod tests {
             (10, [0.95, 0.05, 0.0]),
         ];
         for (id, emb) in &vectors {
-            backend
-                .insert_with_id(VectorId::new(*id), emb)
-                .unwrap();
+            backend.insert_with_id(VectorId::new(*id), emb).unwrap();
         }
 
         assert_eq!(backend.len(), 10);
@@ -1333,7 +1316,7 @@ mod tests {
         let results = backend.search(&[1.0, 0.0, 0.0], 3);
         assert_eq!(results.len(), 3);
         assert_eq!(results[0].0, VectorId::new(1)); // exact match
-        // Second should be id=10 (0.95) or id=2 (0.9)
+                                                    // Second should be id=10 (0.95) or id=2 (0.9)
         assert!(
             results[1].0 == VectorId::new(10) || results[1].0 == VectorId::new(2),
             "Expected id 10 or 2, got {:?}",
@@ -1348,11 +1331,7 @@ mod tests {
 
         for i in 1..=8 {
             backend
-                .insert_with_id_and_timestamp(
-                    VectorId::new(i),
-                    &[i as f32, 0.0, 0.0],
-                    i * 10,
-                )
+                .insert_with_id_and_timestamp(VectorId::new(i), &[i as f32, 0.0, 0.0], i * 10)
                 .unwrap();
         }
 
@@ -1436,9 +1415,7 @@ mod tests {
 
         // Restore into a new backend
         let mut backend2 = make_backend(3, DistanceMetric::Cosine);
-        backend2
-            .insert_with_id(id2, &[0.0, 1.0, 0.0])
-            .unwrap();
+        backend2.insert_with_id(id2, &[0.0, 1.0, 0.0]).unwrap();
         backend2.restore_snapshot_state(next_id2, free_slots2);
 
         let (restored_next, restored_free) = backend2.snapshot_state();
@@ -1457,9 +1434,7 @@ mod tests {
     fn test_dimension_mismatch() {
         let mut backend = make_backend(3, DistanceMetric::Cosine);
 
-        backend
-            .insert(VectorId::new(1), &[1.0, 0.0, 0.0])
-            .unwrap();
+        backend.insert(VectorId::new(1), &[1.0, 0.0, 0.0]).unwrap();
 
         // Wrong dimension query
         let results = backend.search(&[1.0, 0.0], 5);
@@ -1507,9 +1482,7 @@ mod tests {
     fn test_delete_nonexistent_vector() {
         let mut backend = make_backend(3, DistanceMetric::Cosine);
 
-        backend
-            .insert(VectorId::new(1), &[1.0, 0.0, 0.0])
-            .unwrap();
+        backend.insert(VectorId::new(1), &[1.0, 0.0, 0.0]).unwrap();
 
         // Delete a vector that doesn't exist
         let existed = backend.delete(VectorId::new(999)).unwrap();
@@ -1727,9 +1700,7 @@ mod tests {
             [0.3, 0.3, 0.4],
         ];
         for (i, emb) in embeddings.iter().enumerate() {
-            backend
-                .insert(VectorId::new((i + 1) as u64), emb)
-                .unwrap();
+            backend.insert(VectorId::new((i + 1) as u64), emb).unwrap();
         }
         assert_eq!(backend.sealed.len(), 4);
         assert!(backend.active.is_empty());
@@ -1743,7 +1714,7 @@ mod tests {
         let results = backend.search(&[1.0, 0.0, 0.0], 3);
         assert_eq!(results.len(), 3);
         assert_eq!(results[0].0, VectorId::new(1)); // exact match
-        // id=9 (0.95) and id=2 (0.9) should be in top 3
+                                                    // id=9 (0.95) and id=2 (0.9) should be in top 3
         let top3_ids: Vec<u64> = results.iter().map(|r| r.0.as_u64()).collect();
         assert!(top3_ids.contains(&9));
         assert!(top3_ids.contains(&2));
@@ -1822,19 +1793,13 @@ mod tests {
         assert_eq!(backend.active_buffer_len(), 0);
 
         // Insert 2 — still in active buffer
-        backend
-            .insert(VectorId::new(1), &[1.0, 0.0, 0.0])
-            .unwrap();
-        backend
-            .insert(VectorId::new(2), &[0.0, 1.0, 0.0])
-            .unwrap();
+        backend.insert(VectorId::new(1), &[1.0, 0.0, 0.0]).unwrap();
+        backend.insert(VectorId::new(2), &[0.0, 1.0, 0.0]).unwrap();
         assert_eq!(backend.segment_count(), 0);
         assert_eq!(backend.active_buffer_len(), 2);
 
         // Insert 3rd — seals
-        backend
-            .insert(VectorId::new(3), &[0.0, 0.0, 1.0])
-            .unwrap();
+        backend.insert(VectorId::new(3), &[0.0, 0.0, 1.0]).unwrap();
         assert_eq!(backend.segment_count(), 1);
         assert_eq!(backend.active_buffer_len(), 0);
     }
@@ -1968,13 +1933,16 @@ mod tests {
         let config = VectorConfig::new(3, DistanceMetric::Cosine).unwrap();
         let seg_config = SegmentedHnswConfig {
             hnsw: HnswConfig::default(),
-            seal_threshold: 100, // high seal threshold to avoid sealing
+            seal_threshold: 100,     // high seal threshold to avoid sealing
             heap_flush_threshold: 5, // flush after 5 overlay vectors
         };
         let mut backend = SegmentedHnswBackend::new(&config, seg_config);
 
         // Write an initial mmap file and set up the flush path
-        backend.heap.upsert(VectorId::new(100), &[1.0, 0.0, 0.0]).unwrap();
+        backend
+            .heap
+            .upsert(VectorId::new(100), &[1.0, 0.0, 0.0])
+            .unwrap();
         backend.heap.freeze_to_disk(&vec_path).unwrap();
 
         // Reopen with mmap and configure
@@ -1984,13 +1952,22 @@ mod tests {
 
         // Insert 4 vectors (below threshold)
         for i in 1..=4 {
-            backend.heap.upsert(VectorId::new(i), &[i as f32, 0.0, 0.0]).unwrap();
+            backend
+                .heap
+                .upsert(VectorId::new(i), &[i as f32, 0.0, 0.0])
+                .unwrap();
         }
         backend.flush_heap_if_needed();
-        assert!(backend.heap.overlay_len() > 0, "Should not flush below threshold");
+        assert!(
+            backend.heap.overlay_len() > 0,
+            "Should not flush below threshold"
+        );
 
         // Insert 1 more (reaches threshold)
-        backend.heap.upsert(VectorId::new(5), &[5.0, 0.0, 0.0]).unwrap();
+        backend
+            .heap
+            .upsert(VectorId::new(5), &[5.0, 0.0, 0.0])
+            .unwrap();
         assert_eq!(backend.heap.overlay_len(), 5);
         backend.flush_heap_if_needed();
         assert_eq!(backend.heap.overlay_len(), 0, "Should flush at threshold");
@@ -2014,7 +1991,10 @@ mod tests {
 
         // Even with many overlay vectors, flush should not trigger
         for i in 1..=100 {
-            backend.heap.upsert(VectorId::new(i), &[i as f32, 0.0, 0.0]).unwrap();
+            backend
+                .heap
+                .upsert(VectorId::new(i), &[i as f32, 0.0, 0.0])
+                .unwrap();
         }
         // No panic, no effect
         backend.flush_heap_if_needed();
@@ -2031,7 +2011,10 @@ mod tests {
         let mut backend = SegmentedHnswBackend::new(&config, seg_config);
         // flush_path is None (in-memory database)
 
-        backend.heap.upsert(VectorId::new(1), &[1.0, 0.0, 0.0]).unwrap();
+        backend
+            .heap
+            .upsert(VectorId::new(1), &[1.0, 0.0, 0.0])
+            .unwrap();
         // Should not panic even though overlay exceeds threshold
         backend.flush_heap_if_needed();
     }
@@ -2088,7 +2071,10 @@ mod tests {
         let mut backend = make_backend_with_threshold(3, DistanceMetric::Cosine, 100);
 
         // Create an mmap file
-        backend.heap.upsert(VectorId::new(1), &[1.0, 0.0, 0.0]).unwrap();
+        backend
+            .heap
+            .upsert(VectorId::new(1), &[1.0, 0.0, 0.0])
+            .unwrap();
         backend.heap.freeze_to_disk(&vec_path).unwrap();
 
         // Load mmap and replace heap

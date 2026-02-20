@@ -14,14 +14,15 @@ default = []
 embed = ["strata-intelligence/embed", "strata-engine/embed"]
 embed-cuda = ["strata-intelligence/embed-cuda", "strata-engine/embed"]
 embed-metal = ["strata-intelligence/embed-metal", "strata-engine/embed"]
-expand = ["strata-intelligence/expand"]
-rerank = ["strata-intelligence/rerank"]
+expand = ["strata-search/expand"]
+rerank = ["strata-search/rerank"]
 
 [dependencies]
 # Internal crates
 strata-core = { path = "../core" }
 strata-engine = { path = "../engine" }
 strata-intelligence = { path = "../intelligence" }
+strata-search = { path = "../search" }
 strata-security = { path = "../security" }
 
 # Serialization

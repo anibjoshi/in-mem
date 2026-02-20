@@ -20,11 +20,10 @@ use std::sync::Arc;
 use std::time::Instant;
 use strata_core::PrimitiveType;
 use strata_core::StrataResult;
-#[cfg(feature = "embed")]
 use strata_engine::database::{SHADOW_EVENT, SHADOW_JSON, SHADOW_KV, SHADOW_STATE};
-#[cfg(feature = "embed")]
-use strata_engine::search::SearchHit;
-use strata_engine::search::{SearchBudget, SearchMode, SearchRequest, SearchResponse, SearchStats};
+use strata_engine::search::{
+    SearchBudget, SearchHit, SearchMode, SearchRequest, SearchResponse, SearchStats,
+};
 use strata_engine::Database;
 use strata_engine::{BranchIndex, EventLog, JsonStore, KVStore, StateCell, VectorStore};
 
@@ -72,9 +71,11 @@ use strata_engine::{BranchIndex, EventLog, JsonStore, KVStore, StateCell, Vector
 /// All search state is ephemeral per-request.
 #[derive(Clone)]
 pub struct HybridSearch {
-    /// Database reference — used for embed queries and snapshot consistency
-    #[cfg_attr(not(feature = "embed"), allow(dead_code))]
+    /// Database reference — kept alive for primitive stores; read indirectly via embedder
+    #[allow(dead_code)]
     db: Arc<Database>,
+    /// Optional query embedder for hybrid (BM25+vector) search
+    embedder: Option<Arc<dyn crate::QueryEmbedder>>,
     /// Fuser for combining results
     fuser: Arc<dyn Fuser>,
     /// All primitive facades
@@ -100,6 +101,22 @@ impl HybridSearch {
             branch_index: BranchIndex::new(db.clone()),
             vector: VectorStore::new(db.clone()),
             db,
+            embedder: None,
+            fuser: Arc::new(RRFFuser::default()),
+        }
+    }
+
+    /// Create a new HybridSearch with a query embedder for vector search.
+    pub fn with_embedder(db: Arc<Database>, embedder: Arc<dyn crate::QueryEmbedder>) -> Self {
+        HybridSearch {
+            kv: KVStore::new(db.clone()),
+            json: JsonStore::new(db.clone()),
+            event: EventLog::new(db.clone()),
+            state: StateCell::new(db.clone()),
+            branch_index: BranchIndex::new(db.clone()),
+            vector: VectorStore::new(db.clone()),
+            db,
+            embedder: Some(embedder),
             fuser: Arc::new(RRFFuser::default()),
         }
     }
@@ -172,10 +189,10 @@ impl HybridSearch {
             primitive_results.push((*primitive, result));
         }
 
-        // 4. Vector search for Hybrid mode
-        #[cfg(feature = "embed")]
+        // 4. Vector search for Hybrid mode (requires an injected embedder)
         if req.mode == SearchMode::Hybrid {
-            if let Some(query_embedding) = crate::embed::embed_query(&self.db, &req.query) {
+            if let Some(query_embedding) = self.embedder.as_ref().and_then(|e| e.embed(&req.query))
+            {
                 let shadow_collections = [SHADOW_KV, SHADOW_JSON, SHADOW_EVENT, SHADOW_STATE];
                 let mut vector_hits: Vec<SearchHit> = Vec::new();
 
@@ -352,7 +369,7 @@ impl HybridSearch {
             let mut exp_req = SearchRequest::new(req.branch_id, &expansion.text)
                 .with_k(req.k)
                 .with_mode(mode)
-                .with_budget(req.budget.clone());
+                .with_budget(req.budget);
 
             if let Some(ref filter) = req.primitive_filter {
                 exp_req = exp_req.with_primitive_filter(filter.clone());
@@ -596,5 +613,129 @@ mod tests {
             },
             "doc_b should be top-ranked (appears in both primitive results)"
         );
+    }
+
+    // ========================================================================
+    // with_embedder and QueryEmbedder tests
+    // ========================================================================
+
+    /// Mock embedder that always returns a fixed vector.
+    struct FixedEmbedder(Vec<f32>);
+
+    impl crate::QueryEmbedder for FixedEmbedder {
+        fn embed(&self, _text: &str) -> Option<Vec<f32>> {
+            Some(self.0.clone())
+        }
+    }
+
+    /// Mock embedder that always fails (returns None).
+    struct FailingEmbedder;
+
+    impl crate::QueryEmbedder for FailingEmbedder {
+        fn embed(&self, _text: &str) -> Option<Vec<f32>> {
+            None
+        }
+    }
+
+    #[test]
+    fn test_with_embedder_constructs_successfully() {
+        let db = test_db();
+        let embedder = Arc::new(FixedEmbedder(vec![0.1; 384]));
+        let hybrid = HybridSearch::with_embedder(db, embedder);
+        // Verify it has an embedder
+        assert!(hybrid.embedder.is_some());
+    }
+
+    #[test]
+    fn test_new_has_no_embedder() {
+        let db = test_db();
+        let hybrid = HybridSearch::new(db);
+        assert!(hybrid.embedder.is_none());
+    }
+
+    #[test]
+    fn test_with_embedder_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<HybridSearch>();
+        // Also verify Arc<dyn QueryEmbedder> is Send + Sync
+        fn assert_embedder_trait<T: crate::QueryEmbedder>() {}
+        assert_embedder_trait::<FixedEmbedder>();
+    }
+
+    #[test]
+    fn test_hybrid_mode_without_embedder_skips_vector_search() {
+        // With no embedder, hybrid mode should still work — just no vector hits.
+        let db = test_db();
+        let hybrid = HybridSearch::new(db);
+        let branch_id = BranchId::new();
+
+        let req = SearchRequest::new(branch_id, "test").with_mode(SearchMode::Hybrid);
+        let response = hybrid.search(&req).unwrap();
+        // Should succeed without panicking — vector search block is skipped
+        assert!(response.hits.is_empty());
+    }
+
+    #[test]
+    fn test_hybrid_mode_with_failing_embedder_skips_vector_search() {
+        // Embedder returns None → should gracefully skip vector search.
+        let db = test_db();
+        let embedder = Arc::new(FailingEmbedder);
+        let hybrid = HybridSearch::with_embedder(db, embedder);
+        let branch_id = BranchId::new();
+
+        let req = SearchRequest::new(branch_id, "test").with_mode(SearchMode::Hybrid);
+        let response = hybrid.search(&req).unwrap();
+        assert!(response.hits.is_empty());
+    }
+
+    #[test]
+    fn test_hybrid_mode_with_embedder_attempts_vector_search() {
+        // Embedder returns a vector, but no shadow collections exist → no vector hits,
+        // but the code path through the embedder should be exercised without error.
+        let db = test_db();
+        let embedder = Arc::new(FixedEmbedder(vec![0.1; 384]));
+        let hybrid = HybridSearch::with_embedder(db, embedder);
+        let branch_id = BranchId::new();
+
+        let req = SearchRequest::new(branch_id, "test").with_mode(SearchMode::Hybrid);
+        let response = hybrid.search(&req).unwrap();
+        // No shadow collections populated → no vector hits, but no panic either
+        assert!(response.hits.is_empty());
+    }
+
+    #[test]
+    fn test_keyword_mode_does_not_invoke_embedder() {
+        // In keyword mode, the embedder should never be called.
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct TrackingEmbedder(AtomicBool);
+        impl crate::QueryEmbedder for TrackingEmbedder {
+            fn embed(&self, _text: &str) -> Option<Vec<f32>> {
+                self.0.store(true, Ordering::SeqCst);
+                Some(vec![0.1; 384])
+            }
+        }
+
+        let db = test_db();
+        let embedder = Arc::new(TrackingEmbedder(AtomicBool::new(false)));
+        let embedder_ref = embedder.clone();
+        let hybrid = HybridSearch::with_embedder(db, embedder);
+        let branch_id = BranchId::new();
+
+        let req = SearchRequest::new(branch_id, "test").with_mode(SearchMode::Keyword);
+        let _response = hybrid.search(&req).unwrap();
+        assert!(
+            !embedder_ref.0.load(Ordering::SeqCst),
+            "Embedder should NOT be called in keyword mode"
+        );
+    }
+
+    #[test]
+    fn test_with_embedder_clone_preserves_embedder() {
+        let db = test_db();
+        let embedder = Arc::new(FixedEmbedder(vec![0.1; 384]));
+        let hybrid = HybridSearch::with_embedder(db, embedder);
+        let cloned = hybrid.clone();
+        assert!(cloned.embedder.is_some());
     }
 }

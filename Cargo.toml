@@ -16,6 +16,7 @@ members = [
     "crates/cli",
     "crates/security",
     "crates/executor",
+    "crates/search",
 ]
 
 [workspace.package]
@@ -131,6 +132,7 @@ strata-concurrency = { path = "crates/concurrency" }
 strata-durability = { path = "crates/durability" }
 strata-engine = { path = "crates/engine" }
 strata-intelligence = { path = "crates/intelligence" }
+strata-search = { path = "crates/search" }
 uuid = { workspace = true }
 crc32fast = "1.3"
 base64 = "0.21"

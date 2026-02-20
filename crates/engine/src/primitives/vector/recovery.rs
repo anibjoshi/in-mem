@@ -273,7 +273,10 @@ fn recover_from_db(db: &Database) -> StrataResult<()> {
         }
     }
 
-    if stats.collections_created > 0 || stats.vectors_upserted > 0 || stats.vectors_mmap_registered > 0 {
+    if stats.collections_created > 0
+        || stats.vectors_upserted > 0
+        || stats.vectors_mmap_registered > 0
+    {
         info!(
             target: "strata::vector",
             collections_created = stats.collections_created,

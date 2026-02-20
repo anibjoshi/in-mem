@@ -10,9 +10,9 @@ use super::stemmer;
 /// These high-frequency words carry little discriminative value for BM25
 /// and are filtered out during tokenization.
 const STOPWORDS: &[&str] = &[
-    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "if", "in", "into", "is",
-    "it", "no", "not", "of", "on", "or", "such", "that", "the", "their", "then", "there",
-    "these", "they", "this", "to", "was", "will", "with",
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "if", "in", "into", "is", "it",
+    "no", "not", "of", "on", "or", "such", "that", "the", "their", "then", "there", "these",
+    "they", "this", "to", "was", "will", "with",
 ];
 
 /// Check if a token is a stopword.
@@ -44,7 +44,7 @@ pub fn tokenize(text: &str) -> Vec<String> {
         .split(|c: char| !c.is_alphanumeric())
         .filter(|s| s.len() >= 2)
         .filter(|s| !is_stopword(s))
-        .map(|s| stemmer::stem(s))
+        .map(stemmer::stem)
         .collect()
 }
 

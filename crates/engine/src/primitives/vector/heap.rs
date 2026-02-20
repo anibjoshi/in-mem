@@ -470,7 +470,8 @@ impl VectorHeap {
                     if let Some(&off) = overlay_id_to_offset.get(&id) {
                         &overlay[off..off + dim]
                     } else {
-                        base.get(id).expect("id_to_offset has stale entry (tiered base)")
+                        base.get(id)
+                            .expect("id_to_offset has stale entry (tiered base)")
                     }
                 }
             };
@@ -514,16 +515,14 @@ impl VectorHeap {
     /// - `Tiered`: merges base + overlay into a new file.
     pub fn freeze_to_disk(&self, path: &Path) -> Result<(), VectorError> {
         match &self.data {
-            VectorData::InMemory(vec) => {
-                mmap::write_mmap_file(
-                    path,
-                    self.config.dimension,
-                    self.next_id.load(Ordering::Relaxed),
-                    &self.id_to_offset,
-                    &self.free_slots,
-                    vec,
-                )
-            }
+            VectorData::InMemory(vec) => mmap::write_mmap_file(
+                path,
+                self.config.dimension,
+                self.next_id.load(Ordering::Relaxed),
+                &self.id_to_offset,
+                &self.free_slots,
+                vec,
+            ),
             VectorData::Mmap(mmap_data) => {
                 // If vectors were deleted at runtime (id_to_offset shrank),
                 // write a new mmap excluding deleted vectors. Otherwise no-op.
@@ -565,7 +564,7 @@ impl VectorHeap {
                 let mut merged_offsets = BTreeMap::new();
                 let merged_free_slots = Vec::new();
 
-                for (&id, _) in &self.id_to_offset {
+                for &id in self.id_to_offset.keys() {
                     let offset = merged_data.len();
                     if let Some(&ov_off) = overlay_id_to_offset.get(&id) {
                         merged_data.extend_from_slice(&overlay[ov_off..ov_off + dim]);
@@ -627,7 +626,10 @@ impl VectorHeap {
     /// Returns 0 for non-Tiered heaps.
     pub fn overlay_len(&self) -> usize {
         match &self.data {
-            VectorData::Tiered { overlay_id_to_offset, .. } => overlay_id_to_offset.len(),
+            VectorData::Tiered {
+                overlay_id_to_offset,
+                ..
+            } => overlay_id_to_offset.len(),
             _ => 0,
         }
     }
@@ -666,7 +668,6 @@ impl VectorHeap {
             }
         }
     }
-
 }
 
 #[cfg(test)]

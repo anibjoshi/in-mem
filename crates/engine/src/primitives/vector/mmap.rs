@@ -51,6 +51,7 @@ pub(crate) struct CompactIndex {
     entries: Vec<(u64, u64)>,
 }
 
+#[allow(dead_code)]
 impl CompactIndex {
     fn from_btree(map: &BTreeMap<VectorId, usize>) -> Self {
         let entries: Vec<(u64, u64)> = map
@@ -184,8 +185,7 @@ impl MmapVectorData {
                 "mmap truncated in free_slots_count".into(),
             ));
         }
-        let free_slots_count =
-            u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+        let free_slots_count = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
         pos += 4;
 
         let mut free_slots = Vec::with_capacity(free_slots_count);
@@ -224,13 +224,13 @@ impl MmapVectorData {
         let slice = &self.mmap[byte_start..byte_end];
         // SAFETY: f32 is 4 bytes, alignment is guaranteed by the file format,
         // and we've verified the bounds.
-        let floats = unsafe {
-            std::slice::from_raw_parts(slice.as_ptr() as *const f32, self.dimension)
-        };
+        let floats =
+            unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const f32, self.dimension) };
         Some(floats)
     }
 
     /// Check if a vector exists
+    #[allow(dead_code)]
     pub(crate) fn contains(&self, id: VectorId) -> bool {
         self.index.contains(id)
     }
@@ -241,6 +241,7 @@ impl MmapVectorData {
     }
 
     /// Check if empty
+    #[allow(dead_code)]
     pub(crate) fn is_empty(&self) -> bool {
         self.count == 0
     }
@@ -263,11 +264,13 @@ impl MmapVectorData {
     }
 
     /// Iterate all VectorIds in deterministic order
+    #[allow(dead_code)]
     pub(crate) fn ids(&self) -> impl Iterator<Item = VectorId> + '_ {
         self.index.ids()
     }
 
     /// Get dimension
+    #[allow(dead_code)]
     pub(crate) fn dimension(&self) -> usize {
         self.dimension
     }
@@ -323,9 +326,8 @@ pub(crate) fn write_mmap_file(
     }
 
     // Embeddings (raw f32 data as bytes)
-    let bytes = unsafe {
-        std::slice::from_raw_parts(raw_data.as_ptr() as *const u8, raw_data.len() * 4)
-    };
+    let bytes =
+        unsafe { std::slice::from_raw_parts(raw_data.as_ptr() as *const u8, raw_data.len() * 4) };
     file.write_all(bytes)
         .map_err(|e| VectorError::Io(e.to_string()))?;
 

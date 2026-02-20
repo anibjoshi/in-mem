@@ -127,7 +127,10 @@ impl ComputeBackend for CpuBackend {
     }
 
     fn apply_attention_mask(&self, scores: &mut DeviceTensor, mask: &DeviceTensor) {
-        let mask = mask.inner.downcast_ref::<Vec<u32>>().expect("CpuBackend: expected Vec<u32> mask");
+        let mask = mask
+            .inner
+            .downcast_ref::<Vec<u32>>()
+            .expect("CpuBackend: expected Vec<u32> mask");
         let t = Self::as_tensor_mut(scores);
         let seq_len = t.cols;
         for i in 0..t.rows {
@@ -140,7 +143,10 @@ impl ComputeBackend for CpuBackend {
     }
 
     fn mean_pool(&self, hidden: &DeviceTensor, mask: &DeviceTensor) -> Vec<f32> {
-        let mask = mask.inner.downcast_ref::<Vec<u32>>().expect("CpuBackend: expected Vec<u32> mask");
+        let mask = mask
+            .inner
+            .downcast_ref::<Vec<u32>>()
+            .expect("CpuBackend: expected Vec<u32> mask");
         let t = Self::as_tensor(hidden);
         let mut sum = vec![0.0f32; t.cols];
         let mut count = 0.0f32;
@@ -228,7 +234,10 @@ impl ComputeBackend for CpuBackend {
         batch_size: usize,
         seq_len: usize,
     ) {
-        let mask = mask.inner.downcast_ref::<Vec<u32>>().expect("CpuBackend: expected Vec<u32> mask");
+        let mask = mask
+            .inner
+            .downcast_ref::<Vec<u32>>()
+            .expect("CpuBackend: expected Vec<u32> mask");
         let t = Self::as_tensor_mut(scores);
         for row in 0..(batch_size * seq_len) {
             let batch = row / seq_len;
@@ -272,7 +281,10 @@ impl ComputeBackend for CpuBackend {
         batch_size: usize,
         seq_len: usize,
     ) -> Vec<Vec<f32>> {
-        let mask = mask.inner.downcast_ref::<Vec<u32>>().expect("CpuBackend: expected Vec<u32> mask");
+        let mask = mask
+            .inner
+            .downcast_ref::<Vec<u32>>()
+            .expect("CpuBackend: expected Vec<u32> mask");
         let t = Self::as_tensor(hidden);
         let d = t.cols;
         let mut results = Vec::with_capacity(batch_size);
@@ -308,8 +320,8 @@ impl ComputeBackend for CpuBackend {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::backend::ComputeBackend;
+    use super::*;
 
     fn backend() -> CpuBackend {
         CpuBackend
@@ -365,7 +377,10 @@ mod tests {
         // Scatter at column offset 1
         b.scatter_columns(&mut dst, &src, 1);
         let result = b.download(&dst);
-        assert_eq!(result.data, vec![0.0, 10.0, 20.0, 0.0, 0.0, 30.0, 40.0, 0.0]);
+        assert_eq!(
+            result.data,
+            vec![0.0, 10.0, 20.0, 0.0, 0.0, 30.0, 40.0, 0.0]
+        );
     }
 
     #[test]
@@ -384,9 +399,11 @@ mod tests {
         let b = backend();
         // Create 2x6, slice cols 2..5, scatter back into a fresh 2x6 at offset 2
         let t = Tensor::from_slice(
-            &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0,
-              7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
-            2, 6,
+            &[
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+            ],
+            2,
+            6,
         );
         let dt = b.upload(&t);
         let sliced = b.slice_columns(&dt, 2, 5);
@@ -395,8 +412,7 @@ mod tests {
         let result = b.download(&dst);
         assert_eq!(
             result.data,
-            vec![0.0, 0.0, 3.0, 4.0, 5.0, 0.0,
-                 0.0, 0.0, 9.0, 10.0, 11.0, 0.0]
+            vec![0.0, 0.0, 3.0, 4.0, 5.0, 0.0, 0.0, 0.0, 9.0, 10.0, 11.0, 0.0]
         );
     }
 
@@ -541,7 +557,12 @@ mod tests {
         let dt = b.upload(&t);
         let result = b.download(&b.gelu(&dt));
         for (e, r) in expected.data.iter().zip(result.data.iter()) {
-            assert!((e - r).abs() < 1e-6, "gelu mismatch: expected {}, got {}", e, r);
+            assert!(
+                (e - r).abs() < 1e-6,
+                "gelu mismatch: expected {}, got {}",
+                e,
+                r
+            );
         }
     }
 
@@ -558,7 +579,12 @@ mod tests {
         let db = b.upload_1d(&bias);
         let result = b.download(&b.layer_norm(&dt, &dw, &db, 1e-5));
         for (e, r) in expected.data.iter().zip(result.data.iter()) {
-            assert!((e - r).abs() < 1e-4, "layer_norm mismatch: expected {}, got {}", e, r);
+            assert!(
+                (e - r).abs() < 1e-4,
+                "layer_norm mismatch: expected {}, got {}",
+                e,
+                r
+            );
         }
     }
 
@@ -572,7 +598,12 @@ mod tests {
 
         t.softmax_rows();
         for (e, r) in t.data.iter().zip(result.data.iter()) {
-            assert!((e - r).abs() < 1e-6, "softmax mismatch: expected {}, got {}", e, r);
+            assert!(
+                (e - r).abs() < 1e-6,
+                "softmax mismatch: expected {}, got {}",
+                e,
+                r
+            );
         }
     }
 
@@ -651,15 +682,22 @@ mod tests {
         let b_full = Tensor::from_slice(&b_data, batch_size * seq_len, k);
         let da = b.upload(&a_full);
         let db_t = b.upload(&b_full);
-        let batched_result = b.download(&b.batched_matmul_transpose(&da, &db_t, batch_size, seq_len));
+        let batched_result =
+            b.download(&b.batched_matmul_transpose(&da, &db_t, batch_size, seq_len));
 
         assert_eq!(batched_result.rows, batch_size * seq_len);
         assert_eq!(batched_result.cols, seq_len);
-        for (i, (e, r)) in expected_data.iter().zip(batched_result.data.iter()).enumerate() {
+        for (i, (e, r)) in expected_data
+            .iter()
+            .zip(batched_result.data.iter())
+            .enumerate()
+        {
             assert!(
                 (e - r).abs() < 1e-4,
                 "batched_matmul_transpose mismatch at index {}: expected {}, got {}",
-                i, e, r
+                i,
+                e,
+                r
             );
         }
     }
@@ -703,11 +741,17 @@ mod tests {
 
         assert_eq!(batched_result.rows, batch_size * seq_len);
         assert_eq!(batched_result.cols, k);
-        for (i, (e, r)) in expected_data.iter().zip(batched_result.data.iter()).enumerate() {
+        for (i, (e, r)) in expected_data
+            .iter()
+            .zip(batched_result.data.iter())
+            .enumerate()
+        {
             assert!(
                 (e - r).abs() < 1e-4,
                 "batched_matmul mismatch at index {}: expected {}, got {}",
-                i, e, r
+                i,
+                e,
+                r
             );
         }
     }
@@ -783,7 +827,11 @@ mod tests {
 
         // Batch 0 block: all zeros × all zeros = all zeros
         for i in 0..seq_len * seq_len {
-            assert_eq!(result.data[i], 0.0, "batch 0 should be all zeros at index {}", i);
+            assert_eq!(
+                result.data[i], 0.0,
+                "batch 0 should be all zeros at index {}",
+                i
+            );
         }
 
         // Batch 1 block: verify against individual matmul_transpose
@@ -795,7 +843,9 @@ mod tests {
             assert!(
                 (result.data[batch1_start + i] - expected.data[i]).abs() < 1e-6,
                 "batch 1 mismatch at index {}: expected {}, got {}",
-                i, expected.data[i], result.data[batch1_start + i]
+                i,
+                expected.data[i],
+                result.data[batch1_start + i]
             );
         }
     }
@@ -921,11 +971,18 @@ mod tests {
             let individual = b.mean_pool(&db, &block_mask);
 
             assert_eq!(batched_results[batch].len(), d);
-            for (j, (e, r)) in individual.iter().zip(batched_results[batch].iter()).enumerate() {
+            for (j, (e, r)) in individual
+                .iter()
+                .zip(batched_results[batch].iter())
+                .enumerate()
+            {
                 assert!(
                     (e - r).abs() < 1e-5,
                     "batch {} dim {} mismatch: expected {}, got {}",
-                    batch, j, e, r
+                    batch,
+                    j,
+                    e,
+                    r
                 );
             }
         }
@@ -1017,9 +1074,11 @@ mod tests {
         // Input (2, 6): row 0 = [h0d0, h0d1, h0d2, h1d0, h1d1, h1d2]
         //               row 1 = [h0d3, h0d4, h0d5, h1d3, h1d4, h1d5]
         let t = Tensor::from_slice(
-            &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0,
-              7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
-            2, 6,
+            &[
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+            ],
+            2,
+            6,
         );
         let dt = b.upload(&t);
         let result = b.download(&b.transpose_heads(&dt, 1, 2, 2, 3));
@@ -1030,10 +1089,12 @@ mod tests {
         assert_eq!(result.cols, 3);
         assert_eq!(
             result.data,
-            vec![1.0, 2.0, 3.0,   // head 0, token 0
-                 7.0, 8.0, 9.0,   // head 0, token 1
-                 4.0, 5.0, 6.0,   // head 1, token 0
-                 10.0, 11.0, 12.0] // head 1, token 1
+            vec![
+                1.0, 2.0, 3.0, // head 0, token 0
+                7.0, 8.0, 9.0, // head 0, token 1
+                4.0, 5.0, 6.0, // head 1, token 0
+                10.0, 11.0, 12.0
+            ] // head 1, token 1
         );
     }
 
@@ -1042,11 +1103,14 @@ mod tests {
         let b = backend();
         // Input (4, 3): B*H*S=4, D=3 (from transpose_heads output)
         let t = Tensor::from_slice(
-            &[1.0, 2.0, 3.0,     // head 0, token 0
-              7.0, 8.0, 9.0,     // head 0, token 1
-              4.0, 5.0, 6.0,     // head 1, token 0
-              10.0, 11.0, 12.0], // head 1, token 1
-            4, 3,
+            &[
+                1.0, 2.0, 3.0, // head 0, token 0
+                7.0, 8.0, 9.0, // head 0, token 1
+                4.0, 5.0, 6.0, // head 1, token 0
+                10.0, 11.0, 12.0,
+            ], // head 1, token 1
+            4,
+            3,
         );
         let dt = b.upload(&t);
         let result = b.download(&b.untranspose_heads(&dt, 1, 2, 2, 3));
@@ -1055,8 +1119,7 @@ mod tests {
         assert_eq!(result.cols, 6);
         assert_eq!(
             result.data,
-            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0,
-                 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]
         );
     }
 
@@ -1077,9 +1140,8 @@ mod tests {
         assert_eq!(transposed.rows, batch_size * num_heads * seq_len);
         assert_eq!(transposed.cols, head_dim);
 
-        let restored = b.download(&b.untranspose_heads(
-            &transposed, batch_size, seq_len, num_heads, head_dim,
-        ));
+        let restored =
+            b.download(&b.untranspose_heads(&transposed, batch_size, seq_len, num_heads, head_dim));
         assert_eq!(restored.rows, batch_size * seq_len);
         assert_eq!(restored.cols, num_heads * head_dim);
         assert_eq!(restored.data, data);
@@ -1117,9 +1179,8 @@ mod tests {
         assert_eq!(transposed.cols, head_dim); // 32
 
         // Roundtrip
-        let restored = b.download(&b.untranspose_heads(
-            &transposed, batch_size, seq_len, num_heads, head_dim,
-        ));
+        let restored =
+            b.download(&b.untranspose_heads(&transposed, batch_size, seq_len, num_heads, head_dim));
         assert_eq!(restored.data, data);
     }
 
@@ -1152,12 +1213,12 @@ mod tests {
         for row in 0..6 {
             assert_eq!(result.data[row * 3 + 0], scores_data[row * 3 + 0]); // mask=1
             assert_eq!(result.data[row * 3 + 1], scores_data[row * 3 + 1]); // mask=1
-            assert_eq!(result.data[row * 3 + 2], -10000.0);                 // mask=0
+            assert_eq!(result.data[row * 3 + 2], -10000.0); // mask=0
         }
         for row in 6..12 {
             assert_eq!(result.data[row * 3 + 0], scores_data[row * 3 + 0]); // mask=1
-            assert_eq!(result.data[row * 3 + 1], -10000.0);                 // mask=0
-            assert_eq!(result.data[row * 3 + 2], -10000.0);                 // mask=0
+            assert_eq!(result.data[row * 3 + 1], -10000.0); // mask=0
+            assert_eq!(result.data[row * 3 + 2], -10000.0); // mask=0
         }
     }
 
@@ -1175,11 +1236,7 @@ mod tests {
             .collect();
 
         // Method 1: multi_head_batched_attention_mask
-        let scores_tensor = Tensor::from_slice(
-            &scores_data,
-            num_heads * seq_len,
-            seq_len,
-        );
+        let scores_tensor = Tensor::from_slice(&scores_data, num_heads * seq_len, seq_len);
         let mut dt1 = b.upload(&scores_tensor);
         let mask = b.upload_mask(&mask_data);
         b.multi_head_batched_attention_mask(&mut dt1, &mask, 1, seq_len, num_heads);
@@ -1207,9 +1264,7 @@ mod tests {
         let total_rows = batch_size * num_heads * seq_len;
 
         let mask_data = vec![1u32; batch_size * seq_len];
-        let scores_data: Vec<f32> = (0..total_rows * seq_len)
-            .map(|i| i as f32)
-            .collect();
+        let scores_data: Vec<f32> = (0..total_rows * seq_len).map(|i| i as f32).collect();
 
         let scores_tensor = Tensor::from_slice(&scores_data, total_rows, seq_len);
         let mut dt = b.upload(&scores_tensor);
@@ -1230,9 +1285,7 @@ mod tests {
         let total_rows = batch_size * num_heads * seq_len;
 
         let mask_data = vec![0u32; batch_size * seq_len];
-        let scores_data: Vec<f32> = (0..total_rows * seq_len)
-            .map(|i| i as f32)
-            .collect();
+        let scores_data: Vec<f32> = (0..total_rows * seq_len).map(|i| i as f32).collect();
 
         let scores_tensor = Tensor::from_slice(&scores_data, total_rows, seq_len);
         let mut dt = b.upload(&scores_tensor);

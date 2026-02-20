@@ -82,7 +82,11 @@ impl WordPieceTokenizer {
     /// Tokenize a batch of texts, padding all sequences to the same length.
     pub fn tokenize_batch(&self, texts: &[&str]) -> BatchTokenizedInput {
         let tokenized: Vec<TokenizedInput> = texts.iter().map(|t| self.tokenize(t)).collect();
-        let max_seq_len = tokenized.iter().map(|t| t.input_ids.len()).max().unwrap_or(2);
+        let max_seq_len = tokenized
+            .iter()
+            .map(|t| t.input_ids.len())
+            .max()
+            .unwrap_or(2);
         let batch_size = texts.len();
 
         let mut input_ids = vec![0u32; batch_size * max_seq_len];
@@ -110,7 +114,11 @@ impl WordPieceTokenizer {
     /// Avoids re-tokenization when individual tokenized results are already available.
     pub fn pack_batch(tokenized: &[&TokenizedInput]) -> BatchTokenizedInput {
         let batch_size = tokenized.len();
-        let max_seq_len = tokenized.iter().map(|t| t.input_ids.len()).max().unwrap_or(2);
+        let max_seq_len = tokenized
+            .iter()
+            .map(|t| t.input_ids.len())
+            .max()
+            .unwrap_or(2);
 
         let mut input_ids = vec![0u32; batch_size * max_seq_len];
         let mut attention_mask = vec![0u32; batch_size * max_seq_len];
@@ -478,19 +486,25 @@ mod tests {
             // Padding region is all zeros
             for j in real_len..batch.max_seq_len {
                 assert_eq!(
-                    batch.input_ids[off + j], 0,
+                    batch.input_ids[off + j],
+                    0,
                     "batch {} padding input_ids[{}] should be 0",
-                    i, j
+                    i,
+                    j
                 );
                 assert_eq!(
-                    batch.attention_mask[off + j], 0,
+                    batch.attention_mask[off + j],
+                    0,
                     "batch {} padding attention_mask[{}] should be 0",
-                    i, j
+                    i,
+                    j
                 );
                 assert_eq!(
-                    batch.token_type_ids[off + j], 0,
+                    batch.token_type_ids[off + j],
+                    0,
                     "batch {} padding token_type_ids[{}] should be 0",
-                    i, j
+                    i,
+                    j
                 );
             }
         }
@@ -588,7 +602,11 @@ mod tests {
             let off = i * batch.max_seq_len;
             assert_eq!(batch.input_ids[off], CLS_ID, "batch {} missing CLS", i);
             let last_real = off + ind.input_ids.len() - 1;
-            assert_eq!(batch.input_ids[last_real], SEP_ID, "batch {} missing SEP", i);
+            assert_eq!(
+                batch.input_ids[last_real], SEP_ID,
+                "batch {} missing SEP",
+                i
+            );
         }
     }
 }

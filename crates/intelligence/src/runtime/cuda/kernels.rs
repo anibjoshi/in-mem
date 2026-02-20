@@ -18,7 +18,6 @@ pub const PTX_MODULE: &str = concat!(
     ".target sm_50\n",
     ".address_size 64\n",
     "\n",
-
     // -----------------------------------------------------------------------
     // gemm: C = A * B  (tiled 16x16 shared-memory GEMM)
     //
@@ -46,8 +45,8 @@ pub const PTX_MODULE: &str = concat!(
     "    .reg .u32 %r<30>;\n",
     "    .reg .f32 %f<10>;\n",
     "    .reg .pred %p<5>;\n",
-    "    .shared .align 4 .f32 tile_A[256];\n",  // 16*16
-    "    .shared .align 4 .f32 tile_B[256];\n",  // 16*16
+    "    .shared .align 4 .f32 tile_A[256];\n", // 16*16
+    "    .shared .align 4 .f32 tile_B[256];\n", // 16*16
     "\n",
     "    // Load parameters\n",
     "    ld.param.u64 %rd0, [param_A];\n",
@@ -70,7 +69,7 @@ pub const PTX_MODULE: &str = concat!(
     "    add.u32 %r8, %r8, %r3;       // col = bx*16 + tx\n",
     "\n",
     "    // Accumulator\n",
-    "    mov.f32 %f0, 0f00000000;\n",  // acc = 0.0
+    "    mov.f32 %f0, 0f00000000;\n", // acc = 0.0
     "\n",
     "    // Shared memory index for this thread: ty*16+tx\n",
     "    shl.b32 %r9, %r4, 4;\n",
@@ -165,7 +164,6 @@ pub const PTX_MODULE: &str = concat!(
     "    ret;\n",
     "}\n",
     "\n",
-
     // -----------------------------------------------------------------------
     // gemm_transpose: C = A * B^T  (tiled 16x16, B is (N,K) read transposed)
     //
@@ -297,7 +295,6 @@ pub const PTX_MODULE: &str = concat!(
     "    ret;\n",
     "}\n",
     "\n",
-
     // -----------------------------------------------------------------------
     // gelu: element-wise GELU approximation
     //   y = x * 0.5 * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
@@ -375,7 +372,6 @@ pub const PTX_MODULE: &str = concat!(
     "    ret;\n",
     "}\n",
     "\n",
-
     // -----------------------------------------------------------------------
     // add_tensor: c[i] = a[i] + b[i]
     //
@@ -419,7 +415,6 @@ pub const PTX_MODULE: &str = concat!(
     "    ret;\n",
     "}\n",
     "\n",
-
     // -----------------------------------------------------------------------
     // add_bias: t[r*cols + c] += bias[c]
     //
@@ -472,7 +467,6 @@ pub const PTX_MODULE: &str = concat!(
     "    ret;\n",
     "}\n",
     "\n",
-
     // -----------------------------------------------------------------------
     // scale: t[i] *= factor
     //
@@ -511,7 +505,6 @@ pub const PTX_MODULE: &str = concat!(
     "    ret;\n",
     "}\n",
     "\n",
-
     // -----------------------------------------------------------------------
     // layer_norm: per-row normalization with weight and bias
     //
@@ -693,7 +686,6 @@ pub const PTX_MODULE: &str = concat!(
     "    ret;\n",
     "}\n",
     "\n",
-
     // -----------------------------------------------------------------------
     // softmax_rows: per-row softmax with max subtraction
     //
@@ -842,7 +834,6 @@ pub const PTX_MODULE: &str = concat!(
     "    ret;\n",
     "}\n",
     "\n",
-
     // -----------------------------------------------------------------------
     // slice_columns: copy a column range from src to dst
     //
@@ -905,7 +896,6 @@ pub const PTX_MODULE: &str = concat!(
     "    ret;\n",
     "}\n",
     "\n",
-
     // -----------------------------------------------------------------------
     // scatter_columns: write src columns into dst at col_offset
     //
@@ -966,7 +956,6 @@ pub const PTX_MODULE: &str = concat!(
     "    ret;\n",
     "}\n",
     "\n",
-
     // -----------------------------------------------------------------------
     // attention_mask: set scores[i*cols+j] = -10000.0 where mask[j] == 0
     //
@@ -1019,7 +1008,6 @@ pub const PTX_MODULE: &str = concat!(
     "    ret;\n",
     "}\n",
     "\n",
-
     // -----------------------------------------------------------------------
     // mean_pool: sum rows where mask==1, divide by count
     //
@@ -1158,7 +1146,6 @@ pub const PTX_MODULE: &str = concat!(
     "    ret;\n",
     "}\n",
     "\n",
-
     // -----------------------------------------------------------------------
     // batched_gemm_transpose: block-diagonal C[b] = A[b] * B[b]^T
     //
@@ -1183,15 +1170,15 @@ pub const PTX_MODULE: &str = concat!(
     "    .reg .u32 %r<32>;\n",
     "    .reg .f32 %f<10>;\n",
     "    .reg .pred %p<5>;\n",
-    "    .shared .align 4 .f32 tile_A[256];\n",  // 16*16
-    "    .shared .align 4 .f32 tile_B[256];\n",  // 16*16
+    "    .shared .align 4 .f32 tile_A[256];\n", // 16*16
+    "    .shared .align 4 .f32 tile_B[256];\n", // 16*16
     "\n",
     "    // Load parameters\n",
     "    ld.param.u64 %rd0, [param_A];\n",
     "    ld.param.u64 %rd1, [param_B];\n",
     "    ld.param.u64 %rd2, [param_C];\n",
-    "    ld.param.u32 %r0, [param_S];\n",        // seq_len
-    "    ld.param.u32 %r1, [param_K];\n",        // K
+    "    ld.param.u32 %r0, [param_S];\n", // seq_len
+    "    ld.param.u32 %r1, [param_K];\n", // K
     "\n",
     "    // Thread indices\n",
     "    mov.u32 %r3, %tid.x;         // tx (column within tile)\n",
@@ -1313,7 +1300,6 @@ pub const PTX_MODULE: &str = concat!(
     "    ret;\n",
     "}\n",
     "\n",
-
     // -----------------------------------------------------------------------
     // batched_gemm: block-diagonal C[b] = A[b] * B[b]
     //
@@ -1338,15 +1324,15 @@ pub const PTX_MODULE: &str = concat!(
     "    .reg .u32 %r<32>;\n",
     "    .reg .f32 %f<10>;\n",
     "    .reg .pred %p<5>;\n",
-    "    .shared .align 4 .f32 tile_A[256];\n",  // 16*16
-    "    .shared .align 4 .f32 tile_B[256];\n",  // 16*16
+    "    .shared .align 4 .f32 tile_A[256];\n", // 16*16
+    "    .shared .align 4 .f32 tile_B[256];\n", // 16*16
     "\n",
     "    // Load parameters\n",
     "    ld.param.u64 %rd0, [param_A];\n",
     "    ld.param.u64 %rd1, [param_B];\n",
     "    ld.param.u64 %rd2, [param_C];\n",
-    "    ld.param.u32 %r0, [param_S];\n",        // seq_len
-    "    ld.param.u32 %r1, [param_K];\n",        // K
+    "    ld.param.u32 %r0, [param_S];\n", // seq_len
+    "    ld.param.u32 %r1, [param_K];\n", // K
     "\n",
     "    // Thread indices\n",
     "    mov.u32 %r3, %tid.x;         // tx (column within tile)\n",
@@ -1468,7 +1454,6 @@ pub const PTX_MODULE: &str = concat!(
     "    ret;\n",
     "}\n",
     "\n",
-
     // -----------------------------------------------------------------------
     // batched_attention_mask: per-sequence attention masking
     //
@@ -1533,7 +1518,6 @@ pub const PTX_MODULE: &str = concat!(
     "    ret;\n",
     "}\n",
     "\n",
-
     // -----------------------------------------------------------------------
     // batched_mean_pool: per-sequence mean pooling
     //
@@ -1766,7 +1750,6 @@ pub const PTX_MODULE: &str = concat!(
     "    ret;\n",
     "}\n",
     "\n",
-
     // -----------------------------------------------------------------------
     // untranspose_heads: (B*H*S, D) -> (B*S, H*D)
     //
@@ -1792,8 +1775,8 @@ pub const PTX_MODULE: &str = concat!(
     "    .reg .f32 %f0;\n",
     "    .reg .pred %p<4>;\n",
     "\n",
-    "    ld.param.u64 %rd0, [param_src];\n",  // src: (B*H*S, D)
-    "    ld.param.u64 %rd1, [param_dst];\n",  // dst: (B*S, H*D)
+    "    ld.param.u64 %rd0, [param_src];\n", // src: (B*H*S, D)
+    "    ld.param.u64 %rd1, [param_dst];\n", // dst: (B*S, H*D)
     "    ld.param.u32 %r0, [param_batch_size];\n",
     "    ld.param.u32 %r1, [param_seq_len];\n",
     "    ld.param.u32 %r2, [param_num_heads];\n",
@@ -1851,7 +1834,6 @@ pub const PTX_MODULE: &str = concat!(
     "    ret;\n",
     "}\n",
     "\n",
-
     // -----------------------------------------------------------------------
     // multi_head_batched_attention_mask: per-sequence masking for multi-head
     //
@@ -1924,5 +1906,5 @@ pub const PTX_MODULE: &str = concat!(
     "    ret;\n",
     "}\n",
     "\n",
-    "\0"  // Null terminator for cuModuleLoadData
+    "\0" // Null terminator for cuModuleLoadData
 );

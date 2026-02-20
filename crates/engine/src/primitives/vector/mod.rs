@@ -45,9 +45,8 @@ pub use error::{VectorError, VectorResult};
 pub use filter::{FilterCondition, FilterOp, JsonScalar, MetadataFilter};
 pub use heap::VectorHeap;
 pub use hnsw::{HnswBackend, HnswConfig};
-pub(crate) use hnsw::HnswGraph;
-pub use segmented::{SegmentedHnswBackend, SegmentedHnswConfig};
 pub use recovery::register_vector_recovery;
+pub use segmented::{SegmentedHnswBackend, SegmentedHnswConfig};
 pub use snapshot::{CollectionSnapshotHeader, VECTOR_SNAPSHOT_VERSION};
 pub use store::{RecoveryStats, VectorBackendState, VectorStore};
 pub use types::{

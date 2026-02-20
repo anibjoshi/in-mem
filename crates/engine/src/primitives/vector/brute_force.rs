@@ -143,7 +143,7 @@ impl VectorIndexBackend for BruteForceBackend {
         let embedding_bytes = self.heap.anon_data_bytes();
         let map_overhead =
             self.heap.len() * (std::mem::size_of::<VectorId>() + std::mem::size_of::<usize>() + 64); // BTreeMap node overhead estimate
-        let free_slots_bytes = self.heap.free_slots().len() * std::mem::size_of::<usize>();
+        let free_slots_bytes = std::mem::size_of_val(self.heap.free_slots());
         embedding_bytes + map_overhead + free_slots_bytes
     }
 

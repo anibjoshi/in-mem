@@ -210,10 +210,7 @@ impl Fuser for RRFFuser {
 /// Used for keyword-only search where all primitives use the same BM25 scorer
 /// and scores are directly comparable. Simply concatenates, deduplicates,
 /// sorts by score descending, and truncates to top_k.
-pub fn merge_by_score(
-    results: Vec<(PrimitiveType, SearchResponse)>,
-    top_k: usize,
-) -> FusedResult {
+pub fn merge_by_score(results: Vec<(PrimitiveType, SearchResponse)>, top_k: usize) -> FusedResult {
     let mut hit_map: HashMap<EntityRef, SearchHit> = HashMap::new();
 
     for (_primitive, response) in results {
@@ -231,7 +228,11 @@ pub fn merge_by_score(
     }
 
     let mut hits: Vec<SearchHit> = hit_map.into_values().collect();
-    hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    hits.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let truncated = hits.len() > top_k;
     hits.truncate(top_k);
@@ -596,8 +597,14 @@ mod tests {
         let doc_c = make_kv_doc_ref(&branch_id, "c");
 
         // doc_b appears in both lists with different scores — keep the higher one
-        let list1 = vec![make_hit(doc_a.clone(), 3.0, 1), make_hit(doc_b.clone(), 1.5, 2)];
-        let list2 = vec![make_hit(doc_b.clone(), 2.0, 1), make_hit(doc_c.clone(), 1.0, 2)];
+        let list1 = vec![
+            make_hit(doc_a.clone(), 3.0, 1),
+            make_hit(doc_b.clone(), 1.5, 2),
+        ];
+        let list2 = vec![
+            make_hit(doc_b.clone(), 2.0, 1),
+            make_hit(doc_c.clone(), 1.0, 2),
+        ];
 
         let results = vec![
             (PrimitiveType::Kv, make_response(list1)),
