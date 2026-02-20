@@ -23,11 +23,41 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
+use once_cell::sync::Lazy;
+use rayon::prelude::*;
+
 use crate::primitives::vector::backend::VectorIndexBackend;
 use crate::primitives::vector::distance::compute_similarity;
 use crate::primitives::vector::heap::VectorHeap;
 use crate::primitives::vector::hnsw::{CompactHnswGraph, HnswConfig, HnswGraph};
 use crate::primitives::vector::{DistanceMetric, VectorConfig, VectorError, VectorId};
+
+/// Dedicated thread pool for parallel vector search.
+///
+/// Isolated from rayon's global pool so that:
+/// - Strata never hijacks the caller's rayon threads
+/// - Thread count is capped at `MAX_SEARCH_THREADS` regardless of core count
+/// - Stack size is reduced to 1 MB (search is not deeply recursive)
+static SEARCH_POOL: Lazy<rayon::ThreadPool> = Lazy::new(|| {
+    let num_threads = std::thread::available_parallelism()
+        .map(|n| n.get().min(MAX_SEARCH_THREADS))
+        .unwrap_or(2);
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(num_threads)
+        .thread_name(|i| format!("strata-vsearch-{}", i))
+        .stack_size(1024 * 1024) // 1 MB per thread (vs default 2 MB)
+        .build()
+        .expect("failed to build vector search thread pool")
+});
+
+/// Minimum number of sealed segments before using parallel search.
+/// Below this threshold, sequential iteration avoids rayon thread pool overhead.
+const PARALLEL_SEARCH_THRESHOLD: usize = 4;
+
+/// Maximum number of threads in the dedicated vector search thread pool.
+/// Capped to prevent an embedded database from consuming all CPU cores on
+/// large machines. The actual count is `min(available_cores, MAX_SEARCH_THREADS)`.
+const MAX_SEARCH_THREADS: usize = 4;
 
 /// Segmented HNSW configuration
 #[derive(Debug, Clone)]
@@ -615,12 +645,24 @@ impl VectorIndexBackend for SegmentedHnswBackend {
             result_sets.push(active_results);
         }
 
-        // Search each sealed segment (using global heap for distance computation)
-        for seg in &self.sealed {
-            if seg.live_count > 0 {
-                let seg_results = seg.graph.search_with_heap(query, k, &self.heap);
-                if !seg_results.is_empty() {
-                    result_sets.push(seg_results);
+        // Search sealed segments (parallel when there are enough segments)
+        if self.sealed.len() >= PARALLEL_SEARCH_THRESHOLD {
+            let sealed_results: Vec<Vec<(VectorId, f32)>> = SEARCH_POOL.install(|| {
+                self.sealed
+                    .par_iter()
+                    .filter(|seg| seg.live_count > 0)
+                    .map(|seg| seg.graph.search_with_heap(query, k, &self.heap))
+                    .filter(|r| !r.is_empty())
+                    .collect()
+            });
+            result_sets.extend(sealed_results);
+        } else {
+            for seg in &self.sealed {
+                if seg.live_count > 0 {
+                    let seg_results = seg.graph.search_with_heap(query, k, &self.heap);
+                    if !seg_results.is_empty() {
+                        result_sets.push(seg_results);
+                    }
                 }
             }
         }
@@ -644,11 +686,22 @@ impl VectorIndexBackend for SegmentedHnswBackend {
             result_sets.push(active_results);
         }
 
-        // Sealed segments: delegate temporal search (using global heap)
-        for seg in &self.sealed {
-            let seg_results = seg.graph.search_at_with_heap(query, k, as_of_ts, &self.heap);
-            if !seg_results.is_empty() {
-                result_sets.push(seg_results);
+        // Sealed segments: delegate temporal search (parallel when enough segments)
+        if self.sealed.len() >= PARALLEL_SEARCH_THRESHOLD {
+            let sealed_results: Vec<Vec<(VectorId, f32)>> = SEARCH_POOL.install(|| {
+                self.sealed
+                    .par_iter()
+                    .map(|seg| seg.graph.search_at_with_heap(query, k, as_of_ts, &self.heap))
+                    .filter(|r| !r.is_empty())
+                    .collect()
+            });
+            result_sets.extend(sealed_results);
+        } else {
+            for seg in &self.sealed {
+                let seg_results = seg.graph.search_at_with_heap(query, k, as_of_ts, &self.heap);
+                if !seg_results.is_empty() {
+                    result_sets.push(seg_results);
+                }
             }
         }
 
@@ -676,10 +729,22 @@ impl VectorIndexBackend for SegmentedHnswBackend {
             result_sets.push(active_results);
         }
 
-        for seg in &self.sealed {
-            let seg_results = seg.graph.search_in_range_with_heap(query, k, start_ts, end_ts, &self.heap);
-            if !seg_results.is_empty() {
-                result_sets.push(seg_results);
+        // Sealed segments: delegate range search (parallel when enough segments)
+        if self.sealed.len() >= PARALLEL_SEARCH_THRESHOLD {
+            let sealed_results: Vec<Vec<(VectorId, f32)>> = SEARCH_POOL.install(|| {
+                self.sealed
+                    .par_iter()
+                    .map(|seg| seg.graph.search_in_range_with_heap(query, k, start_ts, end_ts, &self.heap))
+                    .filter(|r| !r.is_empty())
+                    .collect()
+            });
+            result_sets.extend(sealed_results);
+        } else {
+            for seg in &self.sealed {
+                let seg_results = seg.graph.search_in_range_with_heap(query, k, start_ts, end_ts, &self.heap);
+                if !seg_results.is_empty() {
+                    result_sets.push(seg_results);
+                }
             }
         }
 
