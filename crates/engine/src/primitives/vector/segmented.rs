@@ -228,45 +228,97 @@ impl SegmentedHnswBackend {
         });
     }
 
-    /// Flush the heap overlay to mmap if it exceeds the configured threshold.
+    /// Flush the heap to mmap if it exceeds the configured threshold.
     ///
-    /// After sealing a segment, this checks whether the overlay has grown past
-    /// `heap_flush_threshold`. If so, the overlay is merged into the base mmap
-    /// and reset, keeping anonymous memory bounded.
+    /// After sealing a segment, this checks whether enough vectors have
+    /// accumulated in anonymous memory to warrant flushing to disk.
+    ///
+    /// - **Tiered heap**: flushes the overlay into the mmap base.
+    /// - **InMemory heap** (fresh indexing, never frozen): freezes all data to
+    ///   a `.vec` file, reopens as mmap, and promotes to Tiered mode so that
+    ///   subsequent inserts go to a small overlay instead of growing anon memory.
     fn flush_heap_if_needed(&mut self) {
         let threshold = self.config.heap_flush_threshold;
         if threshold == 0 {
             return; // Flushing disabled
         }
-        let overlay_count = self.heap.overlay_len();
-        if overlay_count < threshold {
-            return;
-        }
         let Some(path) = self.flush_path.clone() else {
             return; // No flush path configured (in-memory database)
         };
 
-        tracing::info!(
-            target: "strata::vector",
-            overlay_count,
-            threshold,
-            "Flushing heap overlay to mmap"
-        );
-
-        match self.heap.flush_overlay_to_disk(&path) {
-            Ok(n) => {
-                tracing::info!(
-                    target: "strata::vector",
-                    flushed = n,
-                    "Heap overlay flushed to mmap"
-                );
+        if !self.heap.is_mmap() {
+            // InMemory heap: check total vector count against threshold
+            if self.heap.len() < threshold {
+                return;
             }
-            Err(e) => {
+
+            tracing::info!(
+                target: "strata::vector",
+                total_vectors = self.heap.len(),
+                threshold,
+                "Freezing InMemory heap to mmap (first flush)"
+            );
+
+            // Freeze InMemory → disk, reopen as mmap, promote to Tiered
+            if let Err(e) = self.heap.freeze_to_disk(&path) {
                 tracing::warn!(
                     target: "strata::vector",
                     error = %e,
-                    "Failed to flush heap overlay to mmap, continuing with in-memory overlay"
+                    "Failed to freeze InMemory heap to disk, continuing in-memory"
                 );
+                return;
+            }
+
+            let next_id = self.heap.next_id_value();
+            let free_slots = self.heap.free_slots().to_vec();
+
+            match VectorHeap::from_mmap(&path, self.vector_config.clone()) {
+                Ok(mut new_heap) => {
+                    new_heap.promote_to_tiered();
+                    new_heap.restore_snapshot_state(next_id, free_slots);
+                    self.heap = new_heap;
+                    tracing::info!(
+                        target: "strata::vector",
+                        "InMemory heap promoted to Tiered (mmap-backed)"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "strata::vector",
+                        error = %e,
+                        "Failed to reopen frozen heap as mmap, continuing in-memory"
+                    );
+                }
+            }
+        } else {
+            // Tiered heap: check overlay count against threshold
+            let overlay_count = self.heap.overlay_len();
+            if overlay_count < threshold {
+                return;
+            }
+
+            tracing::info!(
+                target: "strata::vector",
+                overlay_count,
+                threshold,
+                "Flushing heap overlay to mmap"
+            );
+
+            match self.heap.flush_overlay_to_disk(&path) {
+                Ok(n) => {
+                    tracing::info!(
+                        target: "strata::vector",
+                        flushed = n,
+                        "Heap overlay flushed to mmap"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "strata::vector",
+                        error = %e,
+                        "Failed to flush heap overlay to mmap, continuing with in-memory overlay"
+                    );
+                }
             }
         }
     }

@@ -1061,7 +1061,21 @@ impl VectorStore {
 
     /// Initialize the index backend for a collection
     fn init_backend(&self, id: &CollectionId, config: &VectorConfig) -> Result<(), VectorError> {
-        let backend = self.backend_factory().create(config);
+        let mut backend = self.backend_factory().create(config);
+
+        // Set flush_path so the tiered heap can flush overlays during fresh
+        // indexing (not just during recovery). Without this, fresh inserts
+        // stay in anonymous memory forever, causing OOM on large datasets.
+        let data_dir = self.db.data_dir();
+        if !data_dir.as_os_str().is_empty() {
+            let vec_path =
+                super::recovery::mmap_path(data_dir, id.branch_id, &id.name);
+            if let Some(parent) = vec_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = backend.flush_heap_to_disk_if_needed(&vec_path);
+        }
+
         let state = self.state()?;
         state.backends.write().insert(id.clone(), backend);
         Ok(())

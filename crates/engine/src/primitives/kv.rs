@@ -290,10 +290,15 @@ impl crate::search::Searchable for KVStore {
         for term in &query_terms {
             if let Some(posting_list) = index.lookup(term) {
                 for entry in &posting_list.entries {
+                    // Resolve compact doc_id back to EntityRef
+                    let doc_ref = match index.resolve_doc_id(entry.doc_id) {
+                        Some(r) => r,
+                        None => continue,
+                    };
                     if let EntityRef::Kv {
                         branch_id,
                         ref key,
-                    } = entry.doc_ref
+                    } = doc_ref
                     {
                         if branch_id == req.branch_id {
                             let tf_entry = candidate_tfs

@@ -10,8 +10,15 @@
 //!
 //! # Architectural Rules
 //!
-//! - Rule 1: No Data Movement - index stores EntityRef only, not content
+//! - Rule 1: No Data Movement - index stores integer doc IDs, not content
 //! - Rule 5: Zero Overhead When Disabled - NOOP when disabled
+//!
+//! # Memory Efficiency
+//!
+//! PostingEntry uses a compact `u32` doc ID (12 bytes, Copy) instead of
+//! cloning a full EntityRef (~87 bytes with heap allocation) per posting.
+//! A single bidirectional `DocIdMap` holds one copy of each EntityRef,
+//! reducing memory from O(terms × docs) to O(docs) for EntityRef storage.
 //!
 //! # Usage
 //!
@@ -23,6 +30,7 @@ use super::types::EntityRef;
 use dashmap::DashMap;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
 // ============================================================================
@@ -31,28 +39,82 @@ use std::time::{Duration, Instant};
 
 /// Entry in a posting list
 ///
-/// Contains the EntityRef and term statistics for scoring.
-#[derive(Debug, Clone)]
+/// Compact 12-byte, Copy struct. Uses an integer doc ID instead of a cloned
+/// EntityRef to avoid 87 bytes of heap allocation per posting entry.
+/// Resolve to EntityRef via `InvertedIndex::resolve_doc_id()`.
+#[derive(Debug, Clone, Copy)]
 pub struct PostingEntry {
-    /// Reference to the source document
-    pub doc_ref: EntityRef,
+    /// Integer document identifier (resolve via InvertedIndex::resolve_doc_id)
+    pub doc_id: u32,
     /// Term frequency in this document
     pub tf: u32,
     /// Document length in tokens
     pub doc_len: u32,
-    /// Timestamp in microseconds (for recency scoring)
-    pub ts_micros: Option<u64>,
 }
 
 impl PostingEntry {
     /// Create a new posting entry
-    pub fn new(doc_ref: EntityRef, tf: u32, doc_len: u32, ts_micros: Option<u64>) -> Self {
-        PostingEntry {
-            doc_ref,
-            tf,
-            doc_len,
-            ts_micros,
+    pub fn new(doc_id: u32, tf: u32, doc_len: u32) -> Self {
+        PostingEntry { doc_id, tf, doc_len }
+    }
+}
+
+// ============================================================================
+// DocIdMap
+// ============================================================================
+
+/// Bidirectional mapping between EntityRef and compact u32 doc IDs.
+///
+/// Stores exactly one copy of each EntityRef (not 60× per term).
+/// Memory at 5.4M docs: ~918 MB (vs 28 GB with per-posting clones).
+struct DocIdMap {
+    /// doc_id -> EntityRef (append-only, indexed by doc_id)
+    id_to_ref: RwLock<Vec<EntityRef>>,
+    /// EntityRef -> doc_id (for O(1) lookup on index/remove)
+    ref_to_id: DashMap<EntityRef, u32>,
+}
+
+impl DocIdMap {
+    fn new() -> Self {
+        Self {
+            id_to_ref: RwLock::new(Vec::new()),
+            ref_to_id: DashMap::new(),
         }
+    }
+
+    /// Get or assign a doc_id for the given EntityRef.
+    fn get_or_insert(&self, doc_ref: &EntityRef) -> u32 {
+        // Fast path: already assigned
+        if let Some(id) = self.ref_to_id.get(doc_ref) {
+            return *id;
+        }
+
+        // Slow path: assign new ID
+        let mut vec = self.id_to_ref.write().unwrap();
+        // Double-check after acquiring write lock
+        if let Some(id) = self.ref_to_id.get(doc_ref) {
+            return *id;
+        }
+        let id = vec.len() as u32;
+        vec.push(doc_ref.clone());
+        self.ref_to_id.insert(doc_ref.clone(), id);
+        id
+    }
+
+    /// Look up a doc_id, returning None if the EntityRef is unknown.
+    fn get(&self, doc_ref: &EntityRef) -> Option<u32> {
+        self.ref_to_id.get(doc_ref).map(|r| *r)
+    }
+
+    /// Resolve a doc_id back to its EntityRef.
+    fn resolve(&self, doc_id: u32) -> Option<EntityRef> {
+        let vec = self.id_to_ref.read().unwrap();
+        vec.get(doc_id as usize).cloned()
+    }
+
+    fn clear(&self) {
+        self.id_to_ref.write().unwrap().clear();
+        self.ref_to_id.clear();
     }
 }
 
@@ -78,10 +140,10 @@ impl PostingList {
         self.entries.push(entry);
     }
 
-    /// Remove entries matching a EntityRef
-    pub fn remove(&mut self, doc_ref: &EntityRef) -> usize {
+    /// Remove entries matching a doc_id
+    pub fn remove_by_id(&mut self, doc_id: u32) -> usize {
         let before = self.entries.len();
-        self.entries.retain(|e| &e.doc_ref != doc_ref);
+        self.entries.retain(|e| e.doc_id != doc_id);
         before - self.entries.len()
     }
 
@@ -132,9 +194,12 @@ pub struct InvertedIndex {
     /// Sum of all document lengths (for average calculation)
     total_doc_len: AtomicUsize,
 
-    /// EntityRef -> document length mapping for proper removal tracking
-    /// Fixes #608 (total_doc_len drift) and #609 (double-counting)
-    doc_lengths: DashMap<EntityRef, u32>,
+    /// doc_id -> document length (indexed by u32 doc_id, 4 bytes per doc)
+    /// Replaces DashMap<EntityRef, u32> which cost ~578 MB at 5.4M docs.
+    doc_lengths: RwLock<Vec<Option<u32>>>,
+
+    /// Bidirectional EntityRef <-> u32 mapping (one copy per doc, not per term)
+    doc_id_map: DocIdMap,
 }
 
 impl Default for InvertedIndex {
@@ -153,7 +218,8 @@ impl InvertedIndex {
             enabled: AtomicBool::new(false),
             version: AtomicU64::new(0),
             total_doc_len: AtomicUsize::new(0),
-            doc_lengths: DashMap::new(),
+            doc_lengths: RwLock::new(Vec::new()),
+            doc_id_map: DocIdMap::new(),
         }
     }
 
@@ -182,7 +248,8 @@ impl InvertedIndex {
     pub fn clear(&self) {
         self.postings.clear();
         self.doc_freqs.clear();
-        self.doc_lengths.clear();
+        self.doc_lengths.write().unwrap().clear();
+        self.doc_id_map.clear();
         self.total_docs.store(0, Ordering::Relaxed);
         self.total_doc_len.store(0, Ordering::Relaxed);
         self.version.fetch_add(1, Ordering::Release);
@@ -258,6 +325,18 @@ impl InvertedIndex {
     }
 
     // ========================================================================
+    // Doc ID Resolution
+    // ========================================================================
+
+    /// Resolve a compact u32 doc_id back to its EntityRef.
+    ///
+    /// Used by search consumers (e.g., KVStore::search) to map posting
+    /// entries back to the original document references.
+    pub fn resolve_doc_id(&self, doc_id: u32) -> Option<EntityRef> {
+        self.doc_id_map.resolve(doc_id)
+    }
+
+    // ========================================================================
     // Index Updates
     // ========================================================================
 
@@ -265,14 +344,21 @@ impl InvertedIndex {
     ///
     /// NOOP if index is disabled.
     /// If document is already indexed, removes old version first (fixes #609).
-    pub fn index_document(&self, doc_ref: &EntityRef, text: &str, ts_micros: Option<u64>) {
+    pub fn index_document(&self, doc_ref: &EntityRef, text: &str, _ts_micros: Option<u64>) {
         if !self.is_enabled() {
             return; // Zero overhead when disabled
         }
 
+        // Get or assign a compact doc_id
+        let doc_id = self.doc_id_map.get_or_insert(doc_ref);
+
         // Fix #609: Check if document already indexed, remove first to prevent double-counting
-        if self.doc_lengths.contains_key(doc_ref) {
-            self.remove_document(doc_ref);
+        {
+            let lengths = self.doc_lengths.read().unwrap();
+            if lengths.get(doc_id as usize).copied().flatten().is_some() {
+                drop(lengths);
+                self.remove_document(doc_ref);
+            }
         }
 
         let tokens = tokenize(text);
@@ -286,7 +372,7 @@ impl InvertedIndex {
 
         // Update posting lists
         for (term, tf) in tf_map {
-            let entry = PostingEntry::new(doc_ref.clone(), tf, doc_len, ts_micros);
+            let entry = PostingEntry::new(doc_id, tf, doc_len);
 
             self.postings.entry(term.clone()).or_default().add(entry);
 
@@ -297,7 +383,14 @@ impl InvertedIndex {
         }
 
         // Track document length for proper removal (fixes #608)
-        self.doc_lengths.insert(doc_ref.clone(), doc_len);
+        {
+            let mut lengths = self.doc_lengths.write().unwrap();
+            let idx = doc_id as usize;
+            if idx >= lengths.len() {
+                lengths.resize(idx + 1, None);
+            }
+            lengths[idx] = Some(doc_len);
+        }
 
         self.total_docs.fetch_add(1, Ordering::Relaxed);
         self.total_doc_len
@@ -314,13 +407,27 @@ impl InvertedIndex {
             return;
         }
 
+        // Resolve EntityRef -> doc_id
+        let doc_id = match self.doc_id_map.get(doc_ref) {
+            Some(id) => id,
+            None => return, // Not indexed
+        };
+
         // Fix #608: Get document length before removal for proper total_doc_len update
-        let doc_len = self.doc_lengths.remove(doc_ref).map(|(_, len)| len);
+        let doc_len = {
+            let mut lengths = self.doc_lengths.write().unwrap();
+            let idx = doc_id as usize;
+            if idx < lengths.len() {
+                lengths[idx].take()
+            } else {
+                None
+            }
+        };
 
         let mut removed = false;
 
         for mut entry in self.postings.iter_mut() {
-            let count = entry.remove(doc_ref);
+            let count = entry.remove_by_id(doc_id);
             if count > 0 {
                 removed = true;
                 let term = entry.key().clone();
@@ -589,14 +696,46 @@ mod tests {
         let mut list = PostingList::new();
         assert!(list.is_empty());
 
-        let doc_ref = test_doc_ref("test");
-        list.add(PostingEntry::new(doc_ref.clone(), 1, 10, None));
+        list.add(PostingEntry::new(42, 1, 10));
 
         assert_eq!(list.len(), 1);
         assert!(!list.is_empty());
 
-        let removed = list.remove(&doc_ref);
+        let removed = list.remove_by_id(42);
         assert_eq!(removed, 1);
         assert!(list.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_doc_id() {
+        let index = InvertedIndex::new();
+        index.enable();
+
+        let doc_ref = test_doc_ref("resolve_test");
+        index.index_document(&doc_ref, "hello world", None);
+
+        // The first doc should get doc_id 0
+        let postings = index.lookup("hello").unwrap();
+        let doc_id = postings.entries[0].doc_id;
+
+        let resolved = index.resolve_doc_id(doc_id).unwrap();
+        assert_eq!(resolved, doc_ref);
+    }
+
+    #[test]
+    fn test_reindex_same_document() {
+        let index = InvertedIndex::new();
+        index.enable();
+
+        let doc_ref = test_doc_ref("reindex");
+        index.index_document(&doc_ref, "hello world", None);
+        assert_eq!(index.total_docs(), 1);
+
+        // Re-index same doc with different content (use pre-stemmed tokens)
+        index.index_document(&doc_ref, "planet world extra", None);
+        assert_eq!(index.total_docs(), 1);
+        assert_eq!(index.doc_freq("hello"), 0); // old term gone
+        assert_eq!(index.doc_freq("planet"), 1); // new term present
+        assert_eq!(index.doc_freq("world"), 1); // shared term still 1
     }
 }
