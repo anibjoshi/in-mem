@@ -2,7 +2,7 @@
 //!
 //! Tests for BM25-lite scorer correctness.
 
-use strata_intelligence::{tokenize, tokenize_unique, BM25LiteScorer, Scorer, ScorerContext, SearchDoc};
+use strata_engine::search::{tokenize, tokenize_unique, BM25LiteScorer, Scorer, ScorerContext, SearchDoc};
 use std::collections::HashMap;
 
 // ============================================================================

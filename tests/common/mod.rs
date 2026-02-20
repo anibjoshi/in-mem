@@ -1125,7 +1125,7 @@ pub mod search {
     use std::sync::Arc;
     use strata_core::PrimitiveType;
     use strata_engine::{Database, SearchRequest, SearchResponse};
-    use strata_intelligence::DatabaseSearchExt;
+    use strata_search::DatabaseSearchExt;
 
     /// Assert all hits are from a specific primitive.
     pub fn assert_all_from_primitive(response: &SearchResponse, kind: PrimitiveType) {

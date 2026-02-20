@@ -5,7 +5,7 @@
 use crate::common::*;
 use strata_core::search_types::{PrimitiveType, SearchRequest, SearchStats};
 use strata_engine::KVStore;
-use strata_intelligence::DatabaseSearchExt;
+use strata_search::DatabaseSearchExt;
 
 // ============================================================================
 // Result Provenance Tests

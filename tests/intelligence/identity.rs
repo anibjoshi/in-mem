@@ -7,7 +7,7 @@ use strata_core::search_types::{DocRef, PrimitiveType, SearchRequest};
 use strata_core::types::{JsonDocId, BranchId};
 use strata_core::value::Value;
 use strata_engine::{KVStore, BranchIndex};
-use strata_intelligence::DatabaseSearchExt;
+use strata_search::DatabaseSearchExt;
 use std::collections::HashSet;
 
 // ============================================================================

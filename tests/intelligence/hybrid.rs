@@ -4,7 +4,7 @@
 
 use crate::common::*;
 use strata_core::search_types::{PrimitiveType, SearchRequest};
-use strata_intelligence::{DatabaseSearchExt, HybridSearch, RRFFuser};
+use strata_search::{DatabaseSearchExt, HybridSearch, RRFFuser};
 use std::collections::HashSet;
 use std::sync::Arc;
 

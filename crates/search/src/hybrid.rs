@@ -20,11 +20,10 @@ use std::sync::Arc;
 use std::time::Instant;
 use strata_core::PrimitiveType;
 use strata_core::StrataResult;
-#[cfg(feature = "embed")]
 use strata_engine::database::{SHADOW_EVENT, SHADOW_JSON, SHADOW_KV, SHADOW_STATE};
-#[cfg(feature = "embed")]
-use strata_engine::search::SearchHit;
-use strata_engine::search::{SearchBudget, SearchMode, SearchRequest, SearchResponse, SearchStats};
+use strata_engine::search::{
+    SearchBudget, SearchHit, SearchMode, SearchRequest, SearchResponse, SearchStats,
+};
 use strata_engine::Database;
 use strata_engine::{BranchIndex, EventLog, JsonStore, KVStore, StateCell, VectorStore};
 
@@ -72,9 +71,10 @@ use strata_engine::{BranchIndex, EventLog, JsonStore, KVStore, StateCell, Vector
 /// All search state is ephemeral per-request.
 #[derive(Clone)]
 pub struct HybridSearch {
-    /// Database reference — used for embed queries and snapshot consistency
-    #[cfg_attr(not(feature = "embed"), allow(dead_code))]
+    /// Database reference — used for snapshot consistency
     db: Arc<Database>,
+    /// Optional query embedder for hybrid (BM25+vector) search
+    embedder: Option<Arc<dyn crate::QueryEmbedder>>,
     /// Fuser for combining results
     fuser: Arc<dyn Fuser>,
     /// All primitive facades
@@ -100,6 +100,22 @@ impl HybridSearch {
             branch_index: BranchIndex::new(db.clone()),
             vector: VectorStore::new(db.clone()),
             db,
+            embedder: None,
+            fuser: Arc::new(RRFFuser::default()),
+        }
+    }
+
+    /// Create a new HybridSearch with a query embedder for vector search.
+    pub fn with_embedder(db: Arc<Database>, embedder: Arc<dyn crate::QueryEmbedder>) -> Self {
+        HybridSearch {
+            kv: KVStore::new(db.clone()),
+            json: JsonStore::new(db.clone()),
+            event: EventLog::new(db.clone()),
+            state: StateCell::new(db.clone()),
+            branch_index: BranchIndex::new(db.clone()),
+            vector: VectorStore::new(db.clone()),
+            db,
+            embedder: Some(embedder),
             fuser: Arc::new(RRFFuser::default()),
         }
     }
@@ -172,10 +188,11 @@ impl HybridSearch {
             primitive_results.push((*primitive, result));
         }
 
-        // 4. Vector search for Hybrid mode
-        #[cfg(feature = "embed")]
+        // 4. Vector search for Hybrid mode (requires an injected embedder)
         if req.mode == SearchMode::Hybrid {
-            if let Some(query_embedding) = crate::embed::embed_query(&self.db, &req.query) {
+            if let Some(query_embedding) =
+                self.embedder.as_ref().and_then(|e| e.embed(&req.query))
+            {
                 let shadow_collections = [SHADOW_KV, SHADOW_JSON, SHADOW_EVENT, SHADOW_STATE];
                 let mut vector_hits: Vec<SearchHit> = Vec::new();
 
