@@ -407,6 +407,162 @@ impl EventLog {
         Ok(result)
     }
 
+    // ========== Batch API ==========
+
+    /// Append multiple events in a single transaction.
+    ///
+    /// All events share one lock acquisition, one WAL record, and one commit.
+    /// Sequence monotonicity and hash chaining are preserved within the batch.
+    /// Each entry reports success/failure independently.
+    pub fn batch_append(
+        &self,
+        branch_id: &BranchId,
+        space: &str,
+        entries: Vec<(String, Value)>,
+    ) -> StrataResult<Vec<Result<strata_core::contract::Version, String>>> {
+        if entries.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Pre-validate all entries outside transaction
+        let mut validation_errors: Vec<Option<String>> = vec![None; entries.len()];
+        for (i, (event_type, payload)) in entries.iter().enumerate() {
+            if let Err(e) = validate_event_type(event_type) {
+                validation_errors[i] = Some(e.to_string());
+                continue;
+            }
+            if let Err(e) = validate_payload(payload) {
+                validation_errors[i] = Some(e.to_string());
+                continue;
+            }
+        }
+
+        // Collect indices of valid entries
+        let valid_indices: Vec<usize> = validation_errors
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.is_none())
+            .map(|(i, _)| i)
+            .collect();
+
+        if valid_indices.is_empty() {
+            return Ok(validation_errors
+                .into_iter()
+                .map(|e| Err(e.unwrap()))
+                .collect());
+        }
+
+        let retry_config = RetryConfig::default()
+            .with_max_retries(50)
+            .with_base_delay_ms(1)
+            .with_max_delay_ms(50);
+
+        let ns = self.namespace_for(branch_id, space);
+
+        let sequences = self.db.transaction_with_retry(
+            *branch_id,
+            retry_config,
+            |txn| {
+                // Read current metadata
+                let meta_key = Key::new_event_meta(ns.clone());
+                let mut meta: EventLogMeta = match txn.get(&meta_key)? {
+                    Some(v) => from_stored_value(&v).unwrap_or_else(|_| EventLogMeta::default()),
+                    None => EventLogMeta::default(),
+                };
+
+                let mut sequences = Vec::with_capacity(valid_indices.len());
+
+                for &i in &valid_indices {
+                    let (event_type, payload) = &entries[i];
+                    let sequence = meta.next_sequence;
+                    let timestamp = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_micros() as u64;
+
+                    let hash = compute_event_hash(
+                        sequence,
+                        event_type,
+                        payload,
+                        timestamp,
+                        &meta.head_hash,
+                    );
+
+                    let event = Event {
+                        sequence,
+                        event_type: event_type.clone(),
+                        payload: payload.clone(),
+                        timestamp,
+                        prev_hash: meta.head_hash,
+                        hash,
+                    };
+
+                    // Write event
+                    let event_key = Key::new_event(ns.clone(), sequence);
+                    txn.put(event_key, to_stored_value(&event)?)?;
+
+                    // Write per-type index key
+                    let idx_key = Key::new_event_type_idx(ns.clone(), event_type, sequence);
+                    txn.put(idx_key, strata_core::value::Value::Null)?;
+
+                    // Update stream metadata
+                    match meta.streams.get_mut(event_type) {
+                        Some(stream_meta) => stream_meta.update(sequence, timestamp),
+                        None => {
+                            meta.streams.insert(
+                                event_type.clone(),
+                                StreamMeta::new(sequence, timestamp),
+                            );
+                        }
+                    }
+
+                    // Update chain
+                    meta.next_sequence = sequence + 1;
+                    meta.head_hash = hash;
+
+                    sequences.push(sequence);
+                }
+
+                // Write updated metadata once
+                txn.put(meta_key, to_stored_value(&meta)?)?;
+
+                Ok(sequences)
+            },
+        )?;
+
+        // Post-commit: update inverted index
+        let idx = self.db.extension::<crate::search::InvertedIndex>()?;
+        let idx_enabled = idx.is_enabled();
+
+        // Build final results
+        let mut results: Vec<Result<Version, String>> = Vec::with_capacity(entries.len());
+        let mut valid_iter = sequences.into_iter();
+
+        for (i, (event_type, payload)) in entries.iter().enumerate() {
+            if let Some(ref err) = validation_errors[i] {
+                results.push(Err(err.clone()));
+            } else {
+                let seq = valid_iter.next().unwrap();
+                // Index the event
+                if idx_enabled {
+                    let text = format!(
+                        "{} {}",
+                        event_type,
+                        serde_json::to_string(payload).unwrap_or_default()
+                    );
+                    let entity_ref = crate::search::EntityRef::Event {
+                        branch_id: *branch_id,
+                        sequence: seq,
+                    };
+                    idx.index_document(&entity_ref, &text, None);
+                }
+                results.push(Ok(Version::Sequence(seq)));
+            }
+        }
+
+        Ok(results)
+    }
+
     // ========== Read Operations ==========
 
     /// Read a single event by sequence number.
@@ -1217,5 +1373,102 @@ mod tests {
 
         // Cross-branch reads return None
         assert!(log.get(&branch1, "default", 1).unwrap().is_none());
+    }
+
+    // ========== Batch API Tests ==========
+
+    #[test]
+    fn test_batch_append_basic() {
+        let (_temp, _db, log) = setup();
+        let branch_id = BranchId::new();
+
+        let entries = vec![
+            ("type_a".to_string(), int_payload(1)),
+            ("type_b".to_string(), int_payload(2)),
+            ("type_a".to_string(), int_payload(3)),
+        ];
+
+        let results = log.batch_append(&branch_id, "default", entries).unwrap();
+        assert_eq!(results.len(), 3);
+        assert!(matches!(results[0], Ok(Version::Sequence(0))));
+        assert!(matches!(results[1], Ok(Version::Sequence(1))));
+        assert!(matches!(results[2], Ok(Version::Sequence(2))));
+
+        // Verify total count
+        assert_eq!(log.len(&branch_id, "default").unwrap(), 3);
+    }
+
+    #[test]
+    fn test_batch_append_empty() {
+        let (_temp, _db, log) = setup();
+        let branch_id = BranchId::new();
+
+        let results = log.batch_append(&branch_id, "default", vec![]).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_batch_append_hash_chain_integrity() {
+        let (_temp, _db, log) = setup();
+        let branch_id = BranchId::new();
+
+        let entries = vec![
+            ("test".to_string(), int_payload(1)),
+            ("test".to_string(), int_payload(2)),
+            ("test".to_string(), int_payload(3)),
+        ];
+
+        log.batch_append(&branch_id, "default", entries).unwrap();
+
+        // Verify hash chain
+        let e0 = log.get(&branch_id, "default", 0).unwrap().unwrap();
+        let e1 = log.get(&branch_id, "default", 1).unwrap().unwrap();
+        let e2 = log.get(&branch_id, "default", 2).unwrap().unwrap();
+
+        assert_eq!(e0.value.prev_hash, [0u8; 32]); // First event links to zero
+        assert_eq!(e1.value.prev_hash, e0.value.hash); // Chain links
+        assert_eq!(e2.value.prev_hash, e1.value.hash);
+    }
+
+    #[test]
+    fn test_batch_append_monotonic_sequences() {
+        let (_temp, _db, log) = setup();
+        let branch_id = BranchId::new();
+
+        // Pre-existing event
+        log.append(&branch_id, "default", "existing", empty_payload())
+            .unwrap();
+
+        let entries = vec![
+            ("batch".to_string(), int_payload(1)),
+            ("batch".to_string(), int_payload(2)),
+        ];
+
+        let results = log.batch_append(&branch_id, "default", entries).unwrap();
+        assert!(matches!(results[0], Ok(Version::Sequence(1))));
+        assert!(matches!(results[1], Ok(Version::Sequence(2))));
+    }
+
+    #[test]
+    fn test_batch_append_partial_validation_failure() {
+        let (_temp, _db, log) = setup();
+        let branch_id = BranchId::new();
+
+        let entries = vec![
+            ("valid".to_string(), int_payload(1)),          // Valid
+            ("".to_string(), int_payload(2)),                // Invalid: empty event type
+            ("also_valid".to_string(), int_payload(3)),      // Valid
+            ("valid".to_string(), Value::Int(42)),           // Invalid: not an object
+        ];
+
+        let results = log.batch_append(&branch_id, "default", entries).unwrap();
+        assert_eq!(results.len(), 4);
+        assert!(results[0].is_ok()); // Sequence 0
+        assert!(results[1].is_err()); // Validation error
+        assert!(results[2].is_ok()); // Sequence 1
+        assert!(results[3].is_err()); // Validation error
+
+        // Only 2 events should be persisted
+        assert_eq!(log.len(&branch_id, "default").unwrap(), 2);
     }
 }

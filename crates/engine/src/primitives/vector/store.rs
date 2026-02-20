@@ -758,6 +758,10 @@ impl VectorStore {
         let mut versions = Vec::with_capacity(entries.len());
         let batch_count = entries.len();
 
+        // Prepare all records and accumulate KV writes for a single transaction
+        let mut kv_writes: Vec<(Key, Value)> = Vec::with_capacity(entries.len());
+        let mut backend_updates: Vec<(VectorId, Vec<f32>, u64)> = Vec::with_capacity(entries.len());
+
         for (key, embedding, metadata) in entries {
             let kv_key = Key::new_vector(self.namespace_for(branch_id, space), collection, &key);
 
@@ -774,19 +778,26 @@ impl VectorStore {
                 (vector_id, record)
             };
 
-            // Commit to KV
             let record_version = record.version;
             let record_bytes = record.to_bytes()?;
-            self.db
-                .transaction(branch_id, |txn| {
-                    txn.put(kv_key.clone(), Value::Bytes(record_bytes.clone()))
-                })
-                .map_err(|e| VectorError::Storage(e.to_string()))?;
-
-            // Update backend with timestamp
-            backend.insert_with_timestamp(vector_id, &embedding, record.created_at)?;
-
+            kv_writes.push((kv_key, Value::Bytes(record_bytes)));
+            backend_updates.push((vector_id, embedding, record.created_at));
             versions.push(Version::counter(record_version));
+        }
+
+        // Commit all KV writes in a single transaction
+        self.db
+            .transaction(branch_id, |txn| {
+                for (key, value) in &kv_writes {
+                    txn.put(key.clone(), value.clone())?;
+                }
+                Ok(())
+            })
+            .map_err(|e| VectorError::Storage(e.to_string()))?;
+
+        // Update backend for each entry (after successful KV commit)
+        for (vector_id, embedding, created_at) in backend_updates {
+            backend.insert_with_timestamp(vector_id, &embedding, created_at)?;
         }
 
         drop(backends);
@@ -1061,7 +1072,21 @@ impl VectorStore {
 
     /// Initialize the index backend for a collection
     fn init_backend(&self, id: &CollectionId, config: &VectorConfig) -> Result<(), VectorError> {
-        let backend = self.backend_factory().create(config);
+        let mut backend = self.backend_factory().create(config);
+
+        // Set flush_path so the tiered heap can flush overlays during fresh
+        // indexing (not just during recovery). Without this, fresh inserts
+        // stay in anonymous memory forever, causing OOM on large datasets.
+        let data_dir = self.db.data_dir();
+        if !data_dir.as_os_str().is_empty() {
+            let vec_path =
+                super::recovery::mmap_path(data_dir, id.branch_id, &id.name);
+            if let Some(parent) = vec_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = backend.flush_heap_to_disk_if_needed(&vec_path);
+        }
+
         let state = self.state()?;
         state.backends.write().insert(id.clone(), backend);
         Ok(())
