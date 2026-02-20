@@ -191,8 +191,7 @@ impl HybridSearch {
 
         // 4. Vector search for Hybrid mode (requires an injected embedder)
         if req.mode == SearchMode::Hybrid {
-            if let Some(query_embedding) =
-                self.embedder.as_ref().and_then(|e| e.embed(&req.query))
+            if let Some(query_embedding) = self.embedder.as_ref().and_then(|e| e.embed(&req.query))
             {
                 let shadow_collections = [SHADOW_KV, SHADOW_JSON, SHADOW_EVENT, SHADOW_STATE];
                 let mut vector_hits: Vec<SearchHit> = Vec::new();

@@ -121,10 +121,11 @@ impl Executor {
                     // Submit flush to the scheduler so it runs on a worker thread,
                     // keeping the timer thread lightweight.
                     let p_clone = Arc::clone(&p);
-                    let _ = p.db.scheduler().submit(
-                        strata_engine::TaskPriority::Normal,
-                        move || crate::handlers::embed_hook::flush_embed_buffer(&p_clone),
-                    );
+                    let _ =
+                        p.db.scheduler()
+                            .submit(strata_engine::TaskPriority::Normal, move || {
+                                crate::handlers::embed_hook::flush_embed_buffer(&p_clone)
+                            });
                 }
             })
             .expect("failed to spawn embed refresh thread")
@@ -411,12 +412,7 @@ impl Executor {
                 })?;
                 let space = space.unwrap_or_else(|| "default".to_string());
                 self.ensure_space_registered(&branch, &space)?;
-                crate::handlers::event::event_batch_append(
-                    &self.primitives,
-                    branch,
-                    space,
-                    entries,
-                )
+                crate::handlers::event::event_batch_append(&self.primitives, branch, space, entries)
             }
             Command::EventAppend {
                 branch,

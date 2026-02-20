@@ -293,8 +293,12 @@ impl VectorStore {
 
             // Create backend using factory based on snapshot index_type
             let factory = match header.index_type {
-                1 => IndexBackendFactory::Hnsw(crate::primitives::vector::hnsw::HnswConfig::default()),
-                2 => IndexBackendFactory::SegmentedHnsw(crate::primitives::vector::segmented::SegmentedHnswConfig::default()),
+                1 => {
+                    IndexBackendFactory::Hnsw(crate::primitives::vector::hnsw::HnswConfig::default())
+                }
+                2 => IndexBackendFactory::SegmentedHnsw(
+                    crate::primitives::vector::segmented::SegmentedHnswConfig::default(),
+                ),
                 _ => IndexBackendFactory::default(),
             };
             let mut backend = factory.create(&config);

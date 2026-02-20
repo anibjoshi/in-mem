@@ -459,10 +459,9 @@ impl EventLog {
 
         let ns = self.namespace_for(branch_id, space);
 
-        let sequences = self.db.transaction_with_retry(
-            *branch_id,
-            retry_config,
-            |txn| {
+        let sequences = self
+            .db
+            .transaction_with_retry(*branch_id, retry_config, |txn| {
                 // Read current metadata
                 let meta_key = Key::new_event_meta(ns.clone());
                 let mut meta: EventLogMeta = match txn.get(&meta_key)? {
@@ -509,10 +508,8 @@ impl EventLog {
                     match meta.streams.get_mut(event_type) {
                         Some(stream_meta) => stream_meta.update(sequence, timestamp),
                         None => {
-                            meta.streams.insert(
-                                event_type.clone(),
-                                StreamMeta::new(sequence, timestamp),
-                            );
+                            meta.streams
+                                .insert(event_type.clone(), StreamMeta::new(sequence, timestamp));
                         }
                     }
 
@@ -527,8 +524,7 @@ impl EventLog {
                 txn.put(meta_key, to_stored_value(&meta)?)?;
 
                 Ok(sequences)
-            },
-        )?;
+            })?;
 
         // Post-commit: update inverted index
         let idx = self.db.extension::<crate::search::InvertedIndex>()?;
@@ -1206,13 +1202,17 @@ mod tests {
         log.append(&branch_id, "default", "tool_call", int_payload(5))
             .unwrap();
 
-        let tool_calls = log.get_by_type(&branch_id, "default", "tool_call", None, None).unwrap();
+        let tool_calls = log
+            .get_by_type(&branch_id, "default", "tool_call", None, None)
+            .unwrap();
         assert_eq!(tool_calls.len(), 3);
         assert_eq!(tool_calls[0].value.payload, int_payload(1));
         assert_eq!(tool_calls[1].value.payload, int_payload(3));
         assert_eq!(tool_calls[2].value.payload, int_payload(5));
 
-        let thoughts = log.get_by_type(&branch_id, "default", "thought", None, None).unwrap();
+        let thoughts = log
+            .get_by_type(&branch_id, "default", "thought", None, None)
+            .unwrap();
         assert_eq!(thoughts.len(), 1);
 
         let nonexistent = log
@@ -1455,10 +1455,10 @@ mod tests {
         let branch_id = BranchId::new();
 
         let entries = vec![
-            ("valid".to_string(), int_payload(1)),          // Valid
-            ("".to_string(), int_payload(2)),                // Invalid: empty event type
-            ("also_valid".to_string(), int_payload(3)),      // Valid
-            ("valid".to_string(), Value::Int(42)),           // Invalid: not an object
+            ("valid".to_string(), int_payload(1)),      // Valid
+            ("".to_string(), int_payload(2)),           // Invalid: empty event type
+            ("also_valid".to_string(), int_payload(3)), // Valid
+            ("valid".to_string(), Value::Int(42)),      // Invalid: not an object
         ];
 
         let results = log.batch_append(&branch_id, "default", entries).unwrap();

@@ -139,9 +139,7 @@ impl EmbedModel {
             let layer = TransformerLayer {
                 q_weight: backend.upload(
                     &st.tensor(&format!("{}.attention.self.query.weight", lp))
-                        .ok_or_else(|| {
-                            format!("Missing {}.attention.self.query.weight", lp)
-                        })?,
+                        .ok_or_else(|| format!("Missing {}.attention.self.query.weight", lp))?,
                 ),
                 q_bias: backend.upload_1d(
                     &st.tensor_1d(&format!("{}.attention.self.query.bias", lp))
@@ -157,9 +155,7 @@ impl EmbedModel {
                 ),
                 v_weight: backend.upload(
                     &st.tensor(&format!("{}.attention.self.value.weight", lp))
-                        .ok_or_else(|| {
-                            format!("Missing {}.attention.self.value.weight", lp)
-                        })?,
+                        .ok_or_else(|| format!("Missing {}.attention.self.value.weight", lp))?,
                 ),
                 v_bias: backend.upload_1d(
                     &st.tensor_1d(&format!("{}.attention.self.value.bias", lp))
@@ -167,30 +163,21 @@ impl EmbedModel {
                 ),
                 attn_output_weight: backend.upload(
                     &st.tensor(&format!("{}.attention.output.dense.weight", lp))
-                        .ok_or_else(|| {
-                            format!("Missing {}.attention.output.dense.weight", lp)
-                        })?,
+                        .ok_or_else(|| format!("Missing {}.attention.output.dense.weight", lp))?,
                 ),
                 attn_output_bias: backend.upload_1d(
                     &st.tensor_1d(&format!("{}.attention.output.dense.bias", lp))
-                        .ok_or_else(|| {
-                            format!("Missing {}.attention.output.dense.bias", lp)
-                        })?,
+                        .ok_or_else(|| format!("Missing {}.attention.output.dense.bias", lp))?,
                 ),
                 attn_ln_weight: backend.upload_1d(
-                    &st.tensor_1d(&format!(
-                        "{}.attention.output.LayerNorm.weight",
-                        lp
-                    ))
-                    .ok_or_else(|| {
-                        format!("Missing {}.attention.output.LayerNorm.weight", lp)
-                    })?,
+                    &st.tensor_1d(&format!("{}.attention.output.LayerNorm.weight", lp))
+                        .ok_or_else(|| {
+                            format!("Missing {}.attention.output.LayerNorm.weight", lp)
+                        })?,
                 ),
                 attn_ln_bias: backend.upload_1d(
                     &st.tensor_1d(&format!("{}.attention.output.LayerNorm.bias", lp))
-                        .ok_or_else(|| {
-                            format!("Missing {}.attention.output.LayerNorm.bias", lp)
-                        })?,
+                        .ok_or_else(|| format!("Missing {}.attention.output.LayerNorm.bias", lp))?,
                 ),
                 intermediate_weight: backend.upload(
                     &st.tensor(&format!("{}.intermediate.dense.weight", lp))
@@ -283,10 +270,8 @@ impl EmbedModel {
 
         // Tokenize all texts once (reused for both length sorting AND GPU forward pass)
         let t0 = Instant::now();
-        let tokenized: Vec<TokenizedInput> = texts
-            .iter()
-            .map(|t| self.tokenizer.tokenize(t))
-            .collect();
+        let tokenized: Vec<TokenizedInput> =
+            texts.iter().map(|t| self.tokenizer.tokenize(t)).collect();
         let token_lengths: Vec<usize> = tokenized.iter().map(|t| t.input_ids.len()).collect();
         let tokenize_us = t0.elapsed().as_micros();
 
@@ -367,7 +352,8 @@ impl EmbedModel {
         // of sub-batch N+1 with GPU execution of sub-batch N.
         let t0 = Instant::now();
         let (first_start, first_end) = sub_batch_ranges[0];
-        let mut next_prepared = Some(self.prepare_sub_batch(&sorted_tokenized[first_start..first_end]));
+        let mut next_prepared =
+            Some(self.prepare_sub_batch(&sorted_tokenized[first_start..first_end]));
         total_prepare_us += t0.elapsed().as_micros();
 
         for (range_idx, &(chunk_start, _chunk_end)) in sub_batch_ranges.iter().enumerate() {
@@ -397,7 +383,8 @@ impl EmbedModel {
             if range_idx + 1 < sub_batch_ranges.len() {
                 let t_prep = Instant::now();
                 let (next_start, next_end) = sub_batch_ranges[range_idx + 1];
-                next_prepared = Some(self.prepare_sub_batch(&sorted_tokenized[next_start..next_end]));
+                next_prepared =
+                    Some(self.prepare_sub_batch(&sorted_tokenized[next_start..next_end]));
                 total_prepare_us += t_prep.elapsed().as_micros();
             }
 
@@ -437,10 +424,7 @@ impl EmbedModel {
     }
 
     /// Prepare a sub-batch on CPU: pack pre-tokenized inputs and gather embeddings.
-    fn prepare_sub_batch(
-        &self,
-        tokenized: &[&TokenizedInput],
-    ) -> (BatchTokenizedInput, Tensor) {
+    fn prepare_sub_batch(&self, tokenized: &[&TokenizedInput]) -> (BatchTokenizedInput, Tensor) {
         let input = WordPieceTokenizer::pack_batch(tokenized);
         let hidden_cpu = self.gather_embeddings_batch(&input);
         (input, hidden_cpu)
@@ -642,8 +626,7 @@ impl EmbedModel {
         let context = b.batched_matmul(&scores, &v_t, total_batches, seq_len);
 
         // (B*H*S, D) -> (B*S, H*D): reassemble heads
-        let attn_output =
-            b.untranspose_heads(&context, batch_size, seq_len, NUM_HEADS, HEAD_DIM);
+        let attn_output = b.untranspose_heads(&context, batch_size, seq_len, NUM_HEADS, HEAD_DIM);
 
         // Output projection — single large matmul on (B*S, 384)
         let mut projected = b.matmul_transpose(&attn_output, &layer.attn_output_weight);

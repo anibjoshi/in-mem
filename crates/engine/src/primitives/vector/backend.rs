@@ -263,9 +263,9 @@ impl IndexBackendFactory {
             IndexBackendFactory::Hnsw(hnsw_config) => {
                 Box::new(super::hnsw::HnswBackend::new(config, hnsw_config.clone()))
             }
-            IndexBackendFactory::SegmentedHnsw(seg_config) => {
-                Box::new(super::segmented::SegmentedHnswBackend::new(config, seg_config.clone()))
-            }
+            IndexBackendFactory::SegmentedHnsw(seg_config) => Box::new(
+                super::segmented::SegmentedHnswBackend::new(config, seg_config.clone()),
+            ),
         }
     }
 

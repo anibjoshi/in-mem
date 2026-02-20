@@ -516,8 +516,13 @@ impl HnswGraph {
         // Paper lines 7-16: at each layer, find neighbors and create connections
         let start_layer = level.min(self.max_level);
         for layer in (0..=start_layer).rev() {
-            let candidates =
-                self.search_layer(embedding, current_entry, self.config.ef_construction, layer, heap);
+            let candidates = self.search_layer(
+                embedding,
+                current_entry,
+                self.config.ef_construction,
+                layer,
+                heap,
+            );
 
             // Paper line 9: SELECT-NEIGHBORS(q, W, M) — use M, not Mmax
             let selected = self.select_neighbors(&candidates, self.config.m);
@@ -1289,17 +1294,12 @@ impl CompactHnswGraph {
 
     /// Check if a vector exists and is alive
     pub(crate) fn contains(&self, id: VectorId) -> bool {
-        self.nodes
-            .get(&id)
-            .is_some_and(|n| n.deleted_at.is_none())
+        self.nodes.get(&id).is_some_and(|n| n.deleted_at.is_none())
     }
 
     /// Soft-delete a vector. Returns true if it was alive.
     pub(crate) fn delete_with_timestamp(&mut self, id: VectorId, deleted_at: u64) -> bool {
-        let was_alive = self
-            .nodes
-            .get(&id)
-            .is_some_and(|n| n.deleted_at.is_none());
+        let was_alive = self.nodes.get(&id).is_some_and(|n| n.deleted_at.is_none());
         if let Some(node) = self.nodes.get_mut(&id) {
             node.deleted_at = Some(deleted_at);
         }
@@ -1438,7 +1438,8 @@ impl VectorIndexBackend for HnswBackend {
         }
 
         // Insert into graph with timestamp
-        self.graph.insert_into_graph(id, embedding, created_at, &self.heap);
+        self.graph
+            .insert_into_graph(id, embedding, created_at, &self.heap);
 
         Ok(())
     }
@@ -1483,7 +1484,8 @@ impl VectorIndexBackend for HnswBackend {
     }
 
     fn search_at(&self, query: &[f32], k: usize, as_of_ts: u64) -> Vec<(VectorId, f32)> {
-        self.graph.search_at_with_heap(query, k, as_of_ts, &self.heap)
+        self.graph
+            .search_at_with_heap(query, k, as_of_ts, &self.heap)
     }
 
     fn search_in_range(

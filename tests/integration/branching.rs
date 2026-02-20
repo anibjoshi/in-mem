@@ -136,8 +136,14 @@ fn all_primitives_isolated_between_branches() {
         Value::Int(2)
     );
 
-    let events_a = p.event.get_by_type(&branch_a, "default", "e", None, None).unwrap();
-    let events_b = p.event.get_by_type(&branch_b, "default", "e", None, None).unwrap();
+    let events_a = p
+        .event
+        .get_by_type(&branch_a, "default", "e", None, None)
+        .unwrap();
+    let events_b = p
+        .event
+        .get_by_type(&branch_b, "default", "e", None, None)
+        .unwrap();
     assert_eq!(events_a.len(), 1);
     assert_eq!(events_b.len(), 1);
 

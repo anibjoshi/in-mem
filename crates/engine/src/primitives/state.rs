@@ -341,18 +341,18 @@ impl StateCell {
             .map(|(name, value)| (name.clone(), value.clone()))
             .collect();
 
-        let versions = self.db.transaction_with_retry(
-            *branch_id,
-            retry_config,
-            |txn| {
+        let versions = self
+            .db
+            .transaction_with_retry(*branch_id, retry_config, |txn| {
                 let mut versions = Vec::with_capacity(entries.len());
                 for (name, value) in &entries {
                     let key = self.key_for(branch_id, space, name);
 
                     let new_version = match txn.get(&key)? {
                         Some(v) => {
-                            let current: State = from_stored_value(&v)
-                                .map_err(|e| strata_core::StrataError::serialization(e.to_string()))?;
+                            let current: State = from_stored_value(&v).map_err(|e| {
+                                strata_core::StrataError::serialization(e.to_string())
+                            })?;
                             current.version.increment()
                         }
                         None => Version::counter(1),
@@ -368,8 +368,7 @@ impl StateCell {
                     versions.push(new_version);
                 }
                 Ok(versions)
-            },
-        )?;
+            })?;
 
         // Post-commit: update inverted index
         let index = self.db.extension::<crate::search::InvertedIndex>()?;

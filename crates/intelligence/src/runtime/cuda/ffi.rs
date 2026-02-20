@@ -39,7 +39,8 @@ pub const CUDA_SUCCESS: CUresult = 0;
 type FnCuInit = unsafe extern "C" fn(flags: u32) -> CUresult;
 type FnCuDeviceGetCount = unsafe extern "C" fn(count: *mut i32) -> CUresult;
 type FnCuDeviceGet = unsafe extern "C" fn(device: *mut CUdevice, ordinal: i32) -> CUresult;
-type FnCuCtxCreate = unsafe extern "C" fn(ctx: *mut CUcontext, flags: u32, dev: CUdevice) -> CUresult;
+type FnCuCtxCreate =
+    unsafe extern "C" fn(ctx: *mut CUcontext, flags: u32, dev: CUdevice) -> CUresult;
 type FnCuCtxDestroy = unsafe extern "C" fn(ctx: CUcontext) -> CUresult;
 type FnCuMemAlloc = unsafe extern "C" fn(dptr: *mut CUdeviceptr, bytesize: usize) -> CUresult;
 type FnCuMemFree = unsafe extern "C" fn(dptr: CUdeviceptr) -> CUresult;
@@ -69,13 +70,11 @@ type FnCuStreamCreate = unsafe extern "C" fn(stream: *mut CUstream, flags: u32) 
 type FnCuStreamSynchronize = unsafe extern "C" fn(stream: CUstream) -> CUresult;
 type FnCuStreamDestroy = unsafe extern "C" fn(stream: CUstream) -> CUresult;
 type FnCuModuleUnload = unsafe extern "C" fn(module: CUmodule) -> CUresult;
-type FnCuMemsetD32 =
-    unsafe extern "C" fn(dptr: CUdeviceptr, value: u32, count: usize) -> CUresult;
+type FnCuMemsetD32 = unsafe extern "C" fn(dptr: CUdeviceptr, value: u32, count: usize) -> CUresult;
 // Stream-ordered async memory operations (CUDA 11.2+).
 type FnCuMemAllocAsync =
     unsafe extern "C" fn(dptr: *mut CUdeviceptr, bytesize: usize, stream: CUstream) -> CUresult;
-type FnCuMemFreeAsync =
-    unsafe extern "C" fn(dptr: CUdeviceptr, stream: CUstream) -> CUresult;
+type FnCuMemFreeAsync = unsafe extern "C" fn(dptr: CUdeviceptr, stream: CUstream) -> CUresult;
 type FnCuMemsetD32Async =
     unsafe extern "C" fn(dptr: CUdeviceptr, value: u32, count: usize, stream: CUstream) -> CUresult;
 
@@ -124,8 +123,8 @@ macro_rules! load_sym {
     ($lib:expr, $name:expr) => {{
         let cname = concat!($name, "\0");
         let cstr = unsafe { CStr::from_bytes_with_nul_unchecked(cname.as_bytes()) };
-        let ptr = unsafe { $lib.sym(cstr) }
-            .map_err(|e| format!("failed to load {}: {}", $name, e))?;
+        let ptr =
+            unsafe { $lib.sym(cstr) }.map_err(|e| format!("failed to load {}: {}", $name, e))?;
         if ptr.is_null() {
             return Err(format!("{} resolved to null", $name));
         }
@@ -140,7 +139,9 @@ macro_rules! try_load_sym {
         let cname = concat!($name, "\0");
         let cstr = unsafe { CStr::from_bytes_with_nul_unchecked(cname.as_bytes()) };
         match unsafe { $lib.sym(cstr) } {
-            Ok(ptr) if !ptr.is_null() => Some(unsafe { std::mem::transmute::<*mut c_void, _>(ptr) }),
+            Ok(ptr) if !ptr.is_null() => {
+                Some(unsafe { std::mem::transmute::<*mut c_void, _>(ptr) })
+            }
             _ => None,
         }
     }};
@@ -172,13 +173,11 @@ impl CudaApi {
         let cu_memcpy_h_to_d: FnCuMemcpyHtoD = load_sym!(lib, "cuMemcpyHtoD_v2");
         let cu_memcpy_d_to_h: FnCuMemcpyDtoH = load_sym!(lib, "cuMemcpyDtoH_v2");
         let cu_module_load_data: FnCuModuleLoadData = load_sym!(lib, "cuModuleLoadData");
-        let cu_module_get_function: FnCuModuleGetFunction =
-            load_sym!(lib, "cuModuleGetFunction");
+        let cu_module_get_function: FnCuModuleGetFunction = load_sym!(lib, "cuModuleGetFunction");
         let cu_launch_kernel: FnCuLaunchKernel = load_sym!(lib, "cuLaunchKernel");
         let cu_ctx_synchronize: FnCuCtxSynchronize = load_sym!(lib, "cuCtxSynchronize");
         let cu_stream_create: FnCuStreamCreate = load_sym!(lib, "cuStreamCreate");
-        let cu_stream_synchronize: FnCuStreamSynchronize =
-            load_sym!(lib, "cuStreamSynchronize");
+        let cu_stream_synchronize: FnCuStreamSynchronize = load_sym!(lib, "cuStreamSynchronize");
         let cu_stream_destroy: FnCuStreamDestroy = load_sym!(lib, "cuStreamDestroy_v2");
         let cu_module_unload: FnCuModuleUnload = load_sym!(lib, "cuModuleUnload");
         let cu_memset_d32: FnCuMemsetD32 = load_sym!(lib, "cuMemsetD32_v2");
@@ -186,10 +185,8 @@ impl CudaApi {
         // Stream-ordered async memory operations (CUDA 11.2+). These avoid
         // the synchronous OS-level memory mapping that cuMemAlloc performs,
         // reducing per-allocation overhead from ~100us to <1us.
-        let cu_mem_alloc_async: Option<FnCuMemAllocAsync> =
-            try_load_sym!(lib, "cuMemAllocAsync");
-        let cu_mem_free_async: Option<FnCuMemFreeAsync> =
-            try_load_sym!(lib, "cuMemFreeAsync");
+        let cu_mem_alloc_async: Option<FnCuMemAllocAsync> = try_load_sym!(lib, "cuMemAllocAsync");
+        let cu_mem_free_async: Option<FnCuMemFreeAsync> = try_load_sym!(lib, "cuMemFreeAsync");
         let cu_memset_d32_async: Option<FnCuMemsetD32Async> =
             try_load_sym!(lib, "cuMemsetD32Async");
 
@@ -301,15 +298,13 @@ impl CudaApi {
     }
 
     /// Look up a kernel function by name inside a loaded module.
-    pub fn module_get_function(
-        &self,
-        module: CUmodule,
-        name: &CStr,
-    ) -> Result<CUfunction, String> {
+    pub fn module_get_function(&self, module: CUmodule, name: &CStr) -> Result<CUfunction, String> {
         let mut func: CUfunction = std::ptr::null_mut();
-        let rc =
-            unsafe { (self.cu_module_get_function)(&mut func, module, name.as_ptr()) };
-        check(rc, &format!("cuModuleGetFunction({})", name.to_string_lossy()))?;
+        let rc = unsafe { (self.cu_module_get_function)(&mut func, module, name.as_ptr()) };
+        check(
+            rc,
+            &format!("cuModuleGetFunction({})", name.to_string_lossy()),
+        )?;
         Ok(func)
     }
 
@@ -379,12 +374,7 @@ impl CudaApi {
     }
 
     /// Fill device memory with a 32-bit pattern (useful for zeroing).
-    pub fn memset_d32(
-        &self,
-        dptr: CUdeviceptr,
-        value: u32,
-        count: usize,
-    ) -> Result<(), String> {
+    pub fn memset_d32(&self, dptr: CUdeviceptr, value: u32, count: usize) -> Result<(), String> {
         let rc = unsafe { (self.cu_memset_d32)(dptr, value, count) };
         check(rc, "cuMemsetD32")
     }
@@ -408,11 +398,7 @@ impl CudaApi {
 
     /// Stream-ordered free (CUDA 11.2+). Falls back to synchronous
     /// `cuMemFree` on older drivers.
-    pub fn mem_free_async(
-        &self,
-        dptr: CUdeviceptr,
-        stream: CUstream,
-    ) -> Result<(), String> {
+    pub fn mem_free_async(&self, dptr: CUdeviceptr, stream: CUstream) -> Result<(), String> {
         if let Some(f) = self.cu_mem_free_async {
             let rc = unsafe { f(dptr, stream) };
             check(rc, "cuMemFreeAsync")
@@ -622,7 +608,20 @@ impl CublasApi {
     ) -> Result<(), String> {
         let rc = unsafe {
             (self.cublas_sgemm)(
-                self.handle, transa, transb, m, n, k, &alpha, a, lda, b, ldb, &beta, c, ldc,
+                self.handle,
+                transa,
+                transb,
+                m,
+                n,
+                k,
+                &alpha,
+                a,
+                lda,
+                b,
+                ldb,
+                &beta,
+                c,
+                ldc,
             )
         };
         if rc != CUBLAS_STATUS_SUCCESS {

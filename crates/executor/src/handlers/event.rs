@@ -159,9 +159,11 @@ pub fn event_get_by_type_at(
     as_of_ts: u64,
 ) -> Result<Output> {
     let core_branch_id = bridge::to_core_branch_id(&branch)?;
-    let events = convert_result(p.event.get_by_type(
-        &core_branch_id, &space, &event_type, None, None,
-    ))?;
+    let events =
+        convert_result(
+            p.event
+                .get_by_type(&core_branch_id, &space, &event_type, None, None),
+        )?;
 
     // Filter events by timestamp
     let versioned: Vec<VersionedValue> = events
@@ -232,10 +234,11 @@ pub fn event_batch_append(
         .map(|(_, event_type, payload)| (event_type, payload))
         .collect();
 
-    let engine_results = convert_result(
-        p.event
-            .batch_append(&core_branch_id, &space, engine_entries),
-    )?;
+    let engine_results = convert_result(p.event.batch_append(
+        &core_branch_id,
+        &space,
+        engine_entries,
+    ))?;
 
     // Merge engine results
     for (j, (orig_idx, _)) in embed_data.iter().enumerate() {

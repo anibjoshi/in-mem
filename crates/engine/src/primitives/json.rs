@@ -448,8 +448,9 @@ impl JsonStore {
                 let result = match txn.get(&key)? {
                     Some(stored) => {
                         let mut doc = Self::deserialize_doc(&stored)?;
-                        set_at_path(&mut doc.value, path, value.clone())
-                            .map_err(|e| StrataError::invalid_input(format!("Path error: {}", e)))?;
+                        set_at_path(&mut doc.value, path, value.clone()).map_err(|e| {
+                            StrataError::invalid_input(format!("Path error: {}", e))
+                        })?;
                         doc.touch();
                         let serialized = Self::serialize_doc(&doc)?;
                         txn.put(key, serialized)?;
@@ -1897,7 +1898,11 @@ mod tests {
 
         let entries = vec![
             ("doc1".to_string(), JsonPath::root(), JsonValue::from(42i64)),
-            ("doc2".to_string(), JsonPath::root(), JsonValue::from("hello")),
+            (
+                "doc2".to_string(),
+                JsonPath::root(),
+                JsonValue::from("hello"),
+            ),
         ];
 
         let results = store
@@ -1941,12 +1946,7 @@ mod tests {
         let branch_id = BranchId::new();
 
         store
-            .create(
-                &branch_id,
-                "default",
-                "existing",
-                JsonValue::from("old"),
-            )
+            .create(&branch_id, "default", "existing", JsonValue::from("old"))
             .unwrap();
 
         let entries = vec![(

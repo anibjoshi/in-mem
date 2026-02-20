@@ -1079,8 +1079,7 @@ impl VectorStore {
         // stay in anonymous memory forever, causing OOM on large datasets.
         let data_dir = self.db.data_dir();
         if !data_dir.as_os_str().is_empty() {
-            let vec_path =
-                super::recovery::mmap_path(data_dir, id.branch_id, &id.name);
+            let vec_path = super::recovery::mmap_path(data_dir, id.branch_id, &id.name);
             if let Some(parent) = vec_path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
@@ -1254,8 +1253,8 @@ impl VectorStore {
         collection: &str,
         candidates: &[(VectorId, f32)],
     ) -> VectorResult<Vec<VectorMatchWithSource>> {
-        use strata_core::traits::SnapshotView;
         use std::collections::HashMap;
+        use strata_core::traits::SnapshotView;
 
         // Build a lookup set of target VectorIds → score
         let mut target_map: HashMap<u64, f32> = HashMap::with_capacity(candidates.len());
@@ -2023,26 +2022,29 @@ impl VectorStore {
                 // If we have a source branch, build a map from user_key → VectorId
                 // for the source collection. This lets us determine which backend
                 // to read from when VectorIds collide between source and target.
-                let source_key_to_vid: BTreeMap<Vec<u8>, u64> = if let Some(src_bid) = source_branch_id {
-                    let src_ns = Namespace::for_branch_space(src_bid, space);
-                    let src_prefix = Key::new_vector(src_ns, &collection_name, "");
-                    if let Ok(src_entries) = snapshot.scan_prefix(&src_prefix) {
-                        src_entries
-                            .iter()
-                            .filter_map(|(k, vv)| {
-                                if let Value::Bytes(b) = &vv.value {
-                                    VectorRecord::from_bytes(b).ok().map(|r| (k.user_key.clone(), r.vector_id))
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect()
+                let source_key_to_vid: BTreeMap<Vec<u8>, u64> =
+                    if let Some(src_bid) = source_branch_id {
+                        let src_ns = Namespace::for_branch_space(src_bid, space);
+                        let src_prefix = Key::new_vector(src_ns, &collection_name, "");
+                        if let Ok(src_entries) = snapshot.scan_prefix(&src_prefix) {
+                            src_entries
+                                .iter()
+                                .filter_map(|(k, vv)| {
+                                    if let Value::Bytes(b) = &vv.value {
+                                        VectorRecord::from_bytes(b)
+                                            .ok()
+                                            .map(|r| (k.user_key.clone(), r.vector_id))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect()
+                        } else {
+                            BTreeMap::new()
+                        }
                     } else {
                         BTreeMap::new()
-                    }
-                } else {
-                    BTreeMap::new()
-                };
+                    };
 
                 // Create fresh backend
                 let mut backend = factory.create(&config);
@@ -2104,7 +2106,8 @@ impl VectorStore {
                                 let backends = state.backends.read();
                                 match backends.get(&src_cid).and_then(|b| b.get(old_vid)) {
                                     Some(emb) => emb.to_vec(),
-                                    None => match old_backend.as_ref().and_then(|b| b.get(old_vid)) {
+                                    None => match old_backend.as_ref().and_then(|b| b.get(old_vid))
+                                    {
                                         Some(emb) => emb.to_vec(),
                                         None => {
                                             tracing::warn!(
@@ -2164,11 +2167,8 @@ impl VectorStore {
                     // Allocate a fresh VectorId to avoid collisions between
                     // independently-created branches that share the same ID space.
                     let new_vid = backend.allocate_id();
-                    let _ = backend.insert_with_timestamp(
-                        new_vid,
-                        &embedding,
-                        vec_record.created_at,
-                    );
+                    let _ =
+                        backend.insert_with_timestamp(new_vid, &embedding, vec_record.created_at);
 
                     // If the VectorId changed, queue a KV update so that
                     // get() can resolve the correct backend entry.
@@ -2226,10 +2226,7 @@ impl VectorStore {
                 backend.rebuild_index();
 
                 // Replace existing backend atomically
-                state
-                    .backends
-                    .write()
-                    .insert(collection_id, backend);
+                state.backends.write().insert(collection_id, backend);
 
                 total_collections += 1;
                 total_vectors += collection_vector_count;
@@ -2411,7 +2408,8 @@ impl strata_storage::PrimitiveStorageExt for VectorStore {
 
                 // Freeze newly-built graphs to disk for next startup
                 if use_mmap {
-                    let gdir = super::graph_dir(data_dir, collection_id.branch_id, &collection_id.name);
+                    let gdir =
+                        super::graph_dir(data_dir, collection_id.branch_id, &collection_id.name);
                     if let Err(e) = backend.freeze_graphs_to_disk(&gdir) {
                         tracing::warn!(
                             target: "strata::vector",
@@ -3460,7 +3458,10 @@ mod tests {
         assert_eq!(entry.embedding, vec![0.0, 1.0, 0.0]);
 
         // get() must return None for the deleted vector
-        assert!(store.get(branch_id, "default", "test", "a").unwrap().is_none());
+        assert!(store
+            .get(branch_id, "default", "test", "a")
+            .unwrap()
+            .is_none());
     }
 
     #[test]

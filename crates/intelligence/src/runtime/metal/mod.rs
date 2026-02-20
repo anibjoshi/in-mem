@@ -332,12 +332,8 @@ impl MetalBackend {
                 }
 
                 let mut pso_error: Id = NIL;
-                let pso = msg_send_id_id_err(
-                    device,
-                    sels.new_compute_pipeline,
-                    func,
-                    &mut pso_error,
-                );
+                let pso =
+                    msg_send_id_id_err(device, sels.new_compute_pipeline, func, &mut pso_error);
                 msg_send_void(func, sels.release);
 
                 if pso == NIL {
@@ -428,12 +424,8 @@ impl MetalBackend {
                 }
 
                 let mut pso_error: Id = NIL;
-                let pso = msg_send_id_id_err(
-                    device,
-                    sels.new_compute_pipeline,
-                    func,
-                    &mut pso_error,
-                );
+                let pso =
+                    msg_send_id_id_err(device, sels.new_compute_pipeline, func, &mut pso_error);
                 msg_send_void(func, sels.release);
 
                 if pso == NIL {
@@ -561,10 +553,7 @@ impl MetalBackend {
     /// Create a Metal buffer containing f16 data converted from `&[f32]`.
     unsafe fn create_buffer_f16_from_f32(&self, data: &[f32]) -> Id {
         let f16_data: Vec<u16> = data.iter().map(|&f| f32_to_f16(f)).collect();
-        let bytes = std::slice::from_raw_parts(
-            f16_data.as_ptr() as *const u8,
-            f16_data.len() * 2,
-        );
+        let bytes = std::slice::from_raw_parts(f16_data.as_ptr() as *const u8, f16_data.len() * 2);
         self.create_buffer(bytes)
     }
 
@@ -625,7 +614,11 @@ impl MetalBackend {
         let enc = *enc;
         // Memory barrier: ensure all buffer writes from prior dispatches are
         // visible before this dispatch reads them.
-        msg_send_void_nsuint(enc, self.sels.memory_barrier_with_scope, MTL_BARRIER_SCOPE_BUFFERS);
+        msg_send_void_nsuint(
+            enc,
+            self.sels.memory_barrier_with_scope,
+            MTL_BARRIER_SCOPE_BUFFERS,
+        );
         // Set the pipeline for this dispatch.
         msg_send_void_id(enc, self.sels.set_compute_pipeline, pso);
         enc
@@ -654,13 +647,7 @@ impl MetalBackend {
 
     /// Bind small constant data (e.g. a single u32 or f32) at `index`.
     unsafe fn set_bytes(&self, enc: Id, data: &[u8], index: usize) {
-        msg_send_set_bytes(
-            enc,
-            self.sels.set_bytes,
-            data.as_ptr(),
-            data.len(),
-            index,
-        );
+        msg_send_set_bytes(enc, self.sels.set_bytes, data.as_ptr(), data.len(), index);
     }
 
     /// Bind a `u32` parameter at `index`.
@@ -684,43 +671,43 @@ impl MetalBackend {
         msg_send_dispatch(
             enc,
             self.sels.dispatch_threadgroups,
-            groups, 1, 1,   // threadgroups
-            threads, 1, 1,  // threads per threadgroup
+            groups,
+            1,
+            1, // threadgroups
+            threads,
+            1,
+            1, // threads per threadgroup
         );
     }
 
     /// Dispatch a 2D grid: ceil(width/tx) x ceil(height/ty) threadgroups.
-    unsafe fn dispatch_2d(
-        &self,
-        enc: Id,
-        width: usize,
-        height: usize,
-        tx: usize,
-        ty: usize,
-    ) {
+    unsafe fn dispatch_2d(&self, enc: Id, width: usize, height: usize, tx: usize, ty: usize) {
         let gx = (width + tx - 1) / tx;
         let gy = (height + ty - 1) / ty;
         msg_send_dispatch(
             enc,
             self.sels.dispatch_threadgroups,
-            gx, gy, 1,  // threadgroups
-            tx, ty, 1,  // threads per threadgroup
+            gx,
+            gy,
+            1, // threadgroups
+            tx,
+            ty,
+            1, // threads per threadgroup
         );
     }
 
     /// Dispatch with one threadgroup per row, `threads_per_group` threads each.
     /// Used by reduction kernels (layer_norm, softmax_rows).
-    unsafe fn dispatch_rows(
-        &self,
-        enc: Id,
-        num_rows: usize,
-        threads_per_group: usize,
-    ) {
+    unsafe fn dispatch_rows(&self, enc: Id, num_rows: usize, threads_per_group: usize) {
         msg_send_dispatch(
             enc,
             self.sels.dispatch_threadgroups,
-            num_rows, 1, 1,             // threadgroups
-            threads_per_group, 1, 1,    // threads per threadgroup
+            num_rows,
+            1,
+            1, // threadgroups
+            threads_per_group,
+            1,
+            1, // threads per threadgroup
         );
     }
 }
@@ -776,12 +763,7 @@ impl ComputeBackend for MetalBackend {
             // simdgroup_matrix: 32x32 tiles, 128 threads (4 simdgroups)
             let gx = (n + 31) / 32;
             let gy = (m + 31) / 32;
-            msg_send_dispatch(
-                enc,
-                self.sels.dispatch_threadgroups,
-                gx, gy, 1,
-                128, 1, 1,
-            );
+            msg_send_dispatch(enc, self.sels.dispatch_threadgroups, gx, gy, 1, 128, 1, 1);
 
             Self::wrap(out_buf, out_bytes, m, n)
         }
@@ -810,12 +792,7 @@ impl ComputeBackend for MetalBackend {
             // simdgroup_matrix: 32x32 tiles, 128 threads (4 simdgroups)
             let gx = (n + 31) / 32;
             let gy = (m + 31) / 32;
-            msg_send_dispatch(
-                enc,
-                self.sels.dispatch_threadgroups,
-                gx, gy, 1,
-                128, 1, 1,
-            );
+            msg_send_dispatch(enc, self.sels.dispatch_threadgroups, gx, gy, 1, 128, 1, 1);
 
             Self::wrap(out_buf, out_bytes, m, n)
         }
@@ -1068,8 +1045,12 @@ impl ComputeBackend for MetalBackend {
             msg_send_dispatch(
                 enc,
                 self.sels.dispatch_threadgroups,
-                gx, gy, batch_size, // threadgroups
-                128, 1, 1,          // threads per threadgroup
+                gx,
+                gy,
+                batch_size, // threadgroups
+                128,
+                1,
+                1, // threads per threadgroup
             );
 
             Self::wrap(out_buf, out_bytes, batch_size * seq_len, seq_len)
@@ -1103,8 +1084,12 @@ impl ComputeBackend for MetalBackend {
             msg_send_dispatch(
                 enc,
                 self.sels.dispatch_threadgroups,
-                gx, gy, batch_size, // threadgroups
-                128, 1, 1,          // threads per threadgroup
+                gx,
+                gy,
+                batch_size, // threadgroups
+                128,
+                1,
+                1, // threads per threadgroup
             );
 
             Self::wrap(out_buf, out_bytes, batch_size * seq_len, k)
@@ -1199,8 +1184,12 @@ impl ComputeBackend for MetalBackend {
             msg_send_dispatch(
                 enc,
                 self.sels.dispatch_threadgroups,
-                gx, gy, num_heads, // threadgroups
-                16, 16, 1,         // threads per threadgroup
+                gx,
+                gy,
+                num_heads, // threadgroups
+                16,
+                16,
+                1, // threads per threadgroup
             );
 
             Self::wrap(out_buf, out_bytes, total_out_rows, head_dim)
@@ -1239,8 +1228,12 @@ impl ComputeBackend for MetalBackend {
             msg_send_dispatch(
                 enc,
                 self.sels.dispatch_threadgroups,
-                gx, gy, num_heads, // threadgroups
-                16, 16, 1,         // threads per threadgroup
+                gx,
+                gy,
+                num_heads, // threadgroups
+                16,
+                16,
+                1, // threads per threadgroup
             );
 
             Self::wrap(out_buf, out_bytes, total_out_rows, out_cols)
@@ -1296,9 +1289,8 @@ mod tests {
     fn test_f16_roundtrip_common_values() {
         // Values commonly found in embedding weights / activations
         let values = [
-            0.0f32, -0.0, 1.0, -1.0, 0.5, -0.5, 0.1, -0.1,
-            0.001, 0.01, 0.25, 0.75, 2.0, 4.0, 8.0, 16.0,
-            100.0, -100.0, 0.333, -0.707,
+            0.0f32, -0.0, 1.0, -1.0, 0.5, -0.5, 0.1, -0.1, 0.001, 0.01, 0.25, 0.75, 2.0, 4.0, 8.0,
+            16.0, 100.0, -100.0, 0.333, -0.707,
         ];
         for &v in &values {
             let h = f32_to_f16(v);
@@ -1307,7 +1299,9 @@ mod tests {
             assert!(
                 (back - v).abs() <= tol,
                 "roundtrip failed for {}: f16 bits=0x{:04X}, back={}",
-                v, h, back
+                v,
+                h,
+                back
             );
         }
     }
@@ -1368,12 +1362,20 @@ mod tests {
         let mid = (1.0 + exact) / 2.0; // midpoint
         let h = f32_to_f16(mid);
         // Should round to even (0x3C00 is even, 0x3C01 is odd) → 0x3C00
-        assert_eq!(h, 0x3C00, "tie should round to even: mid={}, h=0x{:04X}", mid, h);
+        assert_eq!(
+            h, 0x3C00,
+            "tie should round to even: mid={}, h=0x{:04X}",
+            mid, h
+        );
 
         // Value slightly above midpoint should round up
         let above = mid + 1e-7;
         let h_above = f32_to_f16(above);
-        assert_eq!(h_above, 0x3C01, "above midpoint should round up: val={}, h=0x{:04X}", above, h_above);
+        assert_eq!(
+            h_above, 0x3C01,
+            "above midpoint should round up: val={}, h=0x{:04X}",
+            above, h_above
+        );
     }
 
     #[test]
@@ -1450,7 +1452,14 @@ mod tests {
     }
 
     fn assert_vecs_close(a: &[f32], b: &[f32], tol: f32, label: &str) {
-        assert_eq!(a.len(), b.len(), "{}: length mismatch {} vs {}", label, a.len(), b.len());
+        assert_eq!(
+            a.len(),
+            b.len(),
+            "{}: length mismatch {} vs {}",
+            label,
+            a.len(),
+            b.len()
+        );
         for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
             assert!(
                 (x - y).abs() <= tol,
@@ -1589,16 +1598,9 @@ mod tests {
         let mask_data: Vec<u32> = vec![1, 1, 0, 0];
 
         // GPU
-        let mut scores_dt =
-            b.upload(&Tensor::from_slice(&scores_data, total_rows, seq));
+        let mut scores_dt = b.upload(&Tensor::from_slice(&scores_data, total_rows, seq));
         let mask_dt = b.upload_mask(&mask_data);
-        b.multi_head_batched_attention_mask(
-            &mut scores_dt,
-            &mask_dt,
-            batch,
-            seq,
-            heads,
-        );
+        b.multi_head_batched_attention_mask(&mut scores_dt, &mask_dt, batch, seq, heads);
         let gpu_out = b.download(&scores_dt);
 
         // CPU reference
@@ -1608,10 +1610,30 @@ mod tests {
         assert_vecs_close(&gpu_out.data, &scores_data, 1.0, "multi_head_mask_basic");
         // Verify masked positions are -10000
         for r in 0..total_rows {
-            assert!((gpu_out.data[r * seq + 2] - (-10000.0)).abs() < 1.0, "row {} col 2 should be masked, got {}", r, gpu_out.data[r * seq + 2]);
-            assert!((gpu_out.data[r * seq + 3] - (-10000.0)).abs() < 1.0, "row {} col 3 should be masked, got {}", r, gpu_out.data[r * seq + 3]);
-            assert!((gpu_out.data[r * seq + 0] - 1.0).abs() < 0.01, "row {} col 0 should be unmasked, got {}", r, gpu_out.data[r * seq + 0]);
-            assert!((gpu_out.data[r * seq + 1] - 1.0).abs() < 0.01, "row {} col 1 should be unmasked, got {}", r, gpu_out.data[r * seq + 1]);
+            assert!(
+                (gpu_out.data[r * seq + 2] - (-10000.0)).abs() < 1.0,
+                "row {} col 2 should be masked, got {}",
+                r,
+                gpu_out.data[r * seq + 2]
+            );
+            assert!(
+                (gpu_out.data[r * seq + 3] - (-10000.0)).abs() < 1.0,
+                "row {} col 3 should be masked, got {}",
+                r,
+                gpu_out.data[r * seq + 3]
+            );
+            assert!(
+                (gpu_out.data[r * seq + 0] - 1.0).abs() < 0.01,
+                "row {} col 0 should be unmasked, got {}",
+                r,
+                gpu_out.data[r * seq + 0]
+            );
+            assert!(
+                (gpu_out.data[r * seq + 1] - 1.0).abs() < 0.01,
+                "row {} col 1 should be unmasked, got {}",
+                r,
+                gpu_out.data[r * seq + 1]
+            );
         }
     }
 
@@ -1625,20 +1647,18 @@ mod tests {
         // Mask: batch 0 = [1,1,0], batch 1 = [1,0,0]
         let mask_data: Vec<u32> = vec![1, 1, 0, 1, 0, 0];
 
-        let mut scores_dt =
-            b.upload(&Tensor::from_slice(&scores_data, total_rows, seq));
+        let mut scores_dt = b.upload(&Tensor::from_slice(&scores_data, total_rows, seq));
         let mask_dt = b.upload_mask(&mask_data);
-        b.multi_head_batched_attention_mask(
-            &mut scores_dt,
-            &mask_dt,
-            batch,
-            seq,
-            heads,
-        );
+        b.multi_head_batched_attention_mask(&mut scores_dt, &mask_dt, batch, seq, heads);
         let gpu_out = b.download(&scores_dt);
 
         cpu_multi_head_mask(&mut scores_data, &mask_data, batch, seq, heads);
-        assert_vecs_close(&gpu_out.data, &scores_data, 1.0, "multi_head_mask_multi_batch");
+        assert_vecs_close(
+            &gpu_out.data,
+            &scores_data,
+            1.0,
+            "multi_head_mask_multi_batch",
+        );
     }
 
     #[test]
@@ -1647,24 +1667,18 @@ mod tests {
         let b = backend();
         let (batch, seq, heads) = (1, 15, 12);
         let total_rows = batch * heads * seq;
-        let mut scores_data: Vec<f32> =
-            (0..(total_rows * seq)).map(|i| (i as f32 * 0.001).sin()).collect();
+        let mut scores_data: Vec<f32> = (0..(total_rows * seq))
+            .map(|i| (i as f32 * 0.001).sin())
+            .collect();
         // First 10 tokens valid, last 5 padding
         let mut mask_data = vec![1u32; seq];
         for i in 10..seq {
             mask_data[i] = 0;
         }
 
-        let mut scores_dt =
-            b.upload(&Tensor::from_slice(&scores_data, total_rows, seq));
+        let mut scores_dt = b.upload(&Tensor::from_slice(&scores_data, total_rows, seq));
         let mask_dt = b.upload_mask(&mask_data);
-        b.multi_head_batched_attention_mask(
-            &mut scores_dt,
-            &mask_dt,
-            batch,
-            seq,
-            heads,
-        );
+        b.multi_head_batched_attention_mask(&mut scores_dt, &mask_dt, batch, seq, heads);
         let gpu_out = b.download(&scores_dt);
 
         cpu_multi_head_mask(&mut scores_data, &mask_data, batch, seq, heads);
@@ -1801,8 +1815,12 @@ mod tests {
         let b = backend();
         let (batch, s, k) = (12, 64, 32);
         // A: (batch*S, K), B: (batch*S, K), C: (batch*S, S)
-        let a_data: Vec<f32> = (0..batch * s * k).map(|i| ((i as f32) * 0.001).sin()).collect();
-        let b_data: Vec<f32> = (0..batch * s * k).map(|i| ((i as f32) * 0.002).cos()).collect();
+        let a_data: Vec<f32> = (0..batch * s * k)
+            .map(|i| ((i as f32) * 0.001).sin())
+            .collect();
+        let b_data: Vec<f32> = (0..batch * s * k)
+            .map(|i| ((i as f32) * 0.002).cos())
+            .collect();
 
         let a_dt = b.upload(&Tensor::from_slice(&a_data, batch * s, k));
         let b_dt = b.upload(&Tensor::from_slice(&b_data, batch * s, k));
@@ -1836,8 +1854,12 @@ mod tests {
         let b = backend();
         let (batch, s, k) = (12, 64, 32);
         // A: (batch*S, S), B: (batch*S, K), C: (batch*S, K)
-        let a_data: Vec<f32> = (0..batch * s * s).map(|i| ((i as f32) * 0.001).sin()).collect();
-        let b_data: Vec<f32> = (0..batch * s * k).map(|i| ((i as f32) * 0.002).cos()).collect();
+        let a_data: Vec<f32> = (0..batch * s * s)
+            .map(|i| ((i as f32) * 0.001).sin())
+            .collect();
+        let b_data: Vec<f32> = (0..batch * s * k)
+            .map(|i| ((i as f32) * 0.002).cos())
+            .collect();
 
         let a_dt = b.upload(&Tensor::from_slice(&a_data, batch * s, s));
         let b_dt = b.upload(&Tensor::from_slice(&b_data, batch * s, k));
@@ -1945,9 +1967,18 @@ mod tests {
         assert_eq!(result.rows, m);
         assert_eq!(result.cols, n);
         // Verify specific values: C[i,j] = a[i] * b[j] (f16 tolerance)
-        assert!((result.data[0] - 1.0 * 0.0).abs() < 0.01, "C[0,0] = 1*0 = 0");
-        assert!((result.data[1] - 1.0 * 0.5).abs() < 0.01, "C[0,1] = 1*0.5 = 0.5");
-        assert!((result.data[n] - 2.0 * 0.0).abs() < 0.01, "C[1,0] = 2*0 = 0");
+        assert!(
+            (result.data[0] - 1.0 * 0.0).abs() < 0.01,
+            "C[0,0] = 1*0 = 0"
+        );
+        assert!(
+            (result.data[1] - 1.0 * 0.5).abs() < 0.01,
+            "C[0,1] = 1*0.5 = 0.5"
+        );
+        assert!(
+            (result.data[n] - 2.0 * 0.0).abs() < 0.01,
+            "C[1,0] = 2*0 = 0"
+        );
         assert_vecs_close(&result.data, &expected, 0.1, "gemm_tiny_k");
     }
 
@@ -1975,8 +2006,12 @@ mod tests {
         // S=50 and K=25 are not multiples of 32 — exercises edge tiles in batched path
         let b = backend();
         let (batch, s, k) = (3, 50, 25);
-        let a_data: Vec<f32> = (0..batch * s * k).map(|i| ((i as f32) * 0.003).sin()).collect();
-        let b_data: Vec<f32> = (0..batch * s * k).map(|i| ((i as f32) * 0.004).cos()).collect();
+        let a_data: Vec<f32> = (0..batch * s * k)
+            .map(|i| ((i as f32) * 0.003).sin())
+            .collect();
+        let b_data: Vec<f32> = (0..batch * s * k)
+            .map(|i| ((i as f32) * 0.004).cos())
+            .collect();
 
         let a_dt = b.upload(&Tensor::from_slice(&a_data, batch * s, k));
         let b_dt = b.upload(&Tensor::from_slice(&b_data, batch * s, k));
@@ -2001,7 +2036,12 @@ mod tests {
 
         assert_eq!(result.rows, batch * s);
         assert_eq!(result.cols, s);
-        assert_vecs_close(&result.data, &expected, 0.5, "batched_gemm_transpose_non_aligned");
+        assert_vecs_close(
+            &result.data,
+            &expected,
+            0.5,
+            "batched_gemm_transpose_non_aligned",
+        );
     }
 
     #[test]
@@ -2009,8 +2049,12 @@ mod tests {
         // S=50 and K=25 are not multiples of 32
         let b = backend();
         let (batch, s, k) = (3, 50, 25);
-        let a_data: Vec<f32> = (0..batch * s * s).map(|i| ((i as f32) * 0.0003).sin()).collect();
-        let b_data: Vec<f32> = (0..batch * s * k).map(|i| ((i as f32) * 0.004).cos()).collect();
+        let a_data: Vec<f32> = (0..batch * s * s)
+            .map(|i| ((i as f32) * 0.0003).sin())
+            .collect();
+        let b_data: Vec<f32> = (0..batch * s * k)
+            .map(|i| ((i as f32) * 0.004).cos())
+            .collect();
 
         let a_dt = b.upload(&Tensor::from_slice(&a_data, batch * s, s));
         let b_dt = b.upload(&Tensor::from_slice(&b_data, batch * s, k));
@@ -2064,7 +2108,11 @@ mod tests {
         assert_eq!(out.rows, 3);
         assert_eq!(out.cols, 2);
         for val in &out.data {
-            assert!(*val > 0.0, "GELU of positive input should be positive, got {}", val);
+            assert!(
+                *val > 0.0,
+                "GELU of positive input should be positive, got {}",
+                val
+            );
         }
         // gelu(11) ≈ 11.0 (very close for large inputs); f16 tolerance
         assert!(

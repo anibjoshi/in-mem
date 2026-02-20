@@ -55,7 +55,11 @@ pub struct PostingEntry {
 impl PostingEntry {
     /// Create a new posting entry
     pub fn new(doc_id: u32, tf: u32, doc_len: u32) -> Self {
-        PostingEntry { doc_id, tf, doc_len }
+        PostingEntry {
+            doc_id,
+            tf,
+            doc_len,
+        }
     }
 }
 

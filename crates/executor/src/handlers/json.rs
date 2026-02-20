@@ -285,8 +285,11 @@ pub fn json_batch_set(
         .map(|(_, key, path, value)| (key, path, value))
         .collect();
 
-    let engine_results =
-        convert_result(p.json.batch_set_or_create(&branch_id, &space, engine_entries))?;
+    let engine_results = convert_result(p.json.batch_set_or_create(
+        &branch_id,
+        &space,
+        engine_entries,
+    ))?;
 
     // Merge engine results
     for (j, orig_idx) in orig_indices.iter().enumerate() {

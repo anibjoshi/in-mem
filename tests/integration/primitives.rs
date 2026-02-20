@@ -231,7 +231,9 @@ mod event_single {
         assert!(seq2 > seq1);
         assert!(seq3 > seq2);
 
-        let events = event.get_by_type(&branch_id, "default", "audit", None, None).unwrap();
+        let events = event
+            .get_by_type(&branch_id, "default", "audit", None, None)
+            .unwrap();
         assert_eq!(events.len(), 3);
     }
 
@@ -279,7 +281,9 @@ mod event_single {
 
         // Events can only be appended, not modified or deleted
         // The API doesn't provide update/delete methods for events
-        let events = event.get_by_type(&branch_id, "default", "audit", None, None).unwrap();
+        let events = event
+            .get_by_type(&branch_id, "default", "audit", None, None)
+            .unwrap();
         assert_eq!(events.len(), 1);
     }
 }
