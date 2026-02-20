@@ -173,6 +173,97 @@ pub fn kv_list(
     }
 }
 
+/// Handle KvBatchPut command.
+///
+/// Pre-validates all entries, passes valid ones to the engine, and merges
+/// validation errors with engine results into `Vec<BatchItemResult>`.
+pub fn kv_batch_put(
+    p: &Arc<Primitives>,
+    branch: BranchId,
+    space: String,
+    entries: Vec<crate::types::BatchKvEntry>,
+) -> Result<Output> {
+    require_branch_exists(p, &branch)?;
+    let branch_id = to_core_branch_id(&branch)?;
+
+    if entries.is_empty() {
+        return Ok(Output::BatchResults(Vec::new()));
+    }
+
+    let n = entries.len();
+    let mut results: Vec<crate::types::BatchItemResult> = vec![
+        crate::types::BatchItemResult {
+            version: None,
+            error: None,
+        };
+        n
+    ];
+
+    // Pre-validate entries, collect valid ones with their original indices
+    let mut valid_entries: Vec<(usize, String, Value)> = Vec::with_capacity(n);
+    for (i, entry) in entries.into_iter().enumerate() {
+        if let Err(e) = validate_key(&entry.key) {
+            results[i].error = Some(e.to_string());
+            continue;
+        }
+        if let Err(e) = validate_value(&entry.value, &p.limits) {
+            results[i].error = Some(e.to_string());
+            continue;
+        }
+        valid_entries.push((i, entry.key, entry.value));
+    }
+
+    if valid_entries.is_empty() {
+        return Ok(Output::BatchResults(results));
+    }
+
+    // Extract text for embed hooks BEFORE values are consumed
+    let embed_data: Vec<(usize, String, Option<String>)> = valid_entries
+        .iter()
+        .map(|(idx, key, value)| {
+            let text = super::embed_hook::extract_text(value);
+            (*idx, key.clone(), text)
+        })
+        .collect();
+
+    // Build engine entries (key, value) pairs
+    let engine_entries: Vec<(String, Value)> = valid_entries
+        .into_iter()
+        .map(|(_, key, value)| (key, value))
+        .collect();
+
+    let engine_results = convert_result(p.kv.batch_put(&branch_id, &space, engine_entries))?;
+
+    // Merge engine results back into the results vec
+    for (j, (orig_idx, _, _)) in embed_data.iter().enumerate() {
+        match &engine_results[j] {
+            Ok(version) => {
+                results[*orig_idx].version = Some(extract_version(version));
+            }
+            Err(e) => {
+                results[*orig_idx].error = Some(e.clone());
+            }
+        }
+    }
+
+    // Post-commit: fire embed hooks for successful items
+    for (_, key, text) in &embed_data {
+        if let Some(ref text) = text {
+            super::embed_hook::maybe_embed_text(
+                p,
+                branch_id,
+                &space,
+                super::embed_hook::SHADOW_KV,
+                key,
+                text,
+                strata_core::EntityRef::kv(branch_id, key),
+            );
+        }
+    }
+
+    Ok(Output::BatchResults(results))
+}
+
 /// Handle KvList with as_of timestamp (time-travel read).
 pub fn kv_list_at(
     p: &Arc<Primitives>,

@@ -85,6 +85,9 @@ pub enum Output {
     /// Multiple version numbers (for batch operations)
     Versions(Vec<u64>),
 
+    /// Per-item results for batch operations (positionally maps to input entries)
+    BatchResults(Vec<BatchItemResult>),
+
     // ==================== Branch-specific ====================
     /// Optional versioned branch info (for branch_get which may not find a branch)
     MaybeBranchInfo(Option<VersionedBranchInfo>),

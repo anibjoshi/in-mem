@@ -217,6 +217,67 @@ impl KVStore {
         })
     }
 
+    // ========== Batch API ==========
+
+    /// Put multiple key-value pairs in a single transaction.
+    ///
+    /// All items share one lock acquisition, one WAL record, and one commit.
+    /// Each entry reports success/failure independently via `Result<Version, String>`.
+    /// Blind writes (empty read_set) → validation skipped.
+    pub fn batch_put(
+        &self,
+        branch_id: &BranchId,
+        space: &str,
+        entries: Vec<(String, Value)>,
+    ) -> StrataResult<Vec<Result<Version, String>>> {
+        if entries.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Extract text for indexing BEFORE the values are consumed by the transaction
+        let texts: Vec<Option<String>> = entries
+            .iter()
+            .map(|(_, value)| match value {
+                Value::String(s) => Some(s.clone()),
+                Value::Null | Value::Bool(_) | Value::Bytes(_) => None,
+                other => serde_json::to_string(other).ok(),
+            })
+            .collect();
+
+        let ((), commit_version) = self.db.transaction_with_version(*branch_id, |txn| {
+            for (key, value) in &entries {
+                let storage_key = self.key_for(branch_id, space, key);
+                txn.put(storage_key, value.clone())?;
+            }
+            Ok(())
+        })?;
+
+        let version = Version::Txn(commit_version);
+
+        // Post-commit: update inverted index for all items
+        let index = self.db.extension::<crate::search::InvertedIndex>()?;
+        let index_enabled = index.is_enabled();
+        for (i, (key, _)) in entries.iter().enumerate() {
+            if index_enabled {
+                if let Some(ref text) = texts[i] {
+                    let entity_ref = crate::search::EntityRef::Kv {
+                        branch_id: *branch_id,
+                        key: key.clone(),
+                    };
+                    index.index_document(&entity_ref, text, None);
+                }
+            }
+        }
+
+        // All items succeed with the same commit version
+        let results = entries
+            .iter()
+            .map(|_| Ok(version))
+            .collect();
+
+        Ok(results)
+    }
+
     // ========== Time-Travel API ==========
 
     /// Get a value by key as of a past timestamp (microseconds since epoch).
@@ -743,5 +804,87 @@ mod tests {
         assert_eq!(vv2.value, Value::Int(1));
 
         db.end_transaction(txn);
+    }
+
+    // ========== Batch API Tests ==========
+
+    #[test]
+    fn test_batch_put_basic() {
+        let (_temp, _db, kv) = setup();
+        let branch_id = BranchId::new();
+
+        let entries = vec![
+            ("k1".to_string(), Value::Int(1)),
+            ("k2".to_string(), Value::String("two".into())),
+            ("k3".to_string(), Value::Bool(true)),
+        ];
+
+        let results = kv.batch_put(&branch_id, "default", entries).unwrap();
+        assert_eq!(results.len(), 3);
+        for r in &results {
+            assert!(r.is_ok());
+        }
+
+        // Verify all items persisted
+        assert_eq!(
+            kv.get(&branch_id, "default", "k1").unwrap(),
+            Some(Value::Int(1))
+        );
+        assert_eq!(
+            kv.get(&branch_id, "default", "k2").unwrap(),
+            Some(Value::String("two".into()))
+        );
+        assert_eq!(
+            kv.get(&branch_id, "default", "k3").unwrap(),
+            Some(Value::Bool(true))
+        );
+    }
+
+    #[test]
+    fn test_batch_put_empty() {
+        let (_temp, _db, kv) = setup();
+        let branch_id = BranchId::new();
+
+        let results = kv.batch_put(&branch_id, "default", vec![]).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_batch_put_single() {
+        let (_temp, _db, kv) = setup();
+        let branch_id = BranchId::new();
+
+        let entries = vec![("single".to_string(), Value::Int(42))];
+        let results = kv.batch_put(&branch_id, "default", entries).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_ok());
+
+        assert_eq!(
+            kv.get(&branch_id, "default", "single").unwrap(),
+            Some(Value::Int(42))
+        );
+    }
+
+    #[test]
+    fn test_batch_put_overwrites_existing() {
+        let (_temp, _db, kv) = setup();
+        let branch_id = BranchId::new();
+
+        kv.put(
+            &branch_id,
+            "default",
+            "existing",
+            Value::String("old".into()),
+        )
+        .unwrap();
+
+        let entries = vec![("existing".to_string(), Value::String("new".into()))];
+        let results = kv.batch_put(&branch_id, "default", entries).unwrap();
+        assert!(results[0].is_ok());
+
+        assert_eq!(
+            kv.get(&branch_id, "default", "existing").unwrap(),
+            Some(Value::String("new".into()))
+        );
     }
 }

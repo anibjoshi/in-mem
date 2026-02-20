@@ -425,6 +425,58 @@ impl JsonStore {
         })
     }
 
+    /// Set multiple documents in a single transaction.
+    ///
+    /// Each entry does a set_or_create: creates the document if it doesn't exist,
+    /// or sets the value at the given path if it does. All writes share one
+    /// lock acquisition, one WAL record, and one commit.
+    pub fn batch_set_or_create(
+        &self,
+        branch_id: &BranchId,
+        space: &str,
+        entries: Vec<(String, JsonPath, JsonValue)>,
+    ) -> StrataResult<Vec<Result<Version, String>>> {
+        if entries.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        self.db.transaction(*branch_id, |txn| {
+            let mut versions = Vec::with_capacity(entries.len());
+            for (doc_id, path, value) in &entries {
+                let key = self.key_for(branch_id, space, doc_id);
+
+                let result = match txn.get(&key)? {
+                    Some(stored) => {
+                        let mut doc = Self::deserialize_doc(&stored)?;
+                        set_at_path(&mut doc.value, path, value.clone())
+                            .map_err(|e| StrataError::invalid_input(format!("Path error: {}", e)))?;
+                        doc.touch();
+                        let serialized = Self::serialize_doc(&doc)?;
+                        txn.put(key, serialized)?;
+                        Version::counter(doc.version)
+                    }
+                    None => {
+                        let initial = if path.is_root() {
+                            value.clone()
+                        } else {
+                            let mut obj = JsonValue::object();
+                            set_at_path(&mut obj, path, value.clone()).map_err(|e| {
+                                StrataError::invalid_input(format!("Path error: {}", e))
+                            })?;
+                            obj
+                        };
+                        let doc = JsonDoc::new(doc_id, initial);
+                        let serialized = Self::serialize_doc(&doc)?;
+                        txn.put(key, serialized)?;
+                        Version::counter(doc.version)
+                    }
+                };
+                versions.push(Ok(result));
+            }
+            Ok(versions)
+        })
+    }
+
     /// Check if document exists.
     pub fn exists(&self, branch_id: &BranchId, space: &str, doc_id: &str) -> StrataResult<bool> {
         let key = self.key_for(branch_id, space, doc_id);
@@ -1833,6 +1885,88 @@ mod tests {
         // Subsequent destroys return false
         assert!(!store.destroy(&branch_id, "default", &doc_id).unwrap());
         assert!(!store.destroy(&branch_id, "default", &doc_id).unwrap());
+    }
+
+    // ========== Batch API Tests ==========
+
+    #[test]
+    fn test_batch_set_or_create_basic() {
+        let db = Database::cache().unwrap();
+        let store = JsonStore::new(db);
+        let branch_id = BranchId::new();
+
+        let entries = vec![
+            ("doc1".to_string(), JsonPath::root(), JsonValue::from(42i64)),
+            ("doc2".to_string(), JsonPath::root(), JsonValue::from("hello")),
+        ];
+
+        let results = store
+            .batch_set_or_create(&branch_id, "default", entries)
+            .unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results[0].is_ok());
+        assert!(results[1].is_ok());
+
+        // Verify persistence
+        let v1 = store
+            .get(&branch_id, "default", "doc1", &JsonPath::root())
+            .unwrap();
+        assert_eq!(v1.and_then(|v| v.as_i64()), Some(42));
+
+        let v2 = store
+            .get(&branch_id, "default", "doc2", &JsonPath::root())
+            .unwrap();
+        assert_eq!(
+            v2.and_then(|v| v.as_str().map(String::from)),
+            Some("hello".to_string())
+        );
+    }
+
+    #[test]
+    fn test_batch_set_or_create_empty() {
+        let db = Database::cache().unwrap();
+        let store = JsonStore::new(db);
+        let branch_id = BranchId::new();
+
+        let results = store
+            .batch_set_or_create(&branch_id, "default", vec![])
+            .unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_batch_set_or_create_updates_existing() {
+        let db = Database::cache().unwrap();
+        let store = JsonStore::new(db);
+        let branch_id = BranchId::new();
+
+        store
+            .create(
+                &branch_id,
+                "default",
+                "existing",
+                JsonValue::from("old"),
+            )
+            .unwrap();
+
+        let entries = vec![(
+            "existing".to_string(),
+            JsonPath::root(),
+            JsonValue::from("new"),
+        )];
+
+        let results = store
+            .batch_set_or_create(&branch_id, "default", entries)
+            .unwrap();
+        assert_eq!(*results[0].as_ref().unwrap(), Version::counter(2));
+
+        let v = store
+            .get(&branch_id, "default", "existing", &JsonPath::root())
+            .unwrap();
+        assert_eq!(
+            v.and_then(|v| v.as_str().map(String::from)),
+            Some("new".to_string())
+        );
     }
 
     // ========== Time-Travel Boundary Tests ==========

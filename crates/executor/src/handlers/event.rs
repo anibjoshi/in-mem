@@ -177,6 +177,96 @@ pub fn event_get_by_type_at(
     Ok(Output::VersionedValues(versioned))
 }
 
+/// Handle EventBatchAppend command.
+///
+/// Pre-validates all entries, passes valid ones to the engine, and merges
+/// validation errors with engine results into `Vec<BatchItemResult>`.
+pub fn event_batch_append(
+    p: &Arc<Primitives>,
+    branch: BranchId,
+    space: String,
+    entries: Vec<crate::types::BatchEventEntry>,
+) -> Result<Output> {
+    require_branch_exists(p, &branch)?;
+    let core_branch_id = bridge::to_core_branch_id(&branch)?;
+
+    if entries.is_empty() {
+        return Ok(Output::BatchResults(Vec::new()));
+    }
+
+    let n = entries.len();
+    let mut results: Vec<crate::types::BatchItemResult> = vec![
+        crate::types::BatchItemResult {
+            version: None,
+            error: None,
+        };
+        n
+    ];
+
+    // Pre-validate value sizes at executor level
+    let mut valid_entries: Vec<(usize, String, strata_core::Value)> = Vec::with_capacity(n);
+    for (i, entry) in entries.into_iter().enumerate() {
+        if let Err(e) = validate_value(&entry.payload, &p.limits) {
+            results[i].error = Some(e.to_string());
+            continue;
+        }
+        valid_entries.push((i, entry.event_type, entry.payload));
+    }
+
+    if valid_entries.is_empty() {
+        return Ok(Output::BatchResults(results));
+    }
+
+    // Extract text for embed hooks
+    let embed_data: Vec<(usize, Option<String>)> = valid_entries
+        .iter()
+        .map(|(idx, _, payload)| {
+            let text = super::embed_hook::extract_text(payload);
+            (*idx, text)
+        })
+        .collect();
+
+    // Build engine entries
+    let engine_entries: Vec<(String, strata_core::Value)> = valid_entries
+        .into_iter()
+        .map(|(_, event_type, payload)| (event_type, payload))
+        .collect();
+
+    let engine_results = convert_result(
+        p.event
+            .batch_append(&core_branch_id, &space, engine_entries),
+    )?;
+
+    // Merge engine results
+    for (j, (orig_idx, _)) in embed_data.iter().enumerate() {
+        match &engine_results[j] {
+            Ok(version) => {
+                let seq = bridge::extract_version(version);
+                results[*orig_idx].version = Some(seq);
+
+                // Fire embed hook for successful items
+                if let Some(ref text) = embed_data[j].1 {
+                    let event_key = seq.to_string();
+                    super::embed_hook::maybe_embed_text(
+                        p,
+                        core_branch_id,
+                        &space,
+                        super::embed_hook::SHADOW_EVENT,
+                        &event_key,
+                        text,
+                        strata_core::EntityRef::event(core_branch_id, seq),
+                    );
+                }
+            }
+            Err(e) => {
+                results[*orig_idx].error = Some(e.clone());
+            }
+        }
+    }
+
+    Ok(Output::BatchResults(results))
+}
+
 /// Handle EventLen command.
 pub fn event_len(p: &Arc<Primitives>, branch: BranchId, space: String) -> Result<Output> {
     let core_branch_id = bridge::to_core_branch_id(&branch)?;

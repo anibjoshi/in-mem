@@ -132,6 +132,19 @@ pub enum Command {
         as_of: Option<u64>,
     },
 
+    /// Batch put multiple key-value pairs in a single transaction.
+    /// Returns: `Output::BatchResults`
+    KvBatchPut {
+        /// Target branch (defaults to "default").
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<BranchId>,
+        /// Target space (defaults to "default").
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Entries to write.
+        entries: Vec<BatchKvEntry>,
+    },
+
     /// Get full version history for a key.
     /// Returns: `Output::VersionHistory`
     KvGetv {
@@ -215,6 +228,19 @@ pub enum Command {
         as_of: Option<u64>,
     },
 
+    /// Batch set multiple JSON documents in a single transaction.
+    /// Returns: `Output::BatchResults`
+    JsonBatchSet {
+        /// Target branch (defaults to "default").
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<BranchId>,
+        /// Target space (defaults to "default").
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// JSON entries to set.
+        entries: Vec<BatchJsonEntry>,
+    },
+
     /// List JSON documents with cursor-based pagination.
     /// Returns: `Output::JsonListResult`
     JsonList {
@@ -235,8 +261,21 @@ pub enum Command {
         as_of: Option<u64>,
     },
 
-    // ==================== Event (4 MVP) ====================
+    // ==================== Event (4 MVP + 1 batch) ====================
     // MVP: append, read, get_by_type, len
+    /// Batch append multiple events in a single transaction.
+    /// Returns: `Output::BatchResults`
+    EventBatchAppend {
+        /// Target branch (defaults to "default").
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<BranchId>,
+        /// Target space (defaults to "default").
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Event entries to append.
+        entries: Vec<BatchEventEntry>,
+    },
+
     /// Append an event to the log.
     /// Returns: `Output::Version`
     EventAppend {
@@ -301,8 +340,21 @@ pub enum Command {
         space: Option<String>,
     },
 
-    // ==================== State (4 MVP) ====================
+    // ==================== State (4 MVP + 1 batch) ====================
     // MVP: set, read, cas, init
+    /// Batch set multiple state cells in a single transaction.
+    /// Returns: `Output::BatchResults`
+    StateBatchSet {
+        /// Target branch (defaults to "default").
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<BranchId>,
+        /// Target space (defaults to "default").
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// State cell entries to set.
+        entries: Vec<BatchStateEntry>,
+    },
+
     /// Set a state cell value (unconditional write).
     /// Returns: `Output::Version`
     StateSet {
@@ -784,11 +836,15 @@ impl Command {
         matches!(
             self,
             Command::KvPut { .. }
+                | Command::KvBatchPut { .. }
                 | Command::KvDelete { .. }
                 | Command::JsonSet { .. }
+                | Command::JsonBatchSet { .. }
                 | Command::JsonDelete { .. }
                 | Command::EventAppend { .. }
+                | Command::EventBatchAppend { .. }
                 | Command::StateSet { .. }
+                | Command::StateBatchSet { .. }
                 | Command::StateCas { .. }
                 | Command::StateInit { .. }
                 | Command::StateDelete { .. }
@@ -820,20 +876,24 @@ impl Command {
     pub fn name(&self) -> &'static str {
         match self {
             Command::KvPut { .. } => "KvPut",
+            Command::KvBatchPut { .. } => "KvBatchPut",
             Command::KvGet { .. } => "KvGet",
             Command::KvDelete { .. } => "KvDelete",
             Command::KvList { .. } => "KvList",
             Command::KvGetv { .. } => "KvGetv",
             Command::JsonSet { .. } => "JsonSet",
+            Command::JsonBatchSet { .. } => "JsonBatchSet",
             Command::JsonGet { .. } => "JsonGet",
             Command::JsonDelete { .. } => "JsonDelete",
             Command::JsonGetv { .. } => "JsonGetv",
             Command::JsonList { .. } => "JsonList",
             Command::EventAppend { .. } => "EventAppend",
+            Command::EventBatchAppend { .. } => "EventBatchAppend",
             Command::EventGet { .. } => "EventGet",
             Command::EventGetByType { .. } => "EventGetByType",
             Command::EventLen { .. } => "EventLen",
             Command::StateSet { .. } => "StateSet",
+            Command::StateBatchSet { .. } => "StateBatchSet",
             Command::StateGet { .. } => "StateGet",
             Command::StateCas { .. } => "StateCas",
             Command::StateGetv { .. } => "StateGetv",
@@ -903,23 +963,27 @@ impl Command {
         match self {
             // KV
             Command::KvPut { branch, space, .. }
+            | Command::KvBatchPut { branch, space, .. }
             | Command::KvGet { branch, space, .. }
             | Command::KvDelete { branch, space, .. }
             | Command::KvList { branch, space, .. }
             | Command::KvGetv { branch, space, .. }
             // JSON
             | Command::JsonSet { branch, space, .. }
+            | Command::JsonBatchSet { branch, space, .. }
             | Command::JsonGet { branch, space, .. }
             | Command::JsonGetv { branch, space, .. }
             | Command::JsonDelete { branch, space, .. }
             | Command::JsonList { branch, space, .. }
-            // Event (4 MVP)
+            // Event
             | Command::EventAppend { branch, space, .. }
+            | Command::EventBatchAppend { branch, space, .. }
             | Command::EventGet { branch, space, .. }
             | Command::EventGetByType { branch, space, .. }
             | Command::EventLen { branch, space, .. }
             // State
             | Command::StateSet { branch, space, .. }
+            | Command::StateBatchSet { branch, space, .. }
             | Command::StateGet { branch, space, .. }
             | Command::StateGetv { branch, space, .. }
             | Command::StateCas { branch, space, .. }

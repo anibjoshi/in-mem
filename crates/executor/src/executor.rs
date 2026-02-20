@@ -220,6 +220,18 @@ impl Executor {
                 self.ensure_space_registered(&branch, &space)?;
                 crate::handlers::kv::kv_put(&self.primitives, branch, space, key, value)
             }
+            Command::KvBatchPut {
+                branch,
+                space,
+                entries,
+            } => {
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
+                let space = space.unwrap_or_else(|| "default".to_string());
+                self.ensure_space_registered(&branch, &space)?;
+                crate::handlers::kv::kv_batch_put(&self.primitives, branch, space, entries)
+            }
             Command::KvGet {
                 branch,
                 space,
@@ -299,6 +311,18 @@ impl Executor {
                 self.ensure_space_registered(&branch, &space)?;
                 crate::handlers::json::json_set(&self.primitives, branch, space, key, path, value)
             }
+            Command::JsonBatchSet {
+                branch,
+                space,
+                entries,
+            } => {
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
+                let space = space.unwrap_or_else(|| "default".to_string());
+                self.ensure_space_registered(&branch, &space)?;
+                crate::handlers::json::json_batch_set(&self.primitives, branch, space, entries)
+            }
             Command::JsonGet {
                 branch,
                 space,
@@ -377,6 +401,23 @@ impl Executor {
             }
 
             // Event commands (4 MVP)
+            Command::EventBatchAppend {
+                branch,
+                space,
+                entries,
+            } => {
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
+                let space = space.unwrap_or_else(|| "default".to_string());
+                self.ensure_space_registered(&branch, &space)?;
+                crate::handlers::event::event_batch_append(
+                    &self.primitives,
+                    branch,
+                    space,
+                    entries,
+                )
+            }
             Command::EventAppend {
                 branch,
                 space,
@@ -458,6 +499,18 @@ impl Executor {
             }
 
             // State commands (4 MVP)
+            Command::StateBatchSet {
+                branch,
+                space,
+                entries,
+            } => {
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
+                let space = space.unwrap_or_else(|| "default".to_string());
+                self.ensure_space_registered(&branch, &space)?;
+                crate::handlers::state::state_batch_set(&self.primitives, branch, space, entries)
+            }
             Command::StateSet {
                 branch,
                 space,
