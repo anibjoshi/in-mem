@@ -1184,6 +1184,7 @@ impl VectorStore {
     ///
     /// Like `get_key_and_metadata()` but also returns the `source_ref` and `version`
     /// fields from the VectorRecord. Used by `search_with_sources()`.
+    #[allow(dead_code)]
     fn get_key_metadata_and_source(
         &self,
         branch_id: BranchId,
@@ -1799,6 +1800,7 @@ impl VectorStore {
     }
 
     /// Search returning results with source references, filtered by time range.
+    #[allow(clippy::too_many_arguments)]
     fn search_with_sources_in_range(
         &self,
         branch_id: BranchId,
@@ -2098,7 +2100,7 @@ impl VectorStore {
                         // Check by matching user_key + VectorId against source KV scan.
                         let is_from_source = source_key_to_vid
                             .get(&vec_key.user_key)
-                            .map_or(false, |&src_vid| src_vid == vec_record.vector_id);
+                            .is_some_and(|&src_vid| src_vid == vec_record.vector_id);
 
                         if is_from_source {
                             if let Some(src_bid) = source_branch_id {

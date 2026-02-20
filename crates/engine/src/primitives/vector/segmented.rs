@@ -139,6 +139,7 @@ impl ActiveBuffer {
     }
 
     /// Drain all entries, returning (ids, timestamps) sorted by VectorId
+    #[allow(clippy::type_complexity)]
     fn drain_sorted(&mut self) -> (Vec<VectorId>, BTreeMap<VectorId, (u64, Option<u64>)>) {
         let mut ids = std::mem::take(&mut self.ids);
         ids.sort();
@@ -458,6 +459,7 @@ impl SegmentedHnswBackend {
     ///
     /// Used during branch merge to transfer pre-built HNSW graphs from
     /// the source branch to the target branch without full rebuild.
+    #[allow(dead_code)]
     pub(crate) fn extract_segments(
         &mut self,
     ) -> Vec<(u64, CompactHnswGraph, usize, Option<strata_core::BranchId>)> {
@@ -479,6 +481,7 @@ impl SegmentedHnswBackend {
     /// post_merge_reload_vectors() rebuilds from KV which is simpler and
     /// always correct. This method is provided for future O(metadata)
     /// segment adoption with VectorId remapping.
+    #[allow(dead_code)]
     pub(crate) fn adopt_segments(
         &mut self,
         segments: Vec<(CompactHnswGraph, usize, Option<strata_core::BranchId>)>,
@@ -796,7 +799,7 @@ impl VectorIndexBackend for SegmentedHnswBackend {
         let heap_bytes = self.heap.anon_data_bytes();
         let heap_overhead =
             self.heap.len() * (std::mem::size_of::<VectorId>() + std::mem::size_of::<usize>() + 64);
-        let free_slots_bytes = self.heap.free_slots().len() * std::mem::size_of::<usize>();
+        let free_slots_bytes = std::mem::size_of_val(self.heap.free_slots());
 
         // Active buffer
         let active_bytes = self.active.ids.capacity() * std::mem::size_of::<VectorId>()

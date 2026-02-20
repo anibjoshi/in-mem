@@ -178,8 +178,8 @@ fn step1a(word: &str) -> String {
     if word.ends_with("ss") {
         return word.to_string();
     }
-    if word.ends_with('s') {
-        return word[..word.len() - 1].to_string();
+    if let Some(stripped) = word.strip_suffix('s') {
+        return stripped.to_string();
     }
     word.to_string()
 }

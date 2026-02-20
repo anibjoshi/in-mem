@@ -564,7 +564,7 @@ impl VectorHeap {
                 let mut merged_offsets = BTreeMap::new();
                 let merged_free_slots = Vec::new();
 
-                for (&id, _) in &self.id_to_offset {
+                for &id in self.id_to_offset.keys() {
                     let offset = merged_data.len();
                     if let Some(&ov_off) = overlay_id_to_offset.get(&id) {
                         merged_data.extend_from_slice(&overlay[ov_off..ov_off + dim]);

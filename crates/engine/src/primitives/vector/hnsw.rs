@@ -692,6 +692,7 @@ impl HnswGraph {
     // ========================================================================
 
     /// Check if a vector exists and is alive (not soft-deleted) in this graph
+    #[allow(dead_code)]
     pub(crate) fn contains(&self, id: VectorId) -> bool {
         self.nodes.get(&id).is_some_and(|n| !n.is_deleted())
     }
@@ -739,6 +740,7 @@ impl HnswGraph {
     }
 
     /// Count of non-deleted nodes in the graph
+    #[allow(dead_code)]
     pub(crate) fn len(&self) -> usize {
         self.nodes.values().filter(|n| !n.is_deleted()).count()
     }
@@ -1319,11 +1321,13 @@ impl CompactHnswGraph {
     }
 
     /// Number of nodes in the graph (including soft-deleted)
+    #[allow(dead_code)]
     pub(crate) fn len(&self) -> usize {
         self.nodes.len()
     }
 
     /// Whether the neighbor data is backed by a memory-mapped file.
+    #[allow(dead_code)]
     pub(crate) fn is_neighbor_data_mmap(&self) -> bool {
         self.neighbor_data.is_mmap()
     }
@@ -1538,7 +1542,7 @@ impl VectorIndexBackend for HnswBackend {
         let graph_bytes = self.graph.memory_usage();
         let heap_overhead =
             self.heap.len() * (std::mem::size_of::<VectorId>() + std::mem::size_of::<usize>() + 64);
-        let free_slots_bytes = self.heap.free_slots().len() * std::mem::size_of::<usize>();
+        let free_slots_bytes = std::mem::size_of_val(self.heap.free_slots());
 
         embedding_bytes + graph_bytes + heap_overhead + free_slots_bytes
     }

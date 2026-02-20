@@ -51,6 +51,7 @@ pub(crate) struct CompactIndex {
     entries: Vec<(u64, u64)>,
 }
 
+#[allow(dead_code)]
 impl CompactIndex {
     fn from_btree(map: &BTreeMap<VectorId, usize>) -> Self {
         let entries: Vec<(u64, u64)> = map
@@ -229,6 +230,7 @@ impl MmapVectorData {
     }
 
     /// Check if a vector exists
+    #[allow(dead_code)]
     pub(crate) fn contains(&self, id: VectorId) -> bool {
         self.index.contains(id)
     }
@@ -239,6 +241,7 @@ impl MmapVectorData {
     }
 
     /// Check if empty
+    #[allow(dead_code)]
     pub(crate) fn is_empty(&self) -> bool {
         self.count == 0
     }
@@ -261,11 +264,13 @@ impl MmapVectorData {
     }
 
     /// Iterate all VectorIds in deterministic order
+    #[allow(dead_code)]
     pub(crate) fn ids(&self) -> impl Iterator<Item = VectorId> + '_ {
         self.index.ids()
     }
 
     /// Get dimension
+    #[allow(dead_code)]
     pub(crate) fn dimension(&self) -> usize {
         self.dimension
     }

@@ -77,11 +77,7 @@ pub fn search(
     });
 
     // Parse time_range
-    let parsed_time_range = sq
-        .time_range
-        .as_ref()
-        .map(|tr| parse_time_range(tr))
-        .transpose()?;
+    let parsed_time_range = sq.time_range.as_ref().map(parse_time_range).transpose()?;
 
     let mut req = SearchRequest::new(core_branch_id, &sq.query);
     if let Some(top_k) = sq.k {

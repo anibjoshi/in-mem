@@ -44,7 +44,6 @@ pub use collection::{
 pub use error::{VectorError, VectorResult};
 pub use filter::{FilterCondition, FilterOp, JsonScalar, MetadataFilter};
 pub use heap::VectorHeap;
-pub(crate) use hnsw::HnswGraph;
 pub use hnsw::{HnswBackend, HnswConfig};
 pub use recovery::register_vector_recovery;
 pub use segmented::{SegmentedHnswBackend, SegmentedHnswConfig};

@@ -369,7 +369,7 @@ impl HybridSearch {
             let mut exp_req = SearchRequest::new(req.branch_id, &expansion.text)
                 .with_k(req.k)
                 .with_mode(mode)
-                .with_budget(req.budget.clone());
+                .with_budget(req.budget);
 
             if let Some(ref filter) = req.primitive_filter {
                 exp_req = exp_req.with_primitive_filter(filter.clone());

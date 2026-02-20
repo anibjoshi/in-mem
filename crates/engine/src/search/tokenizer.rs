@@ -44,7 +44,7 @@ pub fn tokenize(text: &str) -> Vec<String> {
         .split(|c: char| !c.is_alphanumeric())
         .filter(|s| s.len() >= 2)
         .filter(|s| !is_stopword(s))
-        .map(|s| stemmer::stem(s))
+        .map(stemmer::stem)
         .collect()
 }
 

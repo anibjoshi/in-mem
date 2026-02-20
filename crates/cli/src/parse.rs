@@ -248,7 +248,7 @@ fn parse_kv(matches: &ArgMatches, state: &SessionState) -> Result<CliAction, Str
                     return Err("kv put requires at least one key-value pair".to_string());
                 }
 
-                if pairs.len() % 2 != 0 {
+                if !pairs.len().is_multiple_of(2) {
                     return Err("Key-value pairs must come in pairs".to_string());
                 }
 
