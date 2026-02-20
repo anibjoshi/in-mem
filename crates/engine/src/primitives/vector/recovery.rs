@@ -44,7 +44,7 @@ fn recover_vector_state(db: &Database) -> StrataResult<()> {
 }
 
 /// Compute the `.vec` mmap cache path for a given collection.
-fn mmap_path(
+pub(crate) fn mmap_path(
     data_dir: &std::path::Path,
     branch_id: strata_core::types::BranchId,
     collection_name: &str,

@@ -207,6 +207,109 @@ pub fn json_delete(
     }
 }
 
+/// Handle JsonBatchSet command.
+///
+/// Pre-validates all entries, passes valid ones to the engine, and merges
+/// validation errors with engine results into `Vec<BatchItemResult>`.
+pub fn json_batch_set(
+    p: &Arc<Primitives>,
+    branch: BranchId,
+    space: String,
+    entries: Vec<crate::types::BatchJsonEntry>,
+) -> Result<Output> {
+    require_branch_exists(p, &branch)?;
+    let branch_id = to_core_branch_id(&branch)?;
+
+    if entries.is_empty() {
+        return Ok(Output::BatchResults(Vec::new()));
+    }
+
+    let n = entries.len();
+    let mut results: Vec<crate::types::BatchItemResult> = vec![
+        crate::types::BatchItemResult {
+            version: None,
+            error: None,
+        };
+        n
+    ];
+
+    // Pre-validate entries, convert types
+    let mut valid_entries: Vec<(
+        usize,
+        String,
+        strata_core::primitives::json::JsonPath,
+        strata_core::primitives::json::JsonValue,
+    )> = Vec::with_capacity(n);
+
+    for (i, entry) in entries.into_iter().enumerate() {
+        if let Err(e) = validate_key(&entry.key) {
+            results[i].error = Some(e.to_string());
+            continue;
+        }
+        if let Err(e) = validate_value(&entry.value, &p.limits) {
+            results[i].error = Some(e.to_string());
+            continue;
+        }
+        let json_path = match parse_path(&entry.path) {
+            Ok(p) => p,
+            Err(e) => {
+                results[i].error = Some(e.to_string());
+                continue;
+            }
+        };
+        let json_value = match value_to_json(entry.value) {
+            Ok(v) => v,
+            Err(e) => {
+                results[i].error = Some(e.to_string());
+                continue;
+            }
+        };
+        valid_entries.push((i, entry.key, json_path, json_value));
+    }
+
+    if valid_entries.is_empty() {
+        return Ok(Output::BatchResults(results));
+    }
+
+    // Collect original indices for merging
+    let orig_indices: Vec<usize> = valid_entries.iter().map(|(idx, _, _, _)| *idx).collect();
+    let keys: Vec<String> = valid_entries.iter().map(|(_, k, _, _)| k.clone()).collect();
+
+    // Build engine entries
+    let engine_entries: Vec<(
+        String,
+        strata_core::primitives::json::JsonPath,
+        strata_core::primitives::json::JsonValue,
+    )> = valid_entries
+        .into_iter()
+        .map(|(_, key, path, value)| (key, path, value))
+        .collect();
+
+    let engine_results =
+        convert_result(p.json.batch_set_or_create(&branch_id, &space, engine_entries))?;
+
+    // Merge engine results
+    for (j, orig_idx) in orig_indices.iter().enumerate() {
+        match &engine_results[j] {
+            Ok(version) => {
+                results[*orig_idx].version = Some(extract_version(version));
+            }
+            Err(e) => {
+                results[*orig_idx].error = Some(e.clone());
+            }
+        }
+    }
+
+    // Post-commit: fire embed hooks for successful items
+    for (j, orig_idx) in orig_indices.iter().enumerate() {
+        if results[*orig_idx].version.is_some() {
+            embed_full_doc(p, branch_id, &space, &keys[j]);
+        }
+    }
+
+    Ok(Output::BatchResults(results))
+}
+
 /// Handle JsonList command.
 pub fn json_list(
     p: &Arc<Primitives>,

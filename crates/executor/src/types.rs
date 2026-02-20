@@ -218,6 +218,59 @@ pub struct BatchVectorEntry {
 }
 
 // =============================================================================
+// Batch Types
+// =============================================================================
+
+/// Entry for batch KV put operations.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BatchKvEntry {
+    /// Key to write.
+    pub key: String,
+    /// Value to store.
+    pub value: Value,
+}
+
+/// Entry for batch event append operations.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BatchEventEntry {
+    /// Event type tag (e.g. "user.created").
+    pub event_type: String,
+    /// Event payload data (must be a JSON object).
+    pub payload: Value,
+}
+
+/// Entry for batch state set operations.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BatchStateEntry {
+    /// Cell name.
+    pub cell: String,
+    /// Value to store.
+    pub value: Value,
+}
+
+/// Entry for batch JSON set operations.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BatchJsonEntry {
+    /// Document key.
+    pub key: String,
+    /// JSON path within the document.
+    pub path: String,
+    /// Value to set at the path.
+    pub value: Value,
+}
+
+/// Per-item result for batch operations.
+///
+/// Positionally maps to input entries: `results[i]` corresponds to `entries[i]`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BatchItemResult {
+    /// Version assigned if the item succeeded.
+    pub version: Option<u64>,
+    /// Error message if the item failed.
+    pub error: Option<String>,
+}
+
+// =============================================================================
 // Transaction Types
 // =============================================================================
 

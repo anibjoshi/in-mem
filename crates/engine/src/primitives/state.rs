@@ -314,6 +314,83 @@ impl StateCell {
         Ok(result)
     }
 
+    // ========== Batch API ==========
+
+    /// Set multiple state cells in a single transaction.
+    ///
+    /// Each cell is independently read-then-written: existing cells get their
+    /// version incremented, new cells start at version 1. All writes share
+    /// one lock acquisition, one WAL record, and one commit.
+    pub fn batch_set(
+        &self,
+        branch_id: &BranchId,
+        space: &str,
+        entries: Vec<(String, Value)>,
+    ) -> StrataResult<Vec<Result<Version, String>>> {
+        if entries.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let retry_config = RetryConfig::default()
+            .with_max_retries(50)
+            .with_base_delay_ms(1)
+            .with_max_delay_ms(50);
+
+        let values_for_index: Vec<(String, Value)> = entries
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
+
+        let versions = self.db.transaction_with_retry(
+            *branch_id,
+            retry_config,
+            |txn| {
+                let mut versions = Vec::with_capacity(entries.len());
+                for (name, value) in &entries {
+                    let key = self.key_for(branch_id, space, name);
+
+                    let new_version = match txn.get(&key)? {
+                        Some(v) => {
+                            let current: State = from_stored_value(&v)
+                                .map_err(|e| strata_core::StrataError::serialization(e.to_string()))?;
+                            current.version.increment()
+                        }
+                        None => Version::counter(1),
+                    };
+
+                    let new_state = State {
+                        value: value.clone(),
+                        version: new_version,
+                        updated_at: State::now(),
+                    };
+
+                    txn.put(key, to_stored_value(&new_state)?)?;
+                    versions.push(new_version);
+                }
+                Ok(versions)
+            },
+        )?;
+
+        // Post-commit: update inverted index
+        let index = self.db.extension::<crate::search::InvertedIndex>()?;
+        if index.is_enabled() {
+            for (name, value) in &values_for_index {
+                let text = format!(
+                    "{} {}",
+                    name,
+                    serde_json::to_string(value).unwrap_or_default()
+                );
+                let entity_ref = crate::search::EntityRef::State {
+                    branch_id: *branch_id,
+                    name: name.clone(),
+                };
+                index.index_document(&entity_ref, &text, None);
+            }
+        }
+
+        Ok(versions.into_iter().map(Ok).collect())
+    }
+
     // ========== Delete & List Operations ==========
 
     /// Delete a state cell.
@@ -920,5 +997,63 @@ mod tests {
              timestamp mismatch between State.updated_at and StoredValue.timestamp"
         );
         assert_eq!(result.unwrap(), Value::String("v1".into()));
+    }
+
+    // ========== Batch API Tests ==========
+
+    #[test]
+    fn test_batch_set_basic() {
+        let (_temp, _db, sc) = setup();
+        let branch_id = BranchId::new();
+
+        let entries = vec![
+            ("cell1".to_string(), Value::Int(1)),
+            ("cell2".to_string(), Value::String("two".into())),
+            ("cell3".to_string(), Value::Bool(true)),
+        ];
+
+        let results = sc.batch_set(&branch_id, "default", entries).unwrap();
+        assert_eq!(results.len(), 3);
+        for r in &results {
+            assert!(r.is_ok());
+            assert_eq!(*r.as_ref().unwrap(), Version::counter(1));
+        }
+
+        // Verify all items persisted
+        assert_eq!(
+            sc.get(&branch_id, "default", "cell1").unwrap(),
+            Some(Value::Int(1))
+        );
+        assert_eq!(
+            sc.get(&branch_id, "default", "cell2").unwrap(),
+            Some(Value::String("two".into()))
+        );
+    }
+
+    #[test]
+    fn test_batch_set_empty() {
+        let (_temp, _db, sc) = setup();
+        let branch_id = BranchId::new();
+
+        let results = sc.batch_set(&branch_id, "default", vec![]).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_batch_set_increments_existing() {
+        let (_temp, _db, sc) = setup();
+        let branch_id = BranchId::new();
+
+        sc.init(&branch_id, "default", "cell", Value::Int(0))
+            .unwrap();
+
+        let entries = vec![("cell".to_string(), Value::Int(42))];
+        let results = sc.batch_set(&branch_id, "default", entries).unwrap();
+        assert_eq!(*results[0].as_ref().unwrap(), Version::counter(2));
+
+        assert_eq!(
+            sc.get(&branch_id, "default", "cell").unwrap(),
+            Some(Value::Int(42))
+        );
     }
 }

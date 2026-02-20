@@ -23,11 +23,41 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
+use once_cell::sync::Lazy;
+use rayon::prelude::*;
+
 use crate::primitives::vector::backend::VectorIndexBackend;
 use crate::primitives::vector::distance::compute_similarity;
 use crate::primitives::vector::heap::VectorHeap;
 use crate::primitives::vector::hnsw::{CompactHnswGraph, HnswConfig, HnswGraph};
 use crate::primitives::vector::{DistanceMetric, VectorConfig, VectorError, VectorId};
+
+/// Dedicated thread pool for parallel vector search.
+///
+/// Isolated from rayon's global pool so that:
+/// - Strata never hijacks the caller's rayon threads
+/// - Thread count is capped at `MAX_SEARCH_THREADS` regardless of core count
+/// - Stack size is reduced to 1 MB (search is not deeply recursive)
+static SEARCH_POOL: Lazy<rayon::ThreadPool> = Lazy::new(|| {
+    let num_threads = std::thread::available_parallelism()
+        .map(|n| n.get().min(MAX_SEARCH_THREADS))
+        .unwrap_or(2);
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(num_threads)
+        .thread_name(|i| format!("strata-vsearch-{}", i))
+        .stack_size(1024 * 1024) // 1 MB per thread (vs default 2 MB)
+        .build()
+        .expect("failed to build vector search thread pool")
+});
+
+/// Minimum number of sealed segments before using parallel search.
+/// Below this threshold, sequential iteration avoids rayon thread pool overhead.
+const PARALLEL_SEARCH_THRESHOLD: usize = 4;
+
+/// Maximum number of threads in the dedicated vector search thread pool.
+/// Capped to prevent an embedded database from consuming all CPU cores on
+/// large machines. The actual count is `min(available_cores, MAX_SEARCH_THREADS)`.
+const MAX_SEARCH_THREADS: usize = 4;
 
 /// Segmented HNSW configuration
 #[derive(Debug, Clone)]
@@ -228,45 +258,97 @@ impl SegmentedHnswBackend {
         });
     }
 
-    /// Flush the heap overlay to mmap if it exceeds the configured threshold.
+    /// Flush the heap to mmap if it exceeds the configured threshold.
     ///
-    /// After sealing a segment, this checks whether the overlay has grown past
-    /// `heap_flush_threshold`. If so, the overlay is merged into the base mmap
-    /// and reset, keeping anonymous memory bounded.
+    /// After sealing a segment, this checks whether enough vectors have
+    /// accumulated in anonymous memory to warrant flushing to disk.
+    ///
+    /// - **Tiered heap**: flushes the overlay into the mmap base.
+    /// - **InMemory heap** (fresh indexing, never frozen): freezes all data to
+    ///   a `.vec` file, reopens as mmap, and promotes to Tiered mode so that
+    ///   subsequent inserts go to a small overlay instead of growing anon memory.
     fn flush_heap_if_needed(&mut self) {
         let threshold = self.config.heap_flush_threshold;
         if threshold == 0 {
             return; // Flushing disabled
         }
-        let overlay_count = self.heap.overlay_len();
-        if overlay_count < threshold {
-            return;
-        }
         let Some(path) = self.flush_path.clone() else {
             return; // No flush path configured (in-memory database)
         };
 
-        tracing::info!(
-            target: "strata::vector",
-            overlay_count,
-            threshold,
-            "Flushing heap overlay to mmap"
-        );
-
-        match self.heap.flush_overlay_to_disk(&path) {
-            Ok(n) => {
-                tracing::info!(
-                    target: "strata::vector",
-                    flushed = n,
-                    "Heap overlay flushed to mmap"
-                );
+        if !self.heap.is_mmap() {
+            // InMemory heap: check total vector count against threshold
+            if self.heap.len() < threshold {
+                return;
             }
-            Err(e) => {
+
+            tracing::info!(
+                target: "strata::vector",
+                total_vectors = self.heap.len(),
+                threshold,
+                "Freezing InMemory heap to mmap (first flush)"
+            );
+
+            // Freeze InMemory → disk, reopen as mmap, promote to Tiered
+            if let Err(e) = self.heap.freeze_to_disk(&path) {
                 tracing::warn!(
                     target: "strata::vector",
                     error = %e,
-                    "Failed to flush heap overlay to mmap, continuing with in-memory overlay"
+                    "Failed to freeze InMemory heap to disk, continuing in-memory"
                 );
+                return;
+            }
+
+            let next_id = self.heap.next_id_value();
+            let free_slots = self.heap.free_slots().to_vec();
+
+            match VectorHeap::from_mmap(&path, self.vector_config.clone()) {
+                Ok(mut new_heap) => {
+                    new_heap.promote_to_tiered();
+                    new_heap.restore_snapshot_state(next_id, free_slots);
+                    self.heap = new_heap;
+                    tracing::info!(
+                        target: "strata::vector",
+                        "InMemory heap promoted to Tiered (mmap-backed)"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "strata::vector",
+                        error = %e,
+                        "Failed to reopen frozen heap as mmap, continuing in-memory"
+                    );
+                }
+            }
+        } else {
+            // Tiered heap: check overlay count against threshold
+            let overlay_count = self.heap.overlay_len();
+            if overlay_count < threshold {
+                return;
+            }
+
+            tracing::info!(
+                target: "strata::vector",
+                overlay_count,
+                threshold,
+                "Flushing heap overlay to mmap"
+            );
+
+            match self.heap.flush_overlay_to_disk(&path) {
+                Ok(n) => {
+                    tracing::info!(
+                        target: "strata::vector",
+                        flushed = n,
+                        "Heap overlay flushed to mmap"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "strata::vector",
+                        error = %e,
+                        "Failed to flush heap overlay to mmap, continuing with in-memory overlay"
+                    );
+                }
             }
         }
     }
@@ -563,12 +645,24 @@ impl VectorIndexBackend for SegmentedHnswBackend {
             result_sets.push(active_results);
         }
 
-        // Search each sealed segment (using global heap for distance computation)
-        for seg in &self.sealed {
-            if seg.live_count > 0 {
-                let seg_results = seg.graph.search_with_heap(query, k, &self.heap);
-                if !seg_results.is_empty() {
-                    result_sets.push(seg_results);
+        // Search sealed segments (parallel when there are enough segments)
+        if self.sealed.len() >= PARALLEL_SEARCH_THRESHOLD {
+            let sealed_results: Vec<Vec<(VectorId, f32)>> = SEARCH_POOL.install(|| {
+                self.sealed
+                    .par_iter()
+                    .filter(|seg| seg.live_count > 0)
+                    .map(|seg| seg.graph.search_with_heap(query, k, &self.heap))
+                    .filter(|r| !r.is_empty())
+                    .collect()
+            });
+            result_sets.extend(sealed_results);
+        } else {
+            for seg in &self.sealed {
+                if seg.live_count > 0 {
+                    let seg_results = seg.graph.search_with_heap(query, k, &self.heap);
+                    if !seg_results.is_empty() {
+                        result_sets.push(seg_results);
+                    }
                 }
             }
         }
@@ -592,11 +686,22 @@ impl VectorIndexBackend for SegmentedHnswBackend {
             result_sets.push(active_results);
         }
 
-        // Sealed segments: delegate temporal search (using global heap)
-        for seg in &self.sealed {
-            let seg_results = seg.graph.search_at_with_heap(query, k, as_of_ts, &self.heap);
-            if !seg_results.is_empty() {
-                result_sets.push(seg_results);
+        // Sealed segments: delegate temporal search (parallel when enough segments)
+        if self.sealed.len() >= PARALLEL_SEARCH_THRESHOLD {
+            let sealed_results: Vec<Vec<(VectorId, f32)>> = SEARCH_POOL.install(|| {
+                self.sealed
+                    .par_iter()
+                    .map(|seg| seg.graph.search_at_with_heap(query, k, as_of_ts, &self.heap))
+                    .filter(|r| !r.is_empty())
+                    .collect()
+            });
+            result_sets.extend(sealed_results);
+        } else {
+            for seg in &self.sealed {
+                let seg_results = seg.graph.search_at_with_heap(query, k, as_of_ts, &self.heap);
+                if !seg_results.is_empty() {
+                    result_sets.push(seg_results);
+                }
             }
         }
 
@@ -624,10 +729,22 @@ impl VectorIndexBackend for SegmentedHnswBackend {
             result_sets.push(active_results);
         }
 
-        for seg in &self.sealed {
-            let seg_results = seg.graph.search_in_range_with_heap(query, k, start_ts, end_ts, &self.heap);
-            if !seg_results.is_empty() {
-                result_sets.push(seg_results);
+        // Sealed segments: delegate range search (parallel when enough segments)
+        if self.sealed.len() >= PARALLEL_SEARCH_THRESHOLD {
+            let sealed_results: Vec<Vec<(VectorId, f32)>> = SEARCH_POOL.install(|| {
+                self.sealed
+                    .par_iter()
+                    .map(|seg| seg.graph.search_in_range_with_heap(query, k, start_ts, end_ts, &self.heap))
+                    .filter(|r| !r.is_empty())
+                    .collect()
+            });
+            result_sets.extend(sealed_results);
+        } else {
+            for seg in &self.sealed {
+                let seg_results = seg.graph.search_in_range_with_heap(query, k, start_ts, end_ts, &self.heap);
+                if !seg_results.is_empty() {
+                    result_sets.push(seg_results);
+                }
             }
         }
 
