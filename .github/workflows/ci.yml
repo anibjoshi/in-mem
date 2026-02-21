@@ -11,42 +11,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: strata-core
 
-      - uses: actions/checkout@v4
-        with:
-          repository: strata-ai-labs/strata-inference
-          path: strata-inference
+      - name: Checkout strata-inference (sibling path dependency)
+        run: git clone --depth 1 https://github.com/strata-ai-labs/strata-inference.git ../strata-inference
 
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Check formatting
-        working-directory: strata-core
         run: cargo fmt --all -- --check
 
       - name: Run clippy
-        working-directory: strata-core
-        run: cargo clippy --all -- -D warnings
+        run: cargo clippy --workspace -- -D warnings
 
       - name: Run tests
-        working-directory: strata-core
-        run: cargo test --all
+        run: cargo test --workspace
 
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: strata-core
 
-      - uses: actions/checkout@v4
-        with:
-          repository: strata-ai-labs/strata-inference
-          path: strata-inference
+      - name: Checkout strata-inference (sibling path dependency)
+        run: git clone --depth 1 https://github.com/strata-ai-labs/strata-inference.git ../strata-inference
 
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Build
-        working-directory: strata-core
         run: cargo build --release --all
