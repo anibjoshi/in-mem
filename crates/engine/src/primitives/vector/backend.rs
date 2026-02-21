@@ -4,6 +4,7 @@
 //! BruteForceBackend (O(n) search)
 //! HnswBackend (O(log n) search) - reserved
 
+use crate::primitives::vector::types::InlineMeta;
 use crate::primitives::vector::{DistanceMetric, VectorConfig, VectorError, VectorId};
 
 /// Trait for swappable vector index implementations
@@ -208,6 +209,26 @@ pub trait VectorIndexBackend: Send + Sync {
     /// Default: returns `false` (backends without sealed segments).
     fn load_graphs_from_disk(&mut self, _dir: &std::path::Path) -> Result<bool, VectorError> {
         Ok(false)
+    }
+
+    // ========================================================================
+    // Inline Metadata (O(1) search resolution)
+    // ========================================================================
+
+    /// Store inline metadata for a VectorId (key + source_ref).
+    /// Used to avoid O(n) KV prefix scans during search result resolution.
+    fn set_inline_meta(&mut self, _id: VectorId, _meta: InlineMeta) {
+        // Default: no-op (BruteForce ignores inline meta)
+    }
+
+    /// Get inline metadata for a VectorId.
+    fn get_inline_meta(&self, _id: VectorId) -> Option<&InlineMeta> {
+        None
+    }
+
+    /// Remove inline metadata for a VectorId.
+    fn remove_inline_meta(&mut self, _id: VectorId) {
+        // Default: no-op
     }
 
     // ========================================================================
