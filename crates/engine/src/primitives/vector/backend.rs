@@ -151,6 +151,14 @@ pub trait VectorIndexBackend: Send + Sync {
         // Default: no-op (BruteForce has no derived structures)
     }
 
+    /// Seal any remaining active buffer entries into HNSW segments.
+    ///
+    /// Called after loading graphs from mmap cache to ensure no vectors
+    /// remain in the brute-force active buffer. Default: no-op.
+    fn seal_remaining_active(&mut self) {
+        // Default: no-op (backends without active buffers ignore this)
+    }
+
     /// Write the embedding heap to a `.vec` mmap cache file.
     ///
     /// Called after recovery to create a disk cache that speeds up subsequent

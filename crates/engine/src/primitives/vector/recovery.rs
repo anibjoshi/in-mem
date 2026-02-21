@@ -282,10 +282,17 @@ fn recover_from_db(db: &Database) -> StrataResult<()> {
             }
             if !loaded {
                 backend.rebuild_index();
-                if use_mmap {
-                    let gdir = super::graph_dir(data_dir, cid.branch_id, &cid.name);
-                    let _ = backend.freeze_graphs_to_disk(&gdir);
-                }
+            }
+
+            // Seal any remaining active buffer entries into HNSW segments.
+            // After graph loading, partial chunks may remain in the active
+            // buffer for O(n) brute-force search. Sealing them into HNSW
+            // segments ensures all vectors benefit from O(log n) search.
+            backend.seal_remaining_active();
+
+            if use_mmap {
+                let gdir = super::graph_dir(data_dir, cid.branch_id, &cid.name);
+                let _ = backend.freeze_graphs_to_disk(&gdir);
             }
         }
     }
