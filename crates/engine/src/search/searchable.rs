@@ -243,13 +243,16 @@ pub trait Scorer: Send + Sync {
 /// - tf = term frequency in document
 /// - dl = document length
 /// - avgdl = average document length
-/// - k1 = term saturation parameter (default 1.2)
-/// - b = length normalization parameter (default 0.75)
+/// - k1 = term saturation parameter (default 0.9)
+/// - b = length normalization parameter (default 0.4)
+///
+/// Defaults follow Anserini/Pyserini (k1=0.9, b=0.4), which outperform
+/// Lucene's raw defaults (1.2/0.75) on BEIR benchmarks.
 #[derive(Debug, Clone)]
 pub struct BM25LiteScorer {
-    /// k1 parameter: term frequency saturation (default 1.2)
+    /// k1 parameter: term frequency saturation (default 0.9)
     pub k1: f32,
-    /// b parameter: length normalization (default 0.75)
+    /// b parameter: length normalization (default 0.4)
     pub b: f32,
     /// Optional recency boost factor (0.0 = disabled)
     pub recency_boost: f32,
@@ -258,8 +261,8 @@ pub struct BM25LiteScorer {
 impl Default for BM25LiteScorer {
     fn default() -> Self {
         BM25LiteScorer {
-            k1: 1.2,
-            b: 0.75,
+            k1: 0.9,
+            b: 0.4,
             recency_boost: 0.1,
         }
     }
@@ -470,7 +473,7 @@ impl SimpleScorer {
 
 /// Truncate text to max byte length, adding "..." if truncated.
 /// Rounds down to the nearest char boundary to avoid splitting multi-byte UTF-8.
-fn truncate_text(text: &str, max_len: usize) -> String {
+pub fn truncate_text(text: &str, max_len: usize) -> String {
     if text.len() <= max_len {
         text.to_string()
     } else {
@@ -508,6 +511,21 @@ pub fn build_search_response_with_index(
     elapsed_micros: u64,
     index: Option<&InvertedIndex>,
 ) -> SearchResponse {
+    build_search_response_with_scorer(candidates, query, k, truncated, elapsed_micros, index, None)
+}
+
+/// Build SearchResponse with optional index and optional custom scorer.
+///
+/// When `scorer` is `None`, uses `BM25LiteScorer::default()`.
+pub fn build_search_response_with_scorer(
+    candidates: Vec<SearchCandidate>,
+    query: &str,
+    k: usize,
+    truncated: bool,
+    elapsed_micros: u64,
+    index: Option<&InvertedIndex>,
+    scorer: Option<&BM25LiteScorer>,
+) -> SearchResponse {
     let candidates_count = candidates.len();
 
     // If index is enabled, use BM25LiteScorer with corpus stats
@@ -522,7 +540,8 @@ pub fn build_search_response_with_index(
                 ctx.add_doc_freq(term, idx.doc_freq(term));
             }
 
-            let scorer = BM25LiteScorer::default();
+            let default_scorer = BM25LiteScorer::default();
+            let scorer = scorer.unwrap_or(&default_scorer);
 
             let mut scored: Vec<(SearchCandidate, f32)> = candidates
                 .into_iter()

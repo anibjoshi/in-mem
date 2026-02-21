@@ -67,9 +67,9 @@ pub use vector::{
 
 // Re-export search types for convenience (from search module)
 pub use crate::search::{
-    build_search_response, build_search_response_with_index, tokenize, tokenize_unique,
-    BM25LiteScorer, InvertedIndex, PostingEntry, PostingList, Scorer, ScorerContext,
-    SearchCandidate, SearchDoc, Searchable, SimpleScorer,
+    build_search_response, build_search_response_with_index, build_search_response_with_scorer,
+    tokenize, tokenize_unique, BM25LiteScorer, InvertedIndex, PostingEntry, PostingList, Scorer,
+    ScorerContext, SearchCandidate, SearchDoc, Searchable, SimpleScorer,
 };
 
 // Re-export extension traits for convenience

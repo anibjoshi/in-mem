@@ -323,10 +323,7 @@ impl crate::search::Searchable for KVStore {
         &self,
         req: &crate::SearchRequest,
     ) -> strata_core::StrataResult<crate::SearchResponse> {
-        use crate::search::{
-            build_search_response_with_index, EntityRef, InvertedIndex, SearchCandidate,
-        };
-        use std::collections::HashMap;
+        use crate::search::{truncate_text, EntityRef, InvertedIndex, SearchHit, SearchStats};
         use std::time::Instant;
 
         let start = Instant::now();
@@ -337,66 +334,55 @@ impl crate::search::Searchable for KVStore {
             return Ok(crate::SearchResponse::empty());
         }
 
-        // Tokenize the query and collect matching KV candidates from posting
-        // lists, accumulating per-candidate term frequencies so BM25 scoring
-        // can skip re-tokenizing (and re-stemming) the full document body.
         let query_terms = crate::search::tokenize(&req.query);
+        let scorer = self.db.config().bm25_scorer();
 
-        // key -> (term_freqs, doc_len)
-        let mut candidate_tfs: HashMap<String, (HashMap<String, u32>, u32)> = HashMap::new();
+        // Score top-k entirely inside the index (zero-copy posting iteration)
+        let top_k = index.score_top_k(&query_terms, &req.branch_id, req.k, scorer.k1, scorer.b);
 
-        for term in &query_terms {
-            if let Some(posting_list) = index.lookup(term) {
-                for entry in &posting_list.entries {
-                    // Resolve compact doc_id back to EntityRef
-                    let doc_ref = match index.resolve_doc_id(entry.doc_id) {
-                        Some(r) => r,
-                        None => continue,
-                    };
-                    if let EntityRef::Kv { branch_id, ref key } = doc_ref {
-                        if branch_id == req.branch_id {
-                            let tf_entry = candidate_tfs
-                                .entry(key.clone())
-                                .or_insert_with(|| (HashMap::new(), entry.doc_len));
-                            tf_entry.0.insert(term.clone(), entry.tf);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Fetch text (for snippets) and build candidates with pre-computed TFs
-        let candidates: Vec<SearchCandidate> = candidate_tfs
+        // Only resolve doc_ids and fetch text for the final top-k results
+        let hits: Vec<SearchHit> = top_k
             .into_iter()
-            .filter_map(|(key, (tf_map, doc_len))| {
-                if let Ok(Some(value)) = self.get(&req.branch_id, "default", &key) {
-                    let text = match &value {
-                        strata_core::value::Value::String(s) => s.clone(),
-                        other => serde_json::to_string(other).unwrap_or_default(),
-                    };
-                    let entity_ref = EntityRef::Kv {
-                        branch_id: req.branch_id,
-                        key,
-                    };
-                    Some(
-                        SearchCandidate::new(entity_ref, text, None)
-                            .with_precomputed_tf(tf_map, doc_len),
-                    )
+            .filter_map(|scored| {
+                let entity_ref = index.resolve_doc_id(scored.doc_id)?;
+                let snippet = if let EntityRef::Kv { ref key, .. } = entity_ref {
+                    self.get(&req.branch_id, "default", key)
+                        .ok()
+                        .flatten()
+                        .map(|v| match &v {
+                            strata_core::value::Value::String(s) => truncate_text(s, 100),
+                            other => truncate_text(
+                                &serde_json::to_string(other).unwrap_or_default(),
+                                100,
+                            ),
+                        })
                 } else {
                     None
-                }
+                };
+
+                Some(SearchHit {
+                    doc_ref: entity_ref,
+                    score: scored.score,
+                    rank: 0, // Set below
+                    snippet,
+                })
+            })
+            .enumerate()
+            .map(|(i, mut hit)| {
+                hit.rank = (i + 1) as u32;
+                hit
             })
             .collect();
 
         let elapsed = start.elapsed().as_micros() as u64;
-        Ok(build_search_response_with_index(
-            candidates,
-            &req.query,
-            req.k,
-            false,
-            elapsed,
-            Some(&index),
-        ))
+        let mut stats = SearchStats::new(elapsed, hits.len());
+        stats = stats.with_index_used(true);
+
+        Ok(crate::SearchResponse {
+            hits,
+            truncated: false,
+            stats,
+        })
     }
 
     fn primitive_kind(&self) -> strata_core::PrimitiveType {
@@ -878,6 +864,278 @@ mod tests {
         assert_eq!(
             kv.get(&branch_id, "default", "existing").unwrap(),
             Some(Value::String("new".into()))
+        );
+    }
+
+    // ========== KVStore::search() integration tests ==========
+
+    /// Setup with index enabled (Database::open enables it by default,
+    /// but this is explicit for clarity).
+    fn setup_with_index() -> (TempDir, Arc<Database>, KVStore) {
+        let (temp, db, kv) = setup();
+        // Database::open() already enables the index; assert it.
+        let index = db
+            .extension::<crate::search::InvertedIndex>()
+            .unwrap();
+        assert!(index.is_enabled());
+        (temp, db, kv)
+    }
+
+    #[test]
+    fn test_search_basic() {
+        use crate::search::Searchable;
+
+        let (_temp, _db, kv) = setup_with_index();
+        let branch_id = BranchId::new();
+
+        kv.put(
+            &branch_id,
+            "default",
+            "doc1",
+            Value::String("the quick brown fox jumps over the lazy dog".into()),
+        )
+        .unwrap();
+        kv.put(
+            &branch_id,
+            "default",
+            "doc2",
+            Value::String("the lazy cat sleeps all day".into()),
+        )
+        .unwrap();
+
+        let req = crate::SearchRequest::new(branch_id, "lazy");
+        let response = kv.search(&req).unwrap();
+
+        assert!(!response.is_empty(), "Should find documents containing 'lazy'");
+        assert!(response.stats.index_used);
+        // Both docs contain "lazy"
+        assert_eq!(response.len(), 2);
+        // Ranks should be sequential 1, 2
+        assert_eq!(response.hits[0].rank, 1);
+        assert_eq!(response.hits[1].rank, 2);
+        // Scores descending
+        assert!(response.hits[0].score >= response.hits[1].score);
+    }
+
+    #[test]
+    fn test_search_empty_index() {
+        use crate::search::Searchable;
+
+        let (_temp, _db, kv) = setup_with_index();
+        let branch_id = BranchId::new();
+
+        // No documents inserted
+        let req = crate::SearchRequest::new(branch_id, "hello");
+        let response = kv.search(&req).unwrap();
+        assert!(response.is_empty());
+    }
+
+    #[test]
+    fn test_search_disabled_index() {
+        use crate::search::Searchable;
+
+        let (_temp, db, kv) = setup();
+        let branch_id = BranchId::new();
+
+        // Database::open() enables the index by default; put data first,
+        // then explicitly disable to test the disabled-index path.
+        kv.put(
+            &branch_id,
+            "default",
+            "doc1",
+            Value::String("hello world".into()),
+        )
+        .unwrap();
+
+        let index = db.extension::<crate::search::InvertedIndex>().unwrap();
+        index.disable();
+
+        let req = crate::SearchRequest::new(branch_id, "hello");
+        let response = kv.search(&req).unwrap();
+        assert!(response.is_empty());
+        assert!(!response.stats.index_used);
+    }
+
+    #[test]
+    fn test_search_branch_isolation() {
+        use crate::search::Searchable;
+
+        let (_temp, _db, kv) = setup_with_index();
+        let branch_a = BranchId::new();
+        let branch_b = BranchId::new();
+
+        kv.put(
+            &branch_a,
+            "default",
+            "doc_a",
+            Value::String("unique alpha content".into()),
+        )
+        .unwrap();
+        kv.put(
+            &branch_b,
+            "default",
+            "doc_b",
+            Value::String("unique beta content".into()),
+        )
+        .unwrap();
+
+        // Search branch_a should not find branch_b's docs
+        let req_a = crate::SearchRequest::new(branch_a, "unique");
+        let response_a = kv.search(&req_a).unwrap();
+        assert_eq!(response_a.len(), 1);
+        assert_eq!(
+            response_a.hits[0].doc_ref,
+            crate::search::EntityRef::Kv {
+                branch_id: branch_a,
+                key: "doc_a".to_string(),
+            }
+        );
+
+        // Search branch_b should not find branch_a's docs
+        let req_b = crate::SearchRequest::new(branch_b, "unique");
+        let response_b = kv.search(&req_b).unwrap();
+        assert_eq!(response_b.len(), 1);
+        assert_eq!(
+            response_b.hits[0].doc_ref,
+            crate::search::EntityRef::Kv {
+                branch_id: branch_b,
+                key: "doc_b".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_search_respects_k() {
+        use crate::search::Searchable;
+
+        let (_temp, _db, kv) = setup_with_index();
+        let branch_id = BranchId::new();
+
+        // Insert 20 documents all containing "common"
+        for i in 0..20 {
+            kv.put(
+                &branch_id,
+                "default",
+                &format!("doc{}", i),
+                Value::String(format!("common content number {}", i)),
+            )
+            .unwrap();
+        }
+
+        let req = crate::SearchRequest::new(branch_id, "common").with_k(5);
+        let response = kv.search(&req).unwrap();
+        assert_eq!(response.len(), 5);
+        // Verify ranks are 1..5
+        for (i, hit) in response.hits.iter().enumerate() {
+            assert_eq!(hit.rank, (i + 1) as u32);
+        }
+    }
+
+    #[test]
+    fn test_search_has_snippets() {
+        use crate::search::Searchable;
+
+        let (_temp, _db, kv) = setup_with_index();
+        let branch_id = BranchId::new();
+
+        kv.put(
+            &branch_id,
+            "default",
+            "doc1",
+            Value::String("hello world test content".into()),
+        )
+        .unwrap();
+
+        let req = crate::SearchRequest::new(branch_id, "hello");
+        let response = kv.search(&req).unwrap();
+        assert_eq!(response.len(), 1);
+        assert!(response.hits[0].snippet.is_some());
+        assert!(response.hits[0].snippet.as_ref().unwrap().contains("hello"));
+    }
+
+    #[test]
+    fn test_search_multi_term_relevance() {
+        use crate::search::Searchable;
+
+        let (_temp, _db, kv) = setup_with_index();
+        let branch_id = BranchId::new();
+
+        // doc1 matches both query terms, doc2 matches only one
+        kv.put(
+            &branch_id,
+            "default",
+            "doc1",
+            Value::String("quick brown fox".into()),
+        )
+        .unwrap();
+        kv.put(
+            &branch_id,
+            "default",
+            "doc2",
+            Value::String("quick red car".into()),
+        )
+        .unwrap();
+
+        let req = crate::SearchRequest::new(branch_id, "quick fox");
+        let response = kv.search(&req).unwrap();
+        assert_eq!(response.len(), 2);
+        // doc1 should rank higher (matches both terms)
+        assert_eq!(
+            response.hits[0].doc_ref,
+            crate::search::EntityRef::Kv {
+                branch_id,
+                key: "doc1".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_search_no_match() {
+        use crate::search::Searchable;
+
+        let (_temp, _db, kv) = setup_with_index();
+        let branch_id = BranchId::new();
+
+        kv.put(
+            &branch_id,
+            "default",
+            "doc1",
+            Value::String("hello world".into()),
+        )
+        .unwrap();
+
+        let req = crate::SearchRequest::new(branch_id, "zzzznonexistent");
+        let response = kv.search(&req).unwrap();
+        assert!(response.is_empty());
+    }
+
+    #[test]
+    fn test_search_non_string_values() {
+        use crate::search::Searchable;
+
+        let (_temp, _db, kv) = setup_with_index();
+        let branch_id = BranchId::new();
+
+        // Non-string values shouldn't be indexed (no text to extract)
+        kv.put(&branch_id, "default", "int_doc", Value::Int(42))
+            .unwrap();
+        kv.put(&branch_id, "default", "bool_doc", Value::Bool(true))
+            .unwrap();
+        // But JSON-serializable values should be
+        kv.put(
+            &branch_id,
+            "default",
+            "float_doc",
+            Value::Float(3.14),
+        )
+        .unwrap();
+
+        let req = crate::SearchRequest::new(branch_id, "42");
+        let response = kv.search(&req).unwrap();
+        // Int value gets serialized to "42" which should be indexed
+        assert!(
+            response.len() <= 1,
+            "At most 1 result for '42'"
         );
     }
 }

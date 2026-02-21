@@ -77,6 +77,14 @@ pub struct StrataConfig {
     /// When opened via `OpenOptions`, defaults to 512.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embed_batch_size: Option<usize>,
+    /// BM25 k1 parameter (term frequency saturation).
+    /// Default: 0.9 (Anserini/Pyserini BEIR standard).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bm25_k1: Option<f32>,
+    /// BM25 b parameter (document length normalization).
+    /// Default: 0.4 (Anserini/Pyserini BEIR standard).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bm25_b: Option<f32>,
 }
 
 fn default_durability_str() -> String {
@@ -90,11 +98,25 @@ impl Default for StrataConfig {
             auto_embed: false,
             model: None,
             embed_batch_size: None,
+            bm25_k1: None,
+            bm25_b: None,
         }
     }
 }
 
 impl StrataConfig {
+    /// Build a BM25 scorer using configured parameters (or defaults).
+    pub fn bm25_scorer(&self) -> crate::search::BM25LiteScorer {
+        let mut scorer = crate::search::BM25LiteScorer::default();
+        if let Some(k1) = self.bm25_k1 {
+            scorer.k1 = k1;
+        }
+        if let Some(b) = self.bm25_b {
+            scorer.b = b;
+        }
+        scorer
+    }
+
     /// Parse the durability string into a `DurabilityMode`.
     ///
     /// # Errors
@@ -127,6 +149,12 @@ auto_embed = false
 # Embedding batch size for auto-embed (default: 512 via OpenOptions).
 # Increase for bulk ingestion, decrease for interactive use.
 # embed_batch_size = 512
+
+# BM25 scoring parameters (defaults: k1=0.9, b=0.4 per Anserini/Pyserini).
+# Increase k1 for more term-frequency sensitivity, increase b for more
+# length normalization. Lucene defaults are k1=1.2, b=0.75.
+# bm25_k1 = 0.9
+# bm25_b = 0.4
 
 # Model configuration for query expansion and re-ranking.
 # Uncomment and configure to enable intelligent search features.
@@ -285,6 +313,8 @@ mod tests {
                 timeout_ms: 3000,
             }),
             embed_batch_size: None,
+            bm25_k1: None,
+            bm25_b: None,
         };
 
         let toml_str = toml::to_string_pretty(&config).unwrap();
@@ -306,6 +336,8 @@ mod tests {
             auto_embed: false,
             model: None,
             embed_batch_size: None,
+            bm25_k1: None,
+            bm25_b: None,
         };
 
         let toml_str = toml::to_string_pretty(&config).unwrap();
@@ -359,6 +391,8 @@ model = "qwen3:1.7b"
                 timeout_ms: 5000,
             }),
             embed_batch_size: None,
+            bm25_k1: None,
+            bm25_b: None,
         };
 
         config.write_to_file(&path).unwrap();
@@ -368,5 +402,53 @@ model = "qwen3:1.7b"
         let model = loaded.model.unwrap();
         assert_eq!(model.endpoint, "http://localhost:8080/v1");
         assert_eq!(model.model, "llama3");
+    }
+
+    #[test]
+    fn bm25_scorer_uses_defaults_when_none() {
+        let config = StrataConfig::default();
+        let scorer = config.bm25_scorer();
+        assert!((scorer.k1 - 0.9).abs() < 0.001);
+        assert!((scorer.b - 0.4).abs() < 0.001);
+    }
+
+    #[test]
+    fn bm25_scorer_uses_config_overrides() {
+        let config = StrataConfig {
+            bm25_k1: Some(1.2),
+            bm25_b: Some(0.75),
+            ..StrataConfig::default()
+        };
+        let scorer = config.bm25_scorer();
+        assert!((scorer.k1 - 1.2).abs() < 0.001);
+        assert!((scorer.b - 0.75).abs() < 0.001);
+    }
+
+    #[test]
+    fn bm25_config_backward_compat() {
+        // Old config files without bm25 fields should parse fine
+        let old_toml = r#"
+durability = "standard"
+auto_embed = false
+"#;
+        let config: StrataConfig = toml::from_str(old_toml).unwrap();
+        assert!(config.bm25_k1.is_none());
+        assert!(config.bm25_b.is_none());
+        let scorer = config.bm25_scorer();
+        assert!((scorer.k1 - 0.9).abs() < 0.001);
+        assert!((scorer.b - 0.4).abs() < 0.001);
+    }
+
+    #[test]
+    fn bm25_config_round_trip() {
+        let config = StrataConfig {
+            bm25_k1: Some(1.5),
+            bm25_b: Some(0.6),
+            ..StrataConfig::default()
+        };
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        let parsed: StrataConfig = toml::from_str(&toml_str).unwrap();
+        assert!((parsed.bm25_k1.unwrap() - 1.5).abs() < 0.001);
+        assert!((parsed.bm25_b.unwrap() - 0.6).abs() < 0.001);
     }
 }
