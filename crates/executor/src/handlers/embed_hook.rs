@@ -268,7 +268,7 @@ pub fn flush_embed_buffer(p: &Arc<Primitives>) {
             pe.branch_id,
             pe.shadow_collection,
             &composite_key,
-            &embedding,
+            embedding,
             Some(metadata),
             pe.source_ref,
         ) {

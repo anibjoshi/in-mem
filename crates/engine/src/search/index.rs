@@ -483,6 +483,7 @@ impl InvertedIndex {
         // [Opt 2] Combined IDF + posting location caching.
         // One find_term per (segment, term) — result cached for posting iteration.
         // Each entry: (term_str, idf, Vec<Option<(posting_offset, posting_byte_len)>>)
+        #[allow(clippy::type_complexity)]
         let term_data: Vec<(&str, f32, Vec<Option<(u32, u32)>>)> = query_terms
             .iter()
             .map(|t| {

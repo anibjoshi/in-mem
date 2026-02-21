@@ -17,6 +17,9 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Format strata-inference (path dependency)
+        run: cargo fmt --manifest-path ../strata-inference/Cargo.toml --all
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
