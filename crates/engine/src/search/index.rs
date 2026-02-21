@@ -462,11 +462,17 @@ impl InvertedIndex {
         let total_docs = self.total_docs.load(Ordering::Acquire) as f32;
         let avg_doc_len = self.avg_doc_len().max(1.0);
 
-        // Precompute IDF for each query term (across all segments)
+        // Acquire sealed lock ONCE — used for both IDF and scoring
+        let sealed = self.sealed.read().unwrap();
+
+        // Precompute IDF inline (avoids doc_freq() re-acquiring sealed lock per term)
         let term_idfs: Vec<(&str, f32)> = query_terms
             .iter()
             .map(|t| {
-                let df = self.doc_freq(t) as f32;
+                let active_df = self.doc_freqs.get(t.as_str()).map(|r| *r).unwrap_or(0);
+                let sealed_df: usize =
+                    sealed.iter().map(|seg| seg.doc_freq(t) as usize).sum();
+                let df = (active_df + sealed_df) as f32;
                 let idf = ((total_docs - df + 0.5) / (df + 0.5) + 1.0).ln();
                 (t.as_str(), idf)
             })
@@ -475,8 +481,13 @@ impl InvertedIndex {
         // Acquire doc_id_map read lock ONCE for the entire search
         let id_to_ref = self.doc_id_map.id_to_ref.read().unwrap();
 
-        // Accumulate BM25 scores by doc_id (u32 key = fast hashing)
-        let mut scores: HashMap<u32, f32> = HashMap::new();
+        // Pre-size score accumulator
+        let mut scores: HashMap<u32, f32> = HashMap::with_capacity(256);
+
+        // Precompute the BM25 denominator constant: k1 * (1 - b + b / avg_doc_len)
+        let k1_times_b_over_avg = scorer_k1 * scorer_b / avg_doc_len;
+        let k1_times_one_minus_b = scorer_k1 * (1.0 - scorer_b);
+        let k1_plus_1 = scorer_k1 + 1.0;
 
         // --- Score active segment ---
         for (term, idf) in &term_idfs {
@@ -488,36 +499,33 @@ impl InvertedIndex {
                     }
                     let tf = entry.tf as f32;
                     let dl = entry.doc_len as f32;
-                    let tf_component = (tf * (scorer_k1 + 1.0))
-                        / (tf + scorer_k1 * (1.0 - scorer_b + scorer_b * dl / avg_doc_len));
-                    let partial = idf * tf_component;
-                    *scores.entry(entry.doc_id).or_insert(0.0) += partial;
+                    let tf_component =
+                        (tf * k1_plus_1) / (tf + k1_times_one_minus_b + k1_times_b_over_avg * dl);
+                    *scores.entry(entry.doc_id).or_insert(0.0) += idf * tf_component;
                 }
             }
         }
 
         // --- Score sealed segments ---
-        let sealed = self.sealed.read().unwrap();
+        // Zero-copy iteration: posting_iter avoids Vec allocation,
+        // tombstone_guard avoids per-entry RwLock acquisition.
         for seg in sealed.iter() {
+            let tombstones = seg.tombstone_guard();
             for (term, idf) in &term_idfs {
-                if let Some(entries) = seg.posting_entries(term) {
-                    for entry in &entries {
-                        // Skip tombstoned docs
-                        if seg.is_tombstoned(entry.doc_id) {
+                if let Some(iter) = seg.posting_iter(term) {
+                    for entry in iter {
+                        if tombstones.contains(&entry.doc_id) {
                             continue;
                         }
-                        // Branch filter
                         match id_to_ref.get(entry.doc_id as usize) {
                             Some(entity_ref) if entity_ref.branch_id() == *branch_id => {}
                             _ => continue,
                         }
                         let tf = entry.tf as f32;
                         let dl = entry.doc_len as f32;
-                        let tf_component = (tf * (scorer_k1 + 1.0))
-                            / (tf
-                                + scorer_k1 * (1.0 - scorer_b + scorer_b * dl / avg_doc_len));
-                        let partial = idf * tf_component;
-                        *scores.entry(entry.doc_id).or_insert(0.0) += partial;
+                        let tf_component = (tf * k1_plus_1)
+                            / (tf + k1_times_one_minus_b + k1_times_b_over_avg * dl);
+                        *scores.entry(entry.doc_id).or_insert(0.0) += idf * tf_component;
                     }
                 }
             }
@@ -529,17 +537,26 @@ impl InvertedIndex {
             return Vec::new();
         }
 
-        // Collect, sort descending by score, and take top-k
+        // Collect and select top-k (partial sort is O(n) vs O(n log n) full sort)
         let mut result: Vec<ScoredDocId> = scores
             .into_iter()
             .map(|(doc_id, score)| ScoredDocId { doc_id, score })
             .collect();
-        result.sort_unstable_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        result.truncate(k);
+
+        let cmp =
+            |a: &ScoredDocId, b: &ScoredDocId| -> std::cmp::Ordering {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            };
+
+        if result.len() > k {
+            // O(n) partition: puts top-k elements in [0..k] (unordered)
+            result.select_nth_unstable_by(k - 1, cmp);
+            result.truncate(k);
+        }
+        // Sort only the k elements (k is typically 10)
+        result.sort_unstable_by(cmp);
         result
     }
 
@@ -571,10 +588,10 @@ impl InvertedIndex {
         let tokens = tokenize(text);
         let doc_len = tokens.len() as u32;
 
-        // Count term frequencies
-        let mut tf_map: HashMap<String, u32> = HashMap::new();
-        for token in &tokens {
-            *tf_map.entry(token.clone()).or_insert(0) += 1;
+        // Count term frequencies — consume tokens to avoid cloning
+        let mut tf_map: HashMap<String, u32> = HashMap::with_capacity(tokens.len());
+        for token in tokens {
+            *tf_map.entry(token).or_insert(0) += 1;
         }
 
         // Update posting lists
@@ -1852,6 +1869,76 @@ mod tests {
             assert!(resolved.contains(&doc1));
             assert!(resolved.contains(&doc2));
         }
+    }
+
+    #[test]
+    fn test_score_top_k_sealed_matches_bm25_formula() {
+        // Verify the precomputed BM25 constants produce correct scores
+        // through the sealed segment (posting_iter) path.
+        let index = InvertedIndex::new();
+        index.enable();
+        let branch_id = BranchId::new();
+
+        let doc = kv_ref(branch_id, "doc1");
+        index.index_document(&doc, "hello hello world", None);
+
+        // Seal so scoring goes through posting_iter path
+        index.seal_active();
+
+        let k1 = 1.2_f32;
+        let b = 0.75_f32;
+        let terms = vec!["hello".to_string()];
+        let result = index.score_top_k(&terms, &branch_id, 10, k1, b);
+        assert_eq!(result.len(), 1);
+
+        // Manual BM25 calculation (same as active-segment test)
+        let total_docs = 1.0_f32;
+        let df = 1.0_f32;
+        let expected_idf = ((total_docs - df + 0.5) / (df + 0.5) + 1.0).ln();
+        let tf = 2.0_f32;
+        let dl = 3.0_f32;
+        let avg_dl = 3.0_f32;
+        let tf_comp = (tf * (k1 + 1.0)) / (tf + k1 * (1.0 - b + b * dl / avg_dl));
+        let expected_score = expected_idf * tf_comp;
+
+        assert!(
+            (result[0].score - expected_score).abs() < 1e-5,
+            "Sealed score {} should match expected BM25 {}",
+            result[0].score,
+            expected_score
+        );
+    }
+
+    #[test]
+    fn test_score_top_k_sealed_tombstone_with_posting_iter() {
+        // Ensure tombstone filtering works with posting_iter (not posting_entries)
+        let index = InvertedIndex::new();
+        index.enable();
+        let branch_id = BranchId::new();
+
+        let doc1 = kv_ref(branch_id, "doc1");
+        let doc2 = kv_ref(branch_id, "doc2");
+        let doc3 = kv_ref(branch_id, "doc3");
+        index.index_document(&doc1, "hello world", None);
+        index.index_document(&doc2, "hello planet", None);
+        index.index_document(&doc3, "hello galaxy", None);
+
+        index.seal_active();
+
+        // Tombstone the middle doc
+        index.remove_document(&doc2);
+
+        let terms = vec!["hello".to_string()];
+        let result = index.score_top_k(&terms, &branch_id, 10, 0.9, 0.4);
+        assert_eq!(result.len(), 2);
+
+        let resolved: Vec<EntityRef> = result
+            .iter()
+            .map(|r| index.resolve_doc_id(r.doc_id).unwrap())
+            .collect();
+        assert!(resolved.contains(&doc1));
+        assert!(resolved.contains(&doc3));
+        assert!(!resolved.contains(&doc2));
     }
 
     #[test]

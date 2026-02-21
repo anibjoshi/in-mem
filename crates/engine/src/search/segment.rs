@@ -37,7 +37,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::io::{self, Write};
 use std::path::Path;
-use std::sync::RwLock;
+use std::sync::{RwLock, RwLockReadGuard};
 
 use super::index::PostingEntry;
 
@@ -214,6 +214,11 @@ impl SealedSegment {
         self.tombstones.read().unwrap().contains(&doc_id)
     }
 
+    /// Acquire the tombstone set for batch lookups (avoids per-entry lock).
+    pub fn tombstone_guard(&self) -> RwLockReadGuard<'_, HashSet<u32>> {
+        self.tombstones.read().unwrap()
+    }
+
     /// Get tombstone set (for manifest serialization)
     pub fn tombstones(&self) -> HashSet<u32> {
         self.tombstones.read().unwrap().clone()
@@ -250,6 +255,31 @@ impl SealedSegment {
         }
         let posting_bytes = &bytes[abs_offset..end];
         decode_posting_list(posting_bytes)
+    }
+
+    /// Zero-allocation iterator over posting entries for a term.
+    ///
+    /// Lazily decodes delta-encoded varints directly from the segment data.
+    /// Does NOT filter tombstones — caller must check.
+    pub fn posting_iter(&self, term: &str) -> Option<PostingIter<'_>> {
+        let (_, _, posting_offset, posting_len) = self.find_term(term)?;
+        let bytes = self.data.as_bytes();
+        let abs_offset = self.postings_offset as usize + posting_offset as usize;
+        let end = abs_offset + posting_len as usize;
+        if end > bytes.len() {
+            return None;
+        }
+        let posting_bytes = &bytes[abs_offset..end];
+        if posting_bytes.len() < 4 {
+            return None;
+        }
+        let num_entries = u32::from_le_bytes(posting_bytes[0..4].try_into().unwrap());
+        Some(PostingIter {
+            data: posting_bytes,
+            pos: 4,
+            remaining: num_entries,
+            prev_doc_id: 0,
+        })
     }
 
     /// Binary search the term dictionary for a term.
@@ -318,6 +348,46 @@ impl SealedSegment {
         }
         std::fs::rename(&tmp_path, path)?;
         Ok(())
+    }
+}
+
+// ============================================================================
+// PostingIter — zero-allocation posting list traversal
+// ============================================================================
+
+/// Iterator that lazily decodes delta-encoded posting entries from segment data.
+///
+/// Avoids the `Vec<PostingEntry>` allocation of `posting_entries()`.
+pub struct PostingIter<'a> {
+    data: &'a [u8],
+    pos: usize,
+    remaining: u32,
+    prev_doc_id: u32,
+}
+
+impl<'a> Iterator for PostingIter<'a> {
+    type Item = PostingEntry;
+
+    #[inline]
+    fn next(&mut self) -> Option<PostingEntry> {
+        if self.remaining == 0 {
+            return None;
+        }
+        self.remaining -= 1;
+        let (delta, n1) = decode_varint(&self.data[self.pos..])?;
+        self.pos += n1;
+        let (tf, n2) = decode_varint(&self.data[self.pos..])?;
+        self.pos += n2;
+        let (doc_len, n3) = decode_varint(&self.data[self.pos..])?;
+        self.pos += n3;
+        self.prev_doc_id += delta;
+        Some(PostingEntry::new(self.prev_doc_id, tf, doc_len))
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let r = self.remaining as usize;
+        (r, Some(r))
     }
 }
 
@@ -629,5 +699,141 @@ mod tests {
     fn test_too_small_buffer() {
         let buf = vec![0u8; 10]; // too small for header
         assert!(SealedSegment::from_bytes(buf).is_err());
+    }
+
+    // ------------------------------------------------------------------
+    // PostingIter tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_posting_iter_matches_posting_entries() {
+        let mut terms = BTreeMap::new();
+        terms.insert(
+            "hello".to_string(),
+            vec![PostingEntry::new(0, 2, 5), PostingEntry::new(3, 1, 3)],
+        );
+        terms.insert(
+            "world".to_string(),
+            vec![PostingEntry::new(1, 4, 7)],
+        );
+
+        let seg = build_sealed_segment(1, terms, 3, 15);
+
+        // Verify posting_iter produces identical results to posting_entries
+        for term in &["hello", "world"] {
+            let entries = seg.posting_entries(term).unwrap();
+            let iter_entries: Vec<_> = seg.posting_iter(term).unwrap().collect();
+            assert_eq!(entries.len(), iter_entries.len(), "term={}", term);
+            for (a, b) in entries.iter().zip(iter_entries.iter()) {
+                assert_eq!(a.doc_id, b.doc_id, "term={}", term);
+                assert_eq!(a.tf, b.tf, "term={}", term);
+                assert_eq!(a.doc_len, b.doc_len, "term={}", term);
+            }
+        }
+    }
+
+    #[test]
+    fn test_posting_iter_missing_term() {
+        let mut terms = BTreeMap::new();
+        terms.insert("alpha".to_string(), vec![PostingEntry::new(0, 1, 5)]);
+        let seg = build_sealed_segment(1, terms, 1, 5);
+
+        assert!(seg.posting_iter("missing").is_none());
+    }
+
+    #[test]
+    fn test_posting_iter_empty_segment() {
+        let seg = build_sealed_segment(0, BTreeMap::new(), 0, 0);
+        assert!(seg.posting_iter("anything").is_none());
+    }
+
+    #[test]
+    fn test_posting_iter_large_delta_gaps() {
+        let mut terms = BTreeMap::new();
+        terms.insert(
+            "test".to_string(),
+            vec![
+                PostingEntry::new(100, 1, 10),
+                PostingEntry::new(10000, 2, 20),
+                PostingEntry::new(1000000, 3, 30),
+            ],
+        );
+        let seg = build_sealed_segment(1, terms, 3, 60);
+
+        let iter_entries: Vec<_> = seg.posting_iter("test").unwrap().collect();
+        assert_eq!(iter_entries.len(), 3);
+        assert_eq!(iter_entries[0].doc_id, 100);
+        assert_eq!(iter_entries[1].doc_id, 10000);
+        assert_eq!(iter_entries[2].doc_id, 1000000);
+    }
+
+    #[test]
+    fn test_posting_iter_size_hint() {
+        let mut terms = BTreeMap::new();
+        terms.insert(
+            "word".to_string(),
+            vec![PostingEntry::new(0, 1, 5), PostingEntry::new(1, 1, 5), PostingEntry::new(2, 1, 5)],
+        );
+        let seg = build_sealed_segment(1, terms, 3, 15);
+
+        let mut iter = seg.posting_iter("word").unwrap();
+        assert_eq!(iter.size_hint(), (3, Some(3)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (2, Some(2)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (1, Some(1)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (0, Some(0)));
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_posting_iter_after_mmap_roundtrip() {
+        let mut terms = BTreeMap::new();
+        terms.insert(
+            "hello".to_string(),
+            vec![PostingEntry::new(0, 2, 5), PostingEntry::new(3, 1, 3)],
+        );
+        let seg = build_sealed_segment(42, terms, 2, 8);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("test.sidx");
+        seg.write_to_file(&path).unwrap();
+
+        let loaded = SealedSegment::from_mmap(&path).unwrap();
+        let iter_entries: Vec<_> = loaded.posting_iter("hello").unwrap().collect();
+        assert_eq!(iter_entries.len(), 2);
+        assert_eq!(iter_entries[0].doc_id, 0);
+        assert_eq!(iter_entries[0].tf, 2);
+        assert_eq!(iter_entries[1].doc_id, 3);
+        assert_eq!(iter_entries[1].tf, 1);
+    }
+
+    // ------------------------------------------------------------------
+    // tombstone_guard tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_tombstone_guard_batch_lookup() {
+        let mut terms = BTreeMap::new();
+        terms.insert(
+            "hello".to_string(),
+            vec![
+                PostingEntry::new(0, 1, 5),
+                PostingEntry::new(1, 1, 5),
+                PostingEntry::new(2, 1, 5),
+            ],
+        );
+        let seg = build_sealed_segment(1, terms, 3, 15);
+
+        seg.add_tombstone(0);
+        seg.add_tombstone(2);
+
+        // Guard should see both tombstones without re-acquiring the lock
+        let guard = seg.tombstone_guard();
+        assert!(guard.contains(&0));
+        assert!(!guard.contains(&1));
+        assert!(guard.contains(&2));
+        assert!(!guard.contains(&99));
     }
 }

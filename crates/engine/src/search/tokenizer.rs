@@ -51,17 +51,28 @@ fn strip_possessive(word: &str) -> &str {
 /// assert_eq!(tokens, vec!["quick", "brown", "fox"]);
 /// ```
 pub fn tokenize(text: &str) -> Vec<String> {
+    let mut buf = String::with_capacity(32);
     text.unicode_words()
         .map(strip_possessive)
-        .map(|w| {
-            w.chars()
-                .filter(|c| c.is_alphanumeric())
-                .collect::<String>()
+        .filter_map(|w| {
+            buf.clear();
+            for c in w.chars() {
+                if c.is_alphanumeric() {
+                    // Most search text is ASCII — fast path avoids to_lowercase iterator
+                    if c.is_ascii() {
+                        buf.push(c.to_ascii_lowercase());
+                    } else {
+                        for lc in c.to_lowercase() {
+                            buf.push(lc);
+                        }
+                    }
+                }
+            }
+            if buf.len() < 2 || is_stopword(&buf) {
+                return None;
+            }
+            Some(stemmer::stem(&buf))
         })
-        .map(|w| w.to_lowercase())
-        .filter(|s| s.len() >= 2)
-        .filter(|s| !is_stopword(s))
-        .map(|s| stemmer::stem(&s))
         .collect()
 }
 
@@ -246,5 +257,41 @@ mod tests {
         let tokens = tokenize("user@example.com");
         assert!(tokens.contains(&"user".to_string()));
         assert!(tokens.contains(&"examplecom".to_string()));
+    }
+
+    #[test]
+    fn test_unicode_accented() {
+        // Non-ASCII alphanumeric chars should be preserved and lowercased
+        let tokens = tokenize("Café résumé naïve");
+        assert_eq!(tokens, vec!["café", "résumé", "naïve"]);
+    }
+
+    #[test]
+    fn test_mixed_ascii_unicode() {
+        // Mix of ASCII and non-ASCII in same input
+        let tokens = tokenize("Hello über world");
+        assert_eq!(tokens, vec!["hello", "über", "world"]);
+    }
+
+    #[test]
+    fn test_only_possessive_suffix() {
+        // Word that is entirely "'s" after strip — should be filtered by len < 2
+        // UAX#29 won't produce a bare "'s" as a word, but verify strip_possessive
+        // doesn't panic on short words
+        assert_eq!(strip_possessive("'s"), "");
+        assert_eq!(strip_possessive("x"), "x");
+        assert_eq!(strip_possessive(""), "");
+    }
+
+    #[test]
+    fn test_consecutive_calls_share_buffer() {
+        // Verify multiple calls produce correct independent results
+        // (regression test for the reusable buffer optimization)
+        let t1 = tokenize("hello world");
+        let t2 = tokenize("goodbye planet");
+        let t3 = tokenize("hello world");
+        assert_eq!(t1, vec!["hello", "world"]);
+        assert_eq!(t2, vec!["goodby", "planet"]);
+        assert_eq!(t1, t3);
     }
 }
