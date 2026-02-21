@@ -42,6 +42,7 @@ type FnCuDeviceGet = unsafe extern "C" fn(device: *mut CUdevice, ordinal: i32) -
 type FnCuCtxCreate =
     unsafe extern "C" fn(ctx: *mut CUcontext, flags: u32, dev: CUdevice) -> CUresult;
 type FnCuCtxDestroy = unsafe extern "C" fn(ctx: CUcontext) -> CUresult;
+type FnCuCtxSetCurrent = unsafe extern "C" fn(ctx: CUcontext) -> CUresult;
 type FnCuMemAlloc = unsafe extern "C" fn(dptr: *mut CUdeviceptr, bytesize: usize) -> CUresult;
 type FnCuMemFree = unsafe extern "C" fn(dptr: CUdeviceptr) -> CUresult;
 type FnCuMemcpyHtoD =
@@ -93,6 +94,7 @@ pub struct CudaApi {
 
     // Function pointers (private — accessed through safe wrappers below).
     cu_ctx_destroy: FnCuCtxDestroy,
+    cu_ctx_set_current: FnCuCtxSetCurrent,
     cu_mem_alloc: FnCuMemAlloc,
     cu_mem_free: FnCuMemFree,
     cu_memcpy_h_to_d: FnCuMemcpyHtoD,
@@ -114,7 +116,8 @@ pub struct CudaApi {
 
 // SAFETY: All CUDA Driver API functions are thread-safe per the CUDA
 // programming guide (section 3.3.1 — "The driver API is thread-safe").
-// The context is created on load and used across threads.
+// The context is created on load and made current on other threads via
+// cuCtxSetCurrent before use (see CudaBackend's ensure_current calls).
 unsafe impl Send for CudaApi {}
 unsafe impl Sync for CudaApi {}
 
@@ -168,6 +171,7 @@ impl CudaApi {
         let cu_device_get: FnCuDeviceGet = load_sym!(lib, "cuDeviceGet");
         let cu_ctx_create: FnCuCtxCreate = load_sym!(lib, "cuCtxCreate_v2");
         let cu_ctx_destroy: FnCuCtxDestroy = load_sym!(lib, "cuCtxDestroy_v2");
+        let cu_ctx_set_current: FnCuCtxSetCurrent = load_sym!(lib, "cuCtxSetCurrent");
         let cu_mem_alloc: FnCuMemAlloc = load_sym!(lib, "cuMemAlloc_v2");
         let cu_mem_free: FnCuMemFree = load_sym!(lib, "cuMemFree_v2");
         let cu_memcpy_h_to_d: FnCuMemcpyHtoD = load_sym!(lib, "cuMemcpyHtoD_v2");
@@ -224,6 +228,7 @@ impl CudaApi {
             _lib: lib,
             ctx,
             cu_ctx_destroy,
+            cu_ctx_set_current,
             cu_mem_alloc,
             cu_mem_free,
             cu_memcpy_h_to_d,
@@ -246,6 +251,19 @@ impl CudaApi {
     // -----------------------------------------------------------------------
     // Safe wrappers — each checks CUresult and returns Result<_, String>
     // -----------------------------------------------------------------------
+
+    /// Make this context current on the calling thread.
+    ///
+    /// CUDA contexts are thread-local. When a context is created on one thread
+    /// and used from another (e.g. model loaded on a background thread, used
+    /// for search on the main thread), this must be called first.
+    /// No-op if the context is already current.
+    pub fn ensure_current(&self) {
+        let rc = unsafe { (self.cu_ctx_set_current)(self.ctx) };
+        if rc != CUDA_SUCCESS {
+            tracing::warn!(target: "strata::embed", "cuCtxSetCurrent failed with error code {}", rc);
+        }
+    }
 
     /// Destroy a CUDA context.
     pub fn ctx_destroy(&self, ctx: CUcontext) -> Result<(), String> {

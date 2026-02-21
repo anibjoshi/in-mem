@@ -188,6 +188,7 @@ impl CudaBackend {
 
     /// Allocate device memory and copy host f32 data to it.
     fn upload_f32(&self, data: &[f32]) -> Result<CudaBuffer, String> {
+        self.api.ensure_current();
         let bytesize = data.len() * std::mem::size_of::<f32>();
         let ptr = self.api.mem_alloc_async(bytesize, self.stream)?;
         self.api
@@ -202,6 +203,7 @@ impl CudaBackend {
 
     /// Allocate zeroed device memory for `n` f32 elements.
     fn alloc_zeros_f32(&self, n: usize) -> Result<CudaBuffer, String> {
+        self.api.ensure_current();
         let bytesize = n * std::mem::size_of::<f32>();
         let ptr = self.api.mem_alloc_async(bytesize, self.stream)?;
         // cuMemsetD32Async sets each 32-bit word on the compute stream;
@@ -217,6 +219,7 @@ impl CudaBackend {
 
     /// Upload u32 data to the device.
     fn upload_u32(&self, data: &[u32]) -> Result<CudaBuffer, String> {
+        self.api.ensure_current();
         let bytesize = data.len() * std::mem::size_of::<u32>();
         let ptr = self.api.mem_alloc_async(bytesize, self.stream)?;
         self.api
@@ -231,6 +234,7 @@ impl CudaBackend {
 
     /// Download `n` f32 elements from device to host.
     fn download_f32(&self, ptr: CUdeviceptr, n: usize) -> Result<Vec<f32>, String> {
+        self.api.ensure_current();
         let mut host = vec![0.0f32; n];
         let bytesize = n * std::mem::size_of::<f32>();
         self.api
@@ -256,6 +260,7 @@ impl CudaBackend {
 
     /// Synchronize the compute stream.
     fn sync(&self) {
+        self.api.ensure_current();
         if let Err(e) = self.api.stream_synchronize(self.stream) {
             tracing::warn!(target: "strata::embed", error = %e, "CUDA: stream synchronize failed");
         }
@@ -275,6 +280,7 @@ impl CudaBackend {
         shared_mem: u32,
         params: &mut [*mut c_void],
     ) {
+        self.api.ensure_current();
         if let Err(e) = self.api.launch_kernel(
             func,
             grid,
