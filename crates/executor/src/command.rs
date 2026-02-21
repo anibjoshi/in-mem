@@ -780,6 +780,33 @@ pub enum Command {
         search: SearchQuery,
     },
 
+    // ==================== Embedding (2) ====================
+    /// Embed a single text string.
+    /// Returns: `Output::Embedding`
+    Embed {
+        /// Text to embed.
+        text: String,
+    },
+
+    /// Embed a batch of text strings.
+    /// Returns: `Output::Embeddings`
+    EmbedBatch {
+        /// Texts to embed.
+        texts: Vec<String>,
+    },
+
+    // ==================== Model Management (2) ====================
+    /// List all available models in the registry.
+    /// Returns: `Output::ModelsList`
+    ModelsList,
+
+    /// Download a model by name.
+    /// Returns: `Output::ModelsPulled`
+    ModelsPull {
+        /// Model name to download (e.g., "miniLM", "nomic-embed").
+        name: String,
+    },
+
     // ==================== Space (4) ====================
     /// List spaces in a branch.
     /// Returns: `Output::SpaceList`
@@ -866,6 +893,7 @@ impl Command {
                 | Command::BranchExport { .. }
                 | Command::BranchImport { .. }
                 | Command::ConfigureModel { .. }
+                | Command::ModelsPull { .. }
         )
     }
 
@@ -933,6 +961,10 @@ impl Command {
             Command::ConfigureModel { .. } => "ConfigureModel",
             Command::Search { .. } => "Search",
             Command::EmbedStatus => "EmbedStatus",
+            Command::Embed { .. } => "Embed",
+            Command::EmbedBatch { .. } => "EmbedBatch",
+            Command::ModelsList => "ModelsList",
+            Command::ModelsPull { .. } => "ModelsPull",
             Command::SpaceList { .. } => "SpaceList",
             Command::SpaceCreate { .. } => "SpaceCreate",
             Command::SpaceDelete { .. } => "SpaceDelete",
@@ -1039,6 +1071,10 @@ impl Command {
             | Command::Flush
             | Command::Compact
             | Command::EmbedStatus
+            | Command::Embed { .. }
+            | Command::EmbedBatch { .. }
+            | Command::ModelsList
+            | Command::ModelsPull { .. }
             | Command::BranchExport { .. }
             | Command::BranchImport { .. }
             | Command::BranchBundleValidate { .. }

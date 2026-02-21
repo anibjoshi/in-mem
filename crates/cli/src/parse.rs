@@ -144,6 +144,8 @@ pub fn matches_to_action(matches: &ArgMatches, state: &SessionState) -> Result<C
         "compact" => Ok(CliAction::Execute(Command::Compact)),
         "search" => parse_search(sub_matches, state),
         "configure-model" => parse_configure_model(sub_matches),
+        "embed" => parse_embed(sub_matches),
+        "models" => parse_models(sub_matches),
         other => Err(format!("Unknown command: {}", other)),
     }
 }
@@ -946,6 +948,34 @@ fn parse_configure_model(matches: &ArgMatches) -> Result<CliAction, String> {
         api_key,
         timeout_ms,
     }))
+}
+
+fn parse_embed(matches: &ArgMatches) -> Result<CliAction, String> {
+    let texts: Vec<String> = matches
+        .get_many::<String>("texts")
+        .ok_or("Missing text argument")?
+        .cloned()
+        .collect();
+
+    if texts.len() == 1 {
+        Ok(CliAction::Execute(Command::Embed {
+            text: texts.into_iter().next().unwrap(),
+        }))
+    } else {
+        Ok(CliAction::Execute(Command::EmbedBatch { texts }))
+    }
+}
+
+fn parse_models(matches: &ArgMatches) -> Result<CliAction, String> {
+    let (sub, m) = matches.subcommand().ok_or("No models subcommand")?;
+    match sub {
+        "list" => Ok(CliAction::Execute(Command::ModelsList)),
+        "pull" => {
+            let name = m.get_one::<String>("name").unwrap().clone();
+            Ok(CliAction::Execute(Command::ModelsPull { name }))
+        }
+        other => Err(format!("Unknown models subcommand: {}", other)),
+    }
 }
 
 fn parse_search(matches: &ArgMatches, state: &SessionState) -> Result<CliAction, String> {

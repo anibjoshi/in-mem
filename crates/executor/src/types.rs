@@ -422,6 +422,25 @@ pub struct SearchQuery {
     pub rerank: Option<bool>,
 }
 
+/// Information about a model in the registry (serializable output type).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelInfoOutput {
+    /// Model name (e.g., "miniLM", "qwen3:8b").
+    pub name: String,
+    /// Model task ("embed" or "generate").
+    pub task: String,
+    /// Architecture (e.g., "bert", "llama").
+    pub architecture: String,
+    /// Default quantization variant.
+    pub default_quant: String,
+    /// Embedding dimension (0 for generation models).
+    pub embedding_dim: usize,
+    /// Whether the model has been downloaded locally.
+    pub is_local: bool,
+    /// Approximate model size in bytes.
+    pub size_bytes: u64,
+}
+
 /// A single hit from a cross-primitive search
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SearchResultHit {

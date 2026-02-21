@@ -871,6 +871,22 @@ impl Executor {
                 crate::handlers::branch::branch_bundle_validate(path)
             }
 
+            // Embedding commands
+            Command::Embed { text } => {
+                crate::handlers::embed::embed(&self.primitives, text)
+            }
+            Command::EmbedBatch { texts } => {
+                crate::handlers::embed::embed_batch(&self.primitives, texts)
+            }
+
+            // Model management commands
+            Command::ModelsList => {
+                crate::handlers::models::models_list(&self.primitives)
+            }
+            Command::ModelsPull { name } => {
+                crate::handlers::models::models_pull(&self.primitives, name)
+            }
+
             // Intelligence commands
             Command::ConfigureModel {
                 endpoint,

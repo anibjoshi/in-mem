@@ -85,6 +85,8 @@ pub fn build_cli() -> Command {
         .subcommand(build_search())
         .subcommand(build_setup())
         .subcommand(build_configure_model())
+        .subcommand(build_embed())
+        .subcommand(build_models())
 }
 
 /// Build a command tree for REPL mode (no global flags).
@@ -109,6 +111,8 @@ pub fn build_repl_cmd() -> Command {
         .subcommand(build_compact())
         .subcommand(build_search())
         .subcommand(build_configure_model())
+        .subcommand(build_embed())
+        .subcommand(build_models())
 }
 
 // =========================================================================
@@ -764,5 +768,41 @@ fn build_configure_model() -> Command {
             Arg::new("timeout")
                 .long("timeout")
                 .help("Request timeout in milliseconds (default: 5000)"),
+        )
+}
+
+// =========================================================================
+// Embed
+// =========================================================================
+
+fn build_embed() -> Command {
+    Command::new("embed")
+        .about("Embed text into a vector")
+        .arg(
+            Arg::new("texts")
+                .required(true)
+                .num_args(1..)
+                .value_name("TEXT")
+                .help("Text(s) to embed (single text → embed, multiple → embed-batch)"),
+        )
+}
+
+// =========================================================================
+// Models
+// =========================================================================
+
+fn build_models() -> Command {
+    Command::new("models")
+        .about("Model management")
+        .subcommand_required(true)
+        .subcommand(Command::new("list").about("List all available models"))
+        .subcommand(
+            Command::new("pull")
+                .about("Download a model")
+                .arg(
+                    Arg::new("name")
+                        .required(true)
+                        .help("Model name (e.g. miniLM, nomic-embed)"),
+                ),
         )
 }

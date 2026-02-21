@@ -316,6 +316,21 @@ fn format_raw(output: &Output) -> String {
             })
             .collect::<Vec<_>>()
             .join("\n"),
+        Output::Embedding(vec) => format!("{:?}", vec),
+        Output::Embeddings(vecs) => vecs
+            .iter()
+            .map(|v| format!("{:?}", v))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Output::ModelsList(models) => models
+            .iter()
+            .map(|m| {
+                let local = if m.is_local { "local" } else { "remote" };
+                format!("{}\t{}\t{}\t{}", m.name, m.task, m.architecture, local)
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Output::ModelsPulled { name, path } => format!("{}\t{}", name, path),
     }
 }
 
@@ -595,6 +610,58 @@ fn format_human(output: &Output) -> String {
                     .collect::<Vec<_>>()
                     .join("\n")
             }
+        }
+        Output::Embedding(vec) => {
+            format!("(embedding) [{} dimensions] {:?}", vec.len(), &vec[..vec.len().min(5)])
+        }
+        Output::Embeddings(vecs) => {
+            if vecs.is_empty() {
+                "(empty list)".to_string()
+            } else {
+                vecs.iter()
+                    .enumerate()
+                    .map(|(i, v)| {
+                        format!(
+                            "{}) [{} dimensions] {:?}",
+                            i + 1,
+                            v.len(),
+                            &v[..v.len().min(5)]
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+        }
+        Output::ModelsList(models) => {
+            if models.is_empty() {
+                "(empty list)".to_string()
+            } else {
+                models
+                    .iter()
+                    .enumerate()
+                    .map(|(i, m)| {
+                        let local_indicator = if m.is_local { " [local]" } else { "" };
+                        let dim_info = if m.embedding_dim > 0 {
+                            format!(", dim: {}", m.embedding_dim)
+                        } else {
+                            String::new()
+                        };
+                        format!(
+                            "{}) \"{}\" ({}, {}{}){}",
+                            i + 1,
+                            m.name,
+                            m.task,
+                            m.architecture,
+                            dim_info,
+                            local_indicator
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+        }
+        Output::ModelsPulled { name, path } => {
+            format!("Model \"{}\" downloaded to {}", name, path)
         }
     }
 }
