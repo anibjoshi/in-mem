@@ -62,6 +62,7 @@ pub use primitives::vector;
 pub use primitives::{
     build_search_response,
     build_search_response_with_index,
+    build_search_response_with_scorer,
     // Recovery
     register_vector_recovery,
     validate_collection_name,

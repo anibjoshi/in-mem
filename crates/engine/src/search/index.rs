@@ -32,6 +32,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
+use strata_core::types::BranchId;
 
 // ============================================================================
 // PostingEntry
@@ -61,6 +62,23 @@ impl PostingEntry {
             doc_len,
         }
     }
+}
+
+// ============================================================================
+// ScoredDocId
+// ============================================================================
+
+/// Result of in-index BM25 scoring: doc_id + score.
+///
+/// Returned by `InvertedIndex::score_top_k()` to avoid exposing
+/// posting list internals. Consumers resolve the `doc_id` back to
+/// an `EntityRef` via `InvertedIndex::resolve_doc_id()`.
+#[derive(Debug, Clone, Copy)]
+pub struct ScoredDocId {
+    /// Integer document identifier (resolve via InvertedIndex::resolve_doc_id)
+    pub doc_id: u32,
+    /// BM25 relevance score
+    pub score: f32,
 }
 
 // ============================================================================
@@ -338,6 +356,91 @@ impl InvertedIndex {
     /// entries back to the original document references.
     pub fn resolve_doc_id(&self, doc_id: u32) -> Option<EntityRef> {
         self.doc_id_map.resolve(doc_id)
+    }
+
+    // ========================================================================
+    // In-Index BM25 Scoring
+    // ========================================================================
+
+    /// Score documents using BM25 entirely within the index.
+    ///
+    /// Key optimizations over the previous approach:
+    /// - Posting lists iterated by DashMap reference (zero clone)
+    /// - doc_id_map RwLock acquired ONCE for entire search
+    /// - Scores accumulated by u32 doc_id (not String keys)
+    /// - Top-k extracted via sort + truncate
+    /// - No EntityRef resolution except for final top-k (done by caller)
+    pub fn score_top_k(
+        &self,
+        query_terms: &[String],
+        branch_id: &BranchId,
+        k: usize,
+        scorer_k1: f32,
+        scorer_b: f32,
+    ) -> Vec<ScoredDocId> {
+        if !self.is_enabled() || query_terms.is_empty() || k == 0 {
+            return Vec::new();
+        }
+
+        let total_docs = self.total_docs.load(Ordering::Acquire) as f32;
+        let avg_doc_len = self.avg_doc_len().max(1.0);
+
+        // Precompute IDF for each query term
+        let term_idfs: Vec<(&str, f32)> = query_terms
+            .iter()
+            .map(|t| {
+                let df = self.doc_freq(t) as f32;
+                let idf = ((total_docs - df + 0.5) / (df + 0.5) + 1.0).ln();
+                (t.as_str(), idf)
+            })
+            .collect();
+
+        // Acquire doc_id_map read lock ONCE for the entire search
+        let id_to_ref = self.doc_id_map.id_to_ref.read().unwrap();
+
+        // Accumulate BM25 scores by doc_id (u32 key = fast hashing)
+        let mut scores: HashMap<u32, f32> = HashMap::new();
+
+        for (term, idf) in &term_idfs {
+            // Iterate posting list by reference — NO clone
+            if let Some(posting_list) = self.postings.get(*term) {
+                for entry in &posting_list.entries {
+                    // Branch filter using held lock — no per-entry lock acquisition
+                    match id_to_ref.get(entry.doc_id as usize) {
+                        Some(entity_ref) if entity_ref.branch_id() == *branch_id => {}
+                        _ => continue,
+                    }
+
+                    // BM25 partial score for this term
+                    let tf = entry.tf as f32;
+                    let dl = entry.doc_len as f32;
+                    let tf_component = (tf * (scorer_k1 + 1.0))
+                        / (tf + scorer_k1 * (1.0 - scorer_b + scorer_b * dl / avg_doc_len));
+                    let partial = idf * tf_component;
+
+                    *scores.entry(entry.doc_id).or_insert(0.0) += partial;
+                }
+            }
+        }
+
+        drop(id_to_ref); // Release lock before sorting
+
+        if scores.is_empty() {
+            return Vec::new();
+        }
+
+        // Collect, sort descending by score, and take top-k
+        let mut result: Vec<ScoredDocId> = scores
+            .into_iter()
+            .map(|(doc_id, score)| ScoredDocId { doc_id, score })
+            .collect();
+        result.sort_unstable_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        result.truncate(k);
+        result
     }
 
     // ========================================================================
@@ -741,5 +844,378 @@ mod tests {
         assert_eq!(index.doc_freq("hello"), 0); // old term gone
         assert_eq!(index.doc_freq("planet"), 1); // new term present
         assert_eq!(index.doc_freq("world"), 1); // shared term still 1
+    }
+
+    // ====================================================================
+    // score_top_k tests
+    // ====================================================================
+
+    /// Helper: create a KV EntityRef with a specific branch_id
+    fn kv_ref(branch_id: BranchId, key: &str) -> EntityRef {
+        EntityRef::Kv {
+            branch_id,
+            key: key.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_score_top_k_disabled_index() {
+        let index = InvertedIndex::new();
+        // Index is disabled by default
+        let branch_id = BranchId::new();
+        let terms = vec!["hello".to_string()];
+        let result = index.score_top_k(&terms, &branch_id, 10, 0.9, 0.4);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_score_top_k_empty_query() {
+        let index = InvertedIndex::new();
+        index.enable();
+        let branch_id = BranchId::new();
+        let doc = kv_ref(branch_id, "doc1");
+        index.index_document(&doc, "hello world", None);
+
+        let result = index.score_top_k(&[], &branch_id, 10, 0.9, 0.4);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_score_top_k_k_zero() {
+        let index = InvertedIndex::new();
+        index.enable();
+        let branch_id = BranchId::new();
+        let doc = kv_ref(branch_id, "doc1");
+        index.index_document(&doc, "hello world", None);
+
+        let terms = vec!["hello".to_string()];
+        let result = index.score_top_k(&terms, &branch_id, 0, 0.9, 0.4);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_score_top_k_no_matching_term() {
+        let index = InvertedIndex::new();
+        index.enable();
+        let branch_id = BranchId::new();
+        let doc = kv_ref(branch_id, "doc1");
+        index.index_document(&doc, "hello world", None);
+
+        // Query with a term that doesn't exist in the index
+        let terms = vec!["nonexistent".to_string()];
+        let result = index.score_top_k(&terms, &branch_id, 10, 0.9, 0.4);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_score_top_k_basic_single_term() {
+        let index = InvertedIndex::new();
+        index.enable();
+        let branch_id = BranchId::new();
+
+        let doc1 = kv_ref(branch_id, "doc1");
+        let doc2 = kv_ref(branch_id, "doc2");
+        index.index_document(&doc1, "hello world", None);
+        index.index_document(&doc2, "hello planet", None);
+
+        let terms = vec!["hello".to_string()];
+        let result = index.score_top_k(&terms, &branch_id, 10, 0.9, 0.4);
+
+        // Both docs contain "hello", so both should appear
+        assert_eq!(result.len(), 2);
+        // All scores should be positive
+        assert!(result[0].score > 0.0);
+        assert!(result[1].score > 0.0);
+        // Results should be sorted descending by score
+        assert!(result[0].score >= result[1].score);
+    }
+
+    #[test]
+    fn test_score_top_k_branch_filtering() {
+        let index = InvertedIndex::new();
+        index.enable();
+        let branch_a = BranchId::new();
+        let branch_b = BranchId::new();
+
+        let doc_a = kv_ref(branch_a, "doc_a");
+        let doc_b = kv_ref(branch_b, "doc_b");
+        index.index_document(&doc_a, "hello world", None);
+        index.index_document(&doc_b, "hello planet", None);
+
+        // Search branch_a: should only find doc_a
+        let terms = vec!["hello".to_string()];
+        let result_a = index.score_top_k(&terms, &branch_a, 10, 0.9, 0.4);
+        assert_eq!(result_a.len(), 1);
+        let resolved = index.resolve_doc_id(result_a[0].doc_id).unwrap();
+        assert_eq!(resolved, doc_a);
+
+        // Search branch_b: should only find doc_b
+        let result_b = index.score_top_k(&terms, &branch_b, 10, 0.9, 0.4);
+        assert_eq!(result_b.len(), 1);
+        let resolved = index.resolve_doc_id(result_b[0].doc_id).unwrap();
+        assert_eq!(resolved, doc_b);
+    }
+
+    #[test]
+    fn test_score_top_k_respects_k_limit() {
+        let index = InvertedIndex::new();
+        index.enable();
+        let branch_id = BranchId::new();
+
+        // Index 20 documents all containing "common"
+        for i in 0..20 {
+            let doc = kv_ref(branch_id, &format!("doc{}", i));
+            index.index_document(&doc, &format!("common word{}", i), None);
+        }
+
+        let terms = vec!["common".to_string()];
+        let result = index.score_top_k(&terms, &branch_id, 5, 0.9, 0.4);
+        assert_eq!(result.len(), 5);
+    }
+
+    #[test]
+    fn test_score_top_k_multi_term_accumulation() {
+        let index = InvertedIndex::new();
+        index.enable();
+        let branch_id = BranchId::new();
+
+        // doc1 matches both query terms, doc2 matches only one
+        let doc1 = kv_ref(branch_id, "doc1");
+        let doc2 = kv_ref(branch_id, "doc2");
+        index.index_document(&doc1, "hello world", None);
+        index.index_document(&doc2, "hello planet", None);
+
+        let terms = vec!["hello".to_string(), "world".to_string()];
+        let result = index.score_top_k(&terms, &branch_id, 10, 0.9, 0.4);
+
+        assert_eq!(result.len(), 2);
+        // doc1 matches both terms, so it should score higher
+        let doc1_id = index.doc_id_map.get(&doc1).unwrap();
+        let doc1_score = result.iter().find(|r| r.doc_id == doc1_id).unwrap().score;
+        let doc2_id = index.doc_id_map.get(&doc2).unwrap();
+        let doc2_score = result.iter().find(|r| r.doc_id == doc2_id).unwrap().score;
+        assert!(
+            doc1_score > doc2_score,
+            "doc1 ({}) matches both terms, should score higher than doc2 ({})",
+            doc1_score,
+            doc2_score
+        );
+    }
+
+    #[test]
+    fn test_score_top_k_idf_weighting() {
+        let index = InvertedIndex::new();
+        index.enable();
+        let branch_id = BranchId::new();
+
+        // "common" appears in all 10 docs, "rare" appears in only 1
+        for i in 0..10 {
+            let doc = kv_ref(branch_id, &format!("doc{}", i));
+            if i == 0 {
+                index.index_document(&doc, "common rare", None);
+            } else {
+                index.index_document(&doc, "common filler", None);
+            }
+        }
+
+        // Search for "rare" — only doc0 should match
+        let rare_terms = vec!["rare".to_string()];
+        let rare_result = index.score_top_k(&rare_terms, &branch_id, 10, 0.9, 0.4);
+        assert_eq!(rare_result.len(), 1);
+
+        // Search for "common" — all 10 docs match
+        let common_terms = vec!["common".to_string()];
+        let common_result = index.score_top_k(&common_terms, &branch_id, 10, 0.9, 0.4);
+        assert_eq!(common_result.len(), 10);
+
+        // The "rare" term score for doc0 should be higher than "common" term
+        // score for doc0, because rare terms have higher IDF
+        let doc0_id = index.doc_id_map.get(&kv_ref(branch_id, "doc0")).unwrap();
+        let rare_score = rare_result.iter().find(|r| r.doc_id == doc0_id).unwrap().score;
+        let common_score = common_result
+            .iter()
+            .find(|r| r.doc_id == doc0_id)
+            .unwrap()
+            .score;
+        assert!(
+            rare_score > common_score,
+            "rare term score ({}) should be higher than common term score ({})",
+            rare_score,
+            common_score
+        );
+    }
+
+    #[test]
+    fn test_score_top_k_higher_tf_scores_higher() {
+        let index = InvertedIndex::new();
+        index.enable();
+        let branch_id = BranchId::new();
+
+        // doc1 has "hello" once, doc2 has "hello" three times
+        let doc1 = kv_ref(branch_id, "doc1");
+        let doc2 = kv_ref(branch_id, "doc2");
+        // Keep doc_len similar so TF is the main differentiator
+        index.index_document(&doc1, "hello filler padding", None);
+        index.index_document(&doc2, "hello hello hello", None);
+
+        let terms = vec!["hello".to_string()];
+        let result = index.score_top_k(&terms, &branch_id, 10, 0.9, 0.4);
+
+        assert_eq!(result.len(), 2);
+        let doc1_id = index.doc_id_map.get(&doc1).unwrap();
+        let doc2_id = index.doc_id_map.get(&doc2).unwrap();
+        let doc1_score = result.iter().find(|r| r.doc_id == doc1_id).unwrap().score;
+        let doc2_score = result.iter().find(|r| r.doc_id == doc2_id).unwrap().score;
+        assert!(
+            doc2_score > doc1_score,
+            "doc2 (tf=3, score={}) should beat doc1 (tf=1, score={})",
+            doc2_score,
+            doc1_score
+        );
+    }
+
+    #[test]
+    fn test_score_top_k_descending_order() {
+        let index = InvertedIndex::new();
+        index.enable();
+        let branch_id = BranchId::new();
+
+        // Index several docs with varying relevance
+        for i in 0..10 {
+            let doc = kv_ref(branch_id, &format!("doc{}", i));
+            // Repeat "target" i+1 times to create varying TF
+            let text = format!("{} filler", "target ".repeat(i + 1));
+            index.index_document(&doc, &text, None);
+        }
+
+        let terms = vec!["target".to_string()];
+        let result = index.score_top_k(&terms, &branch_id, 10, 0.9, 0.4);
+
+        // Verify strictly descending order
+        for window in result.windows(2) {
+            assert!(
+                window[0].score >= window[1].score,
+                "Results not sorted: {} should be >= {}",
+                window[0].score,
+                window[1].score
+            );
+        }
+    }
+
+    #[test]
+    fn test_score_top_k_scores_match_bm25_formula() {
+        let index = InvertedIndex::new();
+        index.enable();
+        let branch_id = BranchId::new();
+
+        // Single doc, single term: verify exact BM25 calculation
+        let doc = kv_ref(branch_id, "doc1");
+        index.index_document(&doc, "hello hello world", None);
+
+        let k1 = 1.2_f32;
+        let b = 0.75_f32;
+        let terms = vec!["hello".to_string()];
+        let result = index.score_top_k(&terms, &branch_id, 10, k1, b);
+        assert_eq!(result.len(), 1);
+
+        // Manual BM25 calculation:
+        // total_docs = 1, df("hello") = 1
+        // idf = ln((1 - 1 + 0.5) / (1 + 0.5) + 1) = ln(1.333...) ≈ 0.2877
+        let total_docs = 1.0_f32;
+        let df = 1.0_f32;
+        let expected_idf = ((total_docs - df + 0.5) / (df + 0.5) + 1.0).ln();
+
+        // tf = 2 (hello appears twice), doc_len = 3, avg_doc_len = 3
+        let tf = 2.0_f32;
+        let dl = 3.0_f32;
+        let avg_dl = 3.0_f32;
+        let tf_comp = (tf * (k1 + 1.0)) / (tf + k1 * (1.0 - b + b * dl / avg_dl));
+        let expected_score = expected_idf * tf_comp;
+
+        assert!(
+            (result[0].score - expected_score).abs() < 1e-5,
+            "Score {} should match expected BM25 {}",
+            result[0].score,
+            expected_score
+        );
+    }
+
+    #[test]
+    fn test_score_top_k_nonexistent_branch() {
+        let index = InvertedIndex::new();
+        index.enable();
+        let branch_a = BranchId::new();
+        let branch_nonexistent = BranchId::new();
+
+        let doc = kv_ref(branch_a, "doc1");
+        index.index_document(&doc, "hello world", None);
+
+        let terms = vec!["hello".to_string()];
+        let result = index.score_top_k(&terms, &branch_nonexistent, 10, 0.9, 0.4);
+        assert!(result.is_empty(), "No docs should match a non-existent branch");
+    }
+
+    #[test]
+    fn test_score_top_k_k_larger_than_matches() {
+        let index = InvertedIndex::new();
+        index.enable();
+        let branch_id = BranchId::new();
+
+        let doc = kv_ref(branch_id, "doc1");
+        index.index_document(&doc, "hello world", None);
+
+        // Request k=100 but only 1 doc matches
+        let terms = vec!["hello".to_string()];
+        let result = index.score_top_k(&terms, &branch_id, 100, 0.9, 0.4);
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_score_top_k_after_document_removal() {
+        let index = InvertedIndex::new();
+        index.enable();
+        let branch_id = BranchId::new();
+
+        let doc1 = kv_ref(branch_id, "doc1");
+        let doc2 = kv_ref(branch_id, "doc2");
+        index.index_document(&doc1, "hello world", None);
+        index.index_document(&doc2, "hello planet", None);
+
+        // Remove doc1
+        index.remove_document(&doc1);
+
+        let terms = vec!["hello".to_string()];
+        let result = index.score_top_k(&terms, &branch_id, 10, 0.9, 0.4);
+
+        // Only doc2 should remain
+        assert_eq!(result.len(), 1);
+        let resolved = index.resolve_doc_id(result[0].doc_id).unwrap();
+        assert_eq!(resolved, doc2);
+    }
+
+    #[test]
+    fn test_score_top_k_with_non_kv_entity() {
+        // Ensure non-KV entities are handled correctly (filtered by branch_id)
+        let index = InvertedIndex::new();
+        index.enable();
+        let branch_id = BranchId::new();
+
+        // Index a KV entity and an Event entity on the same branch
+        let kv_doc = EntityRef::Kv {
+            branch_id,
+            key: "doc1".to_string(),
+        };
+        let event_doc = EntityRef::Event {
+            branch_id,
+            sequence: 42,
+        };
+        index.index_document(&kv_doc, "hello world", None);
+        index.index_document(&event_doc, "hello planet", None);
+
+        let terms = vec!["hello".to_string()];
+        let result = index.score_top_k(&terms, &branch_id, 10, 0.9, 0.4);
+
+        // Both should match since we filter by branch_id, not entity type
+        assert_eq!(result.len(), 2);
     }
 }

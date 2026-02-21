@@ -12,10 +12,11 @@ pub mod stemmer;
 pub mod tokenizer;
 mod types;
 
-pub use index::{InvertedIndex, PostingEntry, PostingList};
+pub use index::{InvertedIndex, PostingEntry, PostingList, ScoredDocId};
 pub use searchable::{
-    build_search_response, build_search_response_with_index, BM25LiteScorer, Scorer, ScorerContext,
-    SearchCandidate, SearchDoc, Searchable, SimpleScorer,
+    build_search_response, build_search_response_with_index, build_search_response_with_scorer,
+    truncate_text, BM25LiteScorer, Scorer, ScorerContext, SearchCandidate, SearchDoc, Searchable,
+    SimpleScorer,
 };
 pub use tokenizer::{tokenize, tokenize_unique};
 pub use types::{
