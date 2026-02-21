@@ -3,12 +3,13 @@
 use std::sync::Arc;
 
 use crate::bridge::Primitives;
-use crate::types::ModelInfoOutput;
 use crate::{Error, Output, Result};
 
 /// Handle `Command::ModelsList`.
 #[cfg(feature = "embed")]
 pub fn models_list(_p: &Arc<Primitives>) -> Result<Output> {
+    use crate::types::ModelInfoOutput;
+
     let registry = strata_intelligence::ModelRegistry::new();
     let models = registry.list_available();
 
@@ -45,6 +46,8 @@ pub fn models_pull(_p: &Arc<Primitives>, name: String) -> Result<Output> {
 /// Handle `Command::ModelsLocal`.
 #[cfg(feature = "embed")]
 pub fn models_local(_p: &Arc<Primitives>) -> Result<Output> {
+    use crate::types::ModelInfoOutput;
+
     let registry = strata_intelligence::ModelRegistry::new();
     let models = registry.list_local();
 
