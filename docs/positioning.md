@@ -71,13 +71,35 @@ No schemas. No migrations. No query language. No infrastructure. The agent doesn
 
 **Eight tools, not eighty.** Tool selection accuracy degrades sharply past 10 tools. Strata collapses its full capabilities into 8 tools that map to cognitive intents: store, recall, search, forget, log, branch, history, status.
 
-## Where Strata Needs to Evolve
+## The Cognitive Architecture
 
-The primitives are in place — the bones and flesh. But the cognitive metaphor demands more. If Strata is truly the hippocampus and prefrontal cortex, it needs to close the gap between what it is today (a very good agent-friendly database) and what it should become (a cognitive component that handles persistence the way a colleague would — you throw something at it, say "remember this," and it handles the rest).
+The hippocampus doesn't work by magic. It's a layered structure — molecular, cellular, circuit, system — where each layer provides the substrate the next one builds on. Skip a layer and the whole thing collapses. Strata follows the same principle.
 
-That means the agent shouldn't need to decide whether something is a document or an event. Shouldn't need to pick a key or construct a path. Shouldn't need to reason about when to branch. The intelligence of persistence — not just the mechanics — should live in Strata.
+**Layer 1: Storage primitives.** KV, JSON documents, events, vectors, state cells. These are the raw neural substrate — individual neurons that can hold and fire. This layer exists and works today.
 
-The interface between AI and its state layer should feel less like a database API and more like the interface between the cortex and the hippocampus: seamless, automatic, and invisible.
+**Layer 2: Cross-primitive relationships.** Explicit, typed, traversable connections between any data across any primitive. This is the wiring between neurons. Without it, every piece of data is an island. With it, you have a connected structure that can be reasoned over. A patient record (JSON) links to lab results (KV) links to clinical notes (vectors) links to diagnosis events — and those relationships are branchable, versionable, and searchable like everything else. This is what's being built next.
+
+**Layer 3: Intelligent retrieval.** Search that goes beyond keyword matching and vector similarity. Three additional scoring signals feed into retrieval: graph proximity (PageRank and traversal distance — data that's structurally connected to what you're looking at ranks higher), temporal reinforcement (data that gets accessed frequently stays salient, data that's never recalled decays — spaced repetition applied to database retrieval), and learned query patterns (the query expansion and reranking models drift based on what the system gets asked repeatedly, so retrieval improves with use). This layer also includes automatic association — the system infers and maintains relationships as a side effect of normal operations, writing edges into the layer 2 graph without being asked. None of this works without the correct mechanical foundation underneath. Without a fast, branchable graph structure, inferred associations have nowhere to go. Without the event log capturing access patterns, there's no signal to learn from.
+
+**Layer 4: Cognitive interface.** The agent says "remember this" and Strata handles storage, keying, categorization, and relationship wiring. The agent says "what do we know about X" and Strata traverses associations, pulls from multiple primitives, and synthesizes. This is where intelligence at the interface layer belongs — not as the storage layer, but on top of correct mechanical and retrieval foundations.
+
+Each layer is useless without the one below it. Layer 4 without layer 2 is an LLM hallucinating relationships. Layer 3 without layer 2 is inferred associations with nowhere to put them and learned patterns with no graph to traverse. You can't skip to the cognitive interface by throwing an LLM at unstructured data and calling it intelligence. That's what everyone else is doing and it's brittle.
+
+The path is: get the wiring right (layer 2), then build intelligent retrieval on top (layer 3), then earn the right to expose a cognitive interface (layer 4).
+
+## Research Agenda
+
+Layers 3 and 4 require sustained research. The following areas are active or planned:
+
+**Beyond hybrid search.** RRF over BM25 + vector similarity is a solid baseline, but it's a rank-level heuristic that doesn't understand the query, the data, or the relationships between results. Strata needs to move toward retrieval models that reason about what to retrieve, not just pattern-match — retrieval-augmented language models (RLMs) that treat retrieval as a reasoning step rather than a lookup. Document chunking with overlap is table stakes; the real question is how retrieval interacts with the graph layer.
+
+**Graph-informed scoring.** Once layer 2 exists, graph signals become a natural input to search. PageRank-style authority scoring — a document referenced by many other documents ranks higher. Traversal proximity — results that are structurally close to the query context rank higher than isolated matches with the same BM25 score. This is where the graph layer pays for itself in retrieval quality, not just relationship queries.
+
+**Temporal reinforcement and decay.** Spaced repetition applied to database retrieval. Data that gets accessed frequently maintains high retrievability; data that's never recalled decays in ranking (not deleted — just deprioritized). The event log already records access patterns. The missing piece is an FSRS-style scheduler that converts access history into a retrieval score signal, and feeds that into the search pipeline alongside BM25, vector similarity, and graph proximity.
+
+**Adaptive query expansion and reranking.** The query expansion and reranking models should not be static. They should drift based on what the system gets asked — learning which expansions lead to results that get used, which reranking decisions correlate with agent satisfaction. This is online learning at the retrieval layer: the base models are general, but each Strata instance develops its own retrieval personality tuned to its workload. The event log provides the feedback signal; the question is how to close the loop without catastrophic drift.
+
+**Learning from the ecosystem.** The agent infrastructure ecosystem is moving fast. Projects like OpenClaw demonstrate that the community is already building extensions to bolt on relationships, temporal knowledge graphs, and multi-layer memory architectures on top of basic storage — exactly the capabilities Strata provides natively. The gap between what agents need and what storage provides is being filled by duct tape. Strata's opportunity is to provide the integrated foundation that makes the duct tape unnecessary.
 
 ## The Narrative
 
