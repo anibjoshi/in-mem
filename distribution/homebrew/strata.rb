@@ -1,7 +1,7 @@
 class Strata < Formula
   desc "Production-grade embedded database for AI agents"
   homepage "https://stratadb.org"
-  version "0.5.1"
+  version "0.6.0"
   license "Apache-2.0"
 
   on_macos do
