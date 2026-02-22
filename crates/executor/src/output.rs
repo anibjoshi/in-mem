@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 use strata_core::Value;
+use strata_engine::branch_ops::{BranchDiffResult, ForkInfo, MergeInfo};
+use strata_engine::{StrataConfig, WalCounters};
 
 use crate::types::*;
 
@@ -102,6 +104,21 @@ pub enum Output {
         /// Version number assigned to the creation event.
         version: u64,
     },
+
+    /// Branch fork result
+    BranchForked(ForkInfo),
+
+    /// Branch diff result
+    BranchDiff(BranchDiffResult),
+
+    /// Branch merge result
+    BranchMerged(MergeInfo),
+
+    /// Database configuration snapshot
+    Config(StrataConfig),
+
+    /// WAL durability counters
+    DurabilityCounters(WalCounters),
 
     // ==================== Transaction-specific ====================
     /// Transaction info

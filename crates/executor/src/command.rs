@@ -11,6 +11,7 @@
 
 use serde::{Deserialize, Serialize};
 use strata_core::Value;
+use strata_engine::MergeStrategy;
 
 use crate::types::*;
 
@@ -652,6 +653,35 @@ pub enum Command {
         branch: BranchId,
     },
 
+    /// Fork a branch, creating a complete copy of all its data.
+    /// Returns: `Output::BranchForked`
+    BranchFork {
+        /// Source branch name.
+        source: String,
+        /// Destination branch name.
+        destination: String,
+    },
+
+    /// Compare two branches and return structured differences.
+    /// Returns: `Output::BranchDiff`
+    BranchDiff {
+        /// First branch to compare.
+        branch_a: String,
+        /// Second branch to compare.
+        branch_b: String,
+    },
+
+    /// Merge data from source branch into target branch.
+    /// Returns: `Output::BranchMerged`
+    BranchMerge {
+        /// Source branch name.
+        source: String,
+        /// Target branch name.
+        target: String,
+        /// Conflict resolution strategy.
+        strategy: MergeStrategy,
+    },
+
     // ==================== Transaction (5) ====================
     /// Begin a new transaction.
     /// Returns: `Output::TxnBegun`
@@ -890,6 +920,25 @@ pub enum Command {
     /// Returns: `Output::EmbedStatus`
     EmbedStatus,
 
+    /// Get the current database configuration.
+    /// Returns: `Output::Config`
+    ConfigGet,
+
+    /// Enable or disable auto-embedding.
+    /// Returns: `Output::Unit`
+    ConfigSetAutoEmbed {
+        /// Whether to enable auto-embedding.
+        enabled: bool,
+    },
+
+    /// Check whether auto-embedding is enabled.
+    /// Returns: `Output::Bool`
+    AutoEmbedStatus,
+
+    /// Get WAL durability counters.
+    /// Returns: `Output::DurabilityCounters`
+    DurabilityCounters,
+
     /// Delete a space (must be empty unless force=true).
     /// Returns: `Output::Unit`
     SpaceDelete {
@@ -942,6 +991,9 @@ impl Command {
                 | Command::VectorBatchUpsert { .. }
                 | Command::BranchCreate { .. }
                 | Command::BranchDelete { .. }
+                | Command::BranchFork { .. }
+                | Command::BranchMerge { .. }
+                | Command::ConfigSetAutoEmbed { .. }
                 | Command::SpaceCreate { .. }
                 | Command::SpaceDelete { .. }
                 | Command::TxnBegin { .. }
@@ -1002,6 +1054,9 @@ impl Command {
             Command::BranchList { .. } => "BranchList",
             Command::BranchExists { .. } => "BranchExists",
             Command::BranchDelete { .. } => "BranchDelete",
+            Command::BranchFork { .. } => "BranchFork",
+            Command::BranchDiff { .. } => "BranchDiff",
+            Command::BranchMerge { .. } => "BranchMerge",
             Command::TxnBegin { .. } => "TxnBegin",
             Command::TxnCommit => "TxnCommit",
             Command::TxnRollback => "TxnRollback",
@@ -1021,6 +1076,10 @@ impl Command {
             Command::ConfigureModel { .. } => "ConfigureModel",
             Command::Search { .. } => "Search",
             Command::EmbedStatus => "EmbedStatus",
+            Command::ConfigGet => "ConfigGet",
+            Command::ConfigSetAutoEmbed { .. } => "ConfigSetAutoEmbed",
+            Command::AutoEmbedStatus => "AutoEmbedStatus",
+            Command::DurabilityCounters => "DurabilityCounters",
             Command::Embed { .. } => "Embed",
             Command::EmbedBatch { .. } => "EmbedBatch",
             Command::ModelsList => "ModelsList",
@@ -1127,6 +1186,9 @@ impl Command {
             | Command::BranchList { .. }
             | Command::BranchExists { .. }
             | Command::BranchDelete { .. }
+            | Command::BranchFork { .. }
+            | Command::BranchDiff { .. }
+            | Command::BranchMerge { .. }
             | Command::TxnCommit
             | Command::TxnRollback
             | Command::TxnInfo
@@ -1136,6 +1198,10 @@ impl Command {
             | Command::Flush
             | Command::Compact
             | Command::EmbedStatus
+            | Command::ConfigGet
+            | Command::ConfigSetAutoEmbed { .. }
+            | Command::AutoEmbedStatus
+            | Command::DurabilityCounters
             | Command::Embed { .. }
             | Command::EmbedBatch { .. }
             | Command::ModelsList

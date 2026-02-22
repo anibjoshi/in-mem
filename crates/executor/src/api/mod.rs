@@ -245,7 +245,7 @@ impl Strata {
     /// });
     /// ```
     pub fn new_handle(&self) -> Result<Self> {
-        let db = self.executor.primitives().db.clone();
+        let db = self.database();
         Self::from_database_with_mode(db, self.access_mode)
     }
 
@@ -318,8 +318,14 @@ impl Strata {
     }
 
     /// Get the underlying executor.
-    pub fn executor(&self) -> &Executor {
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn executor(&self) -> &Executor {
         &self.executor
+    }
+
+    /// Get a clone of the underlying database handle.
+    pub fn database(&self) -> Arc<Database> {
+        self.executor.primitives().db.clone()
     }
 
     /// Returns the access mode of this database handle.
@@ -329,9 +335,14 @@ impl Strata {
 
     /// Get WAL durability counters for diagnostics.
     ///
-    /// Returns `None` for cache (in-memory) databases.
-    pub fn durability_counters(&self) -> Option<strata_engine::WalCounters> {
-        self.executor.primitives().db.durability_counters()
+    /// Returns the current WAL counters (default zeroes for cache databases).
+    pub fn durability_counters(&self) -> Result<strata_engine::WalCounters> {
+        match self.executor.execute(Command::DurabilityCounters)? {
+            Output::DurabilityCounters(c) => Ok(c),
+            _ => Err(Error::Internal {
+                reason: "Unexpected output for DurabilityCounters".into(),
+            }),
+        }
     }
 
     /// Get a handle for branch management operations.
@@ -364,7 +375,7 @@ impl Strata {
     /// optional open transaction across multiple `execute()` calls.
     /// The session inherits the access mode of this handle.
     pub fn session(&self) -> Session {
-        Session::new_with_mode(self.executor.primitives().db.clone(), self.access_mode)
+        Session::new_with_mode(self.database(), self.access_mode)
     }
 
     // =========================================================================
@@ -1000,7 +1011,7 @@ mod tests {
     #[test]
     fn test_config_defaults() {
         let db = create_strata();
-        let cfg = db.config();
+        let cfg = db.config().unwrap();
         assert_eq!(cfg.durability, "standard");
         assert!(!cfg.auto_embed);
         assert!(cfg.model.is_none());
@@ -1012,7 +1023,7 @@ mod tests {
         db.configure_model("http://localhost:11434/v1", "qwen3:1.7b", None, None)
             .unwrap();
 
-        let cfg = db.config();
+        let cfg = db.config().unwrap();
         let model = cfg.model.unwrap();
         assert_eq!(model.endpoint, "http://localhost:11434/v1");
         assert_eq!(model.model, "qwen3:1.7b");
@@ -1031,7 +1042,7 @@ mod tests {
         )
         .unwrap();
 
-        let cfg = db.config();
+        let cfg = db.config().unwrap();
         let model = cfg.model.unwrap();
         assert_eq!(model.api_key.as_deref(), Some("sk-test-key"));
         assert_eq!(model.timeout_ms, 10000);
@@ -1040,13 +1051,13 @@ mod tests {
     #[test]
     fn test_auto_embed_toggle() {
         let db = create_strata();
-        assert!(!db.auto_embed_enabled());
+        assert!(!db.auto_embed_enabled().unwrap());
 
         db.set_auto_embed(true).unwrap();
-        assert!(db.auto_embed_enabled());
+        assert!(db.auto_embed_enabled().unwrap());
 
         db.set_auto_embed(false).unwrap();
-        assert!(!db.auto_embed_enabled());
+        assert!(!db.auto_embed_enabled().unwrap());
     }
 
     #[test]
@@ -1063,7 +1074,7 @@ mod tests {
         // Reopen — model config should survive via strata.toml
         {
             let db = Strata::open(dir.path()).unwrap();
-            let cfg = db.config();
+            let cfg = db.config().unwrap();
             let model = cfg
                 .model
                 .expect("model config should persist across reopen");
