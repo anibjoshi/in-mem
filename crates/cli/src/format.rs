@@ -932,8 +932,8 @@ mod tests {
     #[test]
     fn test_format_pong() {
         let pong = Output::Pong {
-            version: "0.5.2".to_string(),
+            version: "0.6.0".to_string(),
         };
-        assert_eq!(format_output(&pong, OutputMode::Human), "PONG 0.5.2");
+        assert_eq!(format_output(&pong, OutputMode::Human), "PONG 0.6.0");
     }
 }
