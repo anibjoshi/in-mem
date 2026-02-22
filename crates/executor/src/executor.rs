@@ -200,6 +200,16 @@ impl Executor {
                 let info = crate::handlers::embed_hook::embed_status(&self.primitives);
                 Ok(Output::EmbedStatus(info))
             }
+            Command::ConfigGet => crate::handlers::config::config_get(&self.primitives),
+            Command::ConfigSetAutoEmbed { enabled } => {
+                crate::handlers::config::config_set_auto_embed(&self.primitives, enabled)
+            }
+            Command::AutoEmbedStatus => {
+                crate::handlers::config::auto_embed_status(&self.primitives)
+            }
+            Command::DurabilityCounters => {
+                crate::handlers::config::durability_counters(&self.primitives)
+            }
             Command::TimeRange { branch } => {
                 let branch = branch.ok_or(Error::InvalidInput {
                     reason: "Branch must be specified or resolved to default".into(),
@@ -831,6 +841,18 @@ impl Executor {
             Command::BranchDelete { branch } => {
                 crate::handlers::branch::branch_delete(&self.primitives, branch)
             }
+            Command::BranchFork {
+                source,
+                destination,
+            } => crate::handlers::branch::branch_fork(&self.primitives, source, destination),
+            Command::BranchDiff { branch_a, branch_b } => {
+                crate::handlers::branch::branch_diff(&self.primitives, branch_a, branch_b)
+            }
+            Command::BranchMerge {
+                source,
+                target,
+                strategy,
+            } => crate::handlers::branch::branch_merge(&self.primitives, source, target, strategy),
 
             // Transaction commands - handled by Session, not Executor
             Command::TxnBegin { .. }
@@ -999,7 +1021,7 @@ impl Executor {
     }
 
     /// Get a reference to the underlying primitives.
-    pub fn primitives(&self) -> &Arc<Primitives> {
+    pub(crate) fn primitives(&self) -> &Arc<Primitives> {
         &self.primitives
     }
 }

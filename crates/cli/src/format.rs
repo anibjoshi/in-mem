@@ -260,6 +260,28 @@ fn format_raw(output: &Output) -> String {
         Output::BranchWithVersion { info, version } => {
             format!("{}\t{}", info.id, version)
         }
+        Output::BranchForked(info) => {
+            format!(
+                "{}\t{}\t{}",
+                info.source, info.destination, info.keys_copied
+            )
+        }
+        Output::BranchDiff(result) => {
+            format!(
+                "{}\t{}\t{}\t{}\t{}",
+                result.branch_a,
+                result.branch_b,
+                result.summary.total_added,
+                result.summary.total_removed,
+                result.summary.total_modified
+            )
+        }
+        Output::BranchMerged(info) => {
+            format!("{}\t{}\t{}", info.source, info.target, info.keys_applied)
+        }
+        Output::Config(_) | Output::DurabilityCounters(_) => {
+            serde_json::to_string(output).unwrap_or_default()
+        }
         Output::TxnInfo(None) => String::new(),
         Output::TxnInfo(Some(info)) => info.id.clone(),
         Output::TxnBegun => "OK".to_string(),
@@ -526,6 +548,57 @@ fn format_human(output: &Output) -> String {
         }
         Output::BranchWithVersion { info, version } => {
             format!("Branch \"{}\" created (v{})", info.id, version)
+        }
+        Output::BranchForked(info) => {
+            format!(
+                "Forked \"{}\" → \"{}\" ({} keys, {} spaces)",
+                info.source, info.destination, info.keys_copied, info.spaces_copied
+            )
+        }
+        Output::BranchDiff(result) => {
+            let mut lines = vec![format!(
+                "Diff: \"{}\" vs \"{}\"",
+                result.branch_a, result.branch_b
+            )];
+            lines.push(format!(
+                "  added: {}, removed: {}, modified: {}",
+                result.summary.total_added,
+                result.summary.total_removed,
+                result.summary.total_modified
+            ));
+            for space in &result.spaces {
+                lines.push(format!(
+                    "  space \"{}\": +{} -{} ~{}",
+                    space.space,
+                    space.added.len(),
+                    space.removed.len(),
+                    space.modified.len()
+                ));
+            }
+            lines.join("\n")
+        }
+        Output::BranchMerged(info) => {
+            let conflict_msg = if info.conflicts.is_empty() {
+                String::new()
+            } else {
+                format!(", {} conflicts", info.conflicts.len())
+            };
+            format!(
+                "Merged \"{}\" → \"{}\" ({} keys applied, {} spaces{})",
+                info.source, info.target, info.keys_applied, info.spaces_merged, conflict_msg
+            )
+        }
+        Output::Config(cfg) => {
+            serde_json::to_string_pretty(cfg).unwrap_or_else(|_| format!("{:?}", cfg))
+        }
+        Output::DurabilityCounters(counters) => {
+            format!(
+                "wal_appends: {}\nsync_calls: {}\nbytes_written: {}\nsync_nanos: {}",
+                counters.wal_appends,
+                counters.sync_calls,
+                counters.bytes_written,
+                counters.sync_nanos
+            )
         }
         Output::TxnInfo(None) => "(nil)".to_string(),
         Output::TxnInfo(Some(info)) => {
