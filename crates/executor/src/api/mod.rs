@@ -1280,6 +1280,139 @@ mod tests {
     }
 
     #[test]
+    fn test_graph_node_data_roundtrip() {
+        let db = create_strata();
+        db.graph_create("ng").unwrap();
+
+        // Add node with entity_ref and properties
+        db.graph_add_node(
+            "ng",
+            "patient-1",
+            Some("kv://main/p1"),
+            Some(Value::Object(
+                [
+                    ("department".to_string(), Value::String("cardiology".into())),
+                    ("age".to_string(), Value::Int(45)),
+                ]
+                .into_iter()
+                .collect(),
+            )),
+        )
+        .unwrap();
+
+        // Read back and verify the data round-trips
+        let node = db.graph_get_node("ng", "patient-1").unwrap();
+        assert!(node.is_some());
+        let node_val = node.unwrap();
+        // Node data is returned as a Value::Object with entity_ref and properties
+        match node_val {
+            Value::Object(map) => {
+                assert_eq!(
+                    map.get("entity_ref"),
+                    Some(&Value::String("kv://main/p1".into()))
+                );
+                // Properties should be present
+                assert!(map.contains_key("properties"));
+            }
+            _ => panic!("Expected Value::Object for node data, got {:?}", node_val),
+        }
+    }
+
+    #[test]
+    fn test_graph_create_with_cascade_policy() {
+        let db = create_strata();
+        db.graph_create_with_policy("cascade_g", Some("cascade")).unwrap();
+
+        let meta = db.graph_get_meta("cascade_g").unwrap();
+        assert!(meta.is_some());
+        let meta_val = meta.unwrap();
+        match meta_val {
+            Value::Object(map) => {
+                assert_eq!(
+                    map.get("cascade_policy"),
+                    Some(&Value::String("cascade".into()))
+                );
+            }
+            _ => panic!("Expected Value::Object for meta"),
+        }
+    }
+
+    #[test]
+    fn test_graph_invalid_name_errors() {
+        let db = create_strata();
+        assert!(db.graph_create("").is_err());
+        assert!(db.graph_create("has/slash").is_err());
+        assert!(db.graph_create("__reserved").is_err());
+    }
+
+    #[test]
+    fn test_graph_invalid_direction_errors() {
+        let db = create_strata();
+        db.graph_create("dg").unwrap();
+        db.graph_add_node("dg", "A", None, None).unwrap();
+
+        // Invalid direction string should error
+        let result = db.graph_neighbors("dg", "A", "invalid_dir", None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_graph_edge_with_weight_and_properties() {
+        let db = create_strata();
+        db.graph_create("wg").unwrap();
+
+        db.graph_add_edge(
+            "wg",
+            "A",
+            "B",
+            "SCORED",
+            Some(0.95),
+            Some(Value::Object(
+                [("confidence".to_string(), Value::String("high".into()))]
+                    .into_iter()
+                    .collect(),
+            )),
+        )
+        .unwrap();
+
+        // Verify weight comes back through neighbors API
+        let neighbors = db.graph_neighbors("wg", "A", "outgoing", None).unwrap();
+        assert_eq!(neighbors.len(), 1);
+        assert!((neighbors[0].weight - 0.95).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_graph_bfs_with_max_depth() {
+        let db = create_strata();
+        db.graph_create("bg").unwrap();
+
+        // A → B → C → D
+        db.graph_add_edge("bg", "A", "B", "E", None, None).unwrap();
+        db.graph_add_edge("bg", "B", "C", "E", None, None).unwrap();
+        db.graph_add_edge("bg", "C", "D", "E", None, None).unwrap();
+
+        // Depth 1 should only reach A and B
+        let result = db.graph_bfs("bg", "A", 1, None, None, None).unwrap();
+        assert_eq!(result.visited.len(), 2);
+        assert!(result.visited.contains(&"A".to_string()));
+        assert!(result.visited.contains(&"B".to_string()));
+    }
+
+    #[test]
+    fn test_graph_bfs_depths_correct() {
+        let db = create_strata();
+        db.graph_create("dg").unwrap();
+
+        db.graph_add_edge("dg", "A", "B", "E", None, None).unwrap();
+        db.graph_add_edge("dg", "B", "C", "E", None, None).unwrap();
+
+        let result = db.graph_bfs("dg", "A", 10, None, None, None).unwrap();
+        assert_eq!(result.depths.get("A"), Some(&0));
+        assert_eq!(result.depths.get("B"), Some(&1));
+        assert_eq!(result.depths.get("C"), Some(&2));
+    }
+
+    #[test]
     fn test_graph_read_only_rejects_writes() {
         let dir = tempfile::tempdir().unwrap();
 

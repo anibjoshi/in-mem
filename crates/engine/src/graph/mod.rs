@@ -106,13 +106,43 @@ impl GraphStore {
         })
     }
 
-    /// Delete a graph and all its data (nodes, edges, meta).
+    /// Delete a graph and all its data (nodes, edges, meta, ref index entries).
     pub fn delete_graph(&self, branch_id: BranchId, graph: &str) -> StrataResult<()> {
         let prefix = keys::graph_prefix(graph);
         let prefix_key = keys::storage_key(branch_id, &prefix);
+        let node_prefix = keys::all_nodes_prefix(graph);
 
         self.db.transaction(branch_id, |txn| {
             let results = txn.scan_prefix(&prefix_key)?;
+
+            // First pass: collect ref index keys to delete from nodes
+            let mut ref_keys_to_delete = Vec::new();
+            for (key, val) in &results {
+                if let Some(user_key) = key.user_key_string() {
+                    if user_key.starts_with(&node_prefix) {
+                        if let Value::String(json) = val {
+                            if let Ok(data) = serde_json::from_str::<NodeData>(json) {
+                                if let Some(uri) = data.entity_ref {
+                                    if let Some(node_id) =
+                                        keys::parse_node_key(graph, &user_key)
+                                    {
+                                        let rk = keys::ref_index_key(&uri, graph, &node_id);
+                                        ref_keys_to_delete
+                                            .push(keys::storage_key(branch_id, &rk));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Delete ref index entries
+            for rk in ref_keys_to_delete {
+                txn.delete(rk)?;
+            }
+
+            // Delete all graph keys (nodes, edges, meta)
             for (key, _) in results {
                 txn.delete(key)?;
             }
@@ -1196,6 +1226,132 @@ mod tests {
             .nodes_for_entity(branch, "kv://main/new")
             .unwrap();
         assert_eq!(new_refs.len(), 1);
+    }
+
+    #[test]
+    fn delete_graph_cleans_ref_index_entries() {
+        let (_db, gs) = setup();
+        let branch = default_branch();
+
+        gs.create_graph(branch, "rg", None).unwrap();
+        gs.add_node(
+            branch,
+            "rg",
+            "n1",
+            NodeData {
+                entity_ref: Some("kv://main/key1".to_string()),
+                properties: None,
+            },
+        )
+        .unwrap();
+        gs.add_node(
+            branch,
+            "rg",
+            "n2",
+            NodeData {
+                entity_ref: Some("kv://main/key2".to_string()),
+                properties: None,
+            },
+        )
+        .unwrap();
+
+        // Verify ref index entries exist before deletion
+        assert_eq!(gs.nodes_for_entity(branch, "kv://main/key1").unwrap().len(), 1);
+        assert_eq!(gs.nodes_for_entity(branch, "kv://main/key2").unwrap().len(), 1);
+
+        gs.delete_graph(branch, "rg").unwrap();
+
+        // Ref index entries should be cleaned up
+        assert!(gs.nodes_for_entity(branch, "kv://main/key1").unwrap().is_empty());
+        assert!(gs.nodes_for_entity(branch, "kv://main/key2").unwrap().is_empty());
+    }
+
+    #[test]
+    fn delete_graph_with_ref_does_not_affect_other_graph_refs() {
+        let (_db, gs) = setup();
+        let branch = default_branch();
+
+        gs.create_graph(branch, "gA", None).unwrap();
+        gs.create_graph(branch, "gB", None).unwrap();
+
+        let uri = "kv://main/shared";
+        gs.add_node(
+            branch,
+            "gA",
+            "n1",
+            NodeData {
+                entity_ref: Some(uri.to_string()),
+                properties: None,
+            },
+        )
+        .unwrap();
+        gs.add_node(
+            branch,
+            "gB",
+            "n1",
+            NodeData {
+                entity_ref: Some(uri.to_string()),
+                properties: None,
+            },
+        )
+        .unwrap();
+
+        gs.delete_graph(branch, "gA").unwrap();
+
+        // gB's ref should still exist
+        let refs = gs.nodes_for_entity(branch, uri).unwrap();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0], ("gB".to_string(), "n1".to_string()));
+    }
+
+    #[test]
+    fn add_node_then_get_verifies_all_fields() {
+        let (_db, gs) = setup();
+        let branch = default_branch();
+
+        gs.create_graph(branch, "ng", None).unwrap();
+        gs.add_node(
+            branch,
+            "ng",
+            "patient-1",
+            NodeData {
+                entity_ref: Some("kv://main/p1".to_string()),
+                properties: Some(serde_json::json!({"department": "cardiology", "age": 45})),
+            },
+        )
+        .unwrap();
+
+        let node = gs.get_node(branch, "ng", "patient-1").unwrap().unwrap();
+        assert_eq!(node.entity_ref, Some("kv://main/p1".to_string()));
+        let props = node.properties.unwrap();
+        assert_eq!(props["department"], "cardiology");
+        assert_eq!(props["age"], 45);
+    }
+
+    #[test]
+    fn add_edge_then_get_verifies_all_fields() {
+        let (_db, gs) = setup();
+        let branch = default_branch();
+
+        gs.create_graph(branch, "eg", None).unwrap();
+        gs.add_edge(
+            branch,
+            "eg",
+            "A",
+            "B",
+            "SCORED",
+            EdgeData {
+                weight: 0.75,
+                properties: Some(serde_json::json!({"source": "model", "confidence": 0.9})),
+            },
+        )
+        .unwrap();
+
+        let edge = gs.get_edge(branch, "eg", "A", "B", "SCORED").unwrap().unwrap();
+        assert_eq!(edge.weight, 0.75);
+        let props = edge.properties.unwrap();
+        assert_eq!(props["source"], "model");
+        assert!((props["confidence"].as_f64().unwrap() - 0.9).abs() < 1e-10);
     }
 
     #[test]

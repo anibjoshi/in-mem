@@ -265,6 +265,102 @@ mod tests {
     }
 
     #[test]
+    fn multi_anchor_uses_closest() {
+        let (_db, gs) = setup();
+        let b = branch();
+        // A → B → C ← D
+        // Anchors: A and D
+        // B is 1-hop from A, 2-hop from D → proximity 0.5 (closest)
+        // C is 2-hop from A, 1-hop from D → proximity 0.5 (closest)
+        gs.create_graph(b, "g", None).unwrap();
+        for (id, uri) in &[
+            ("A", "kv://main/A"),
+            ("B", "kv://main/B"),
+            ("C", "kv://main/C"),
+            ("D", "kv://main/D"),
+        ] {
+            gs.add_node(
+                b,
+                "g",
+                id,
+                NodeData {
+                    entity_ref: Some(uri.to_string()),
+                    properties: None,
+                },
+            )
+            .unwrap();
+        }
+        gs.add_edge(b, "g", "A", "B", "E", EdgeData::default())
+            .unwrap();
+        gs.add_edge(b, "g", "B", "C", "E", EdgeData::default())
+            .unwrap();
+        gs.add_edge(b, "g", "D", "C", "E", EdgeData::default())
+            .unwrap();
+
+        let prox = compute_proximity_map(
+            &gs,
+            b,
+            &GraphBoost {
+                graph: "g".into(),
+                anchors: vec!["A".into(), "D".into()],
+                max_depth: 2,
+                weight: 0.3,
+            },
+        )
+        .unwrap();
+
+        // Both A and D are anchors → proximity 1.0
+        assert_eq!(prox["kv://main/A"], 1.0);
+        assert_eq!(prox["kv://main/D"], 1.0);
+        // B is 1-hop from A → 0.5
+        assert!((prox["kv://main/B"] - 0.5).abs() < 1e-10);
+        // C is 1-hop from D → 0.5 (closer than 2-hop from A)
+        assert!((prox["kv://main/C"] - 0.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn node_without_entity_ref_not_in_proximity_map() {
+        let (_db, gs) = setup();
+        let b = branch();
+        gs.create_graph(b, "g", None).unwrap();
+        gs.add_node(
+            b,
+            "g",
+            "A",
+            NodeData {
+                entity_ref: Some("kv://main/A".to_string()),
+                properties: None,
+            },
+        )
+        .unwrap();
+        gs.add_node(b, "g", "B", NodeData::default()).unwrap();
+        gs.add_edge(b, "g", "A", "B", "E", EdgeData::default())
+            .unwrap();
+
+        let prox = compute_proximity_map(
+            &gs,
+            b,
+            &GraphBoost {
+                graph: "g".into(),
+                anchors: vec!["A".into()],
+                max_depth: 2,
+                weight: 0.3,
+            },
+        )
+        .unwrap();
+
+        assert!(prox.contains_key("kv://main/A"));
+        // B has no entity_ref, so it shouldn't be in the map
+        assert_eq!(prox.len(), 1);
+    }
+
+    #[test]
+    fn apply_boost_with_zero_score() {
+        let boosted = apply_boost(0.0, 0.3, 1.0);
+        assert!((boosted - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn nonexistent_graph_returns_empty_map() {
         let (_db, gs) = setup();
         let b = branch();

@@ -30,18 +30,10 @@ impl GraphStore {
                     self.outgoing_neighbors(branch_id, graph, node_id, edge_type_filter)?;
                 let incoming =
                     self.incoming_neighbors(branch_id, graph, node_id, edge_type_filter)?;
-                // Deduplicate by (node_id, edge_type, direction context)
-                // For Both, we include all edges but avoid duplicate neighbor entries
-                // where the same node is reached via both outgoing and incoming.
-                let existing: HashSet<(String, String)> = out
-                    .iter()
-                    .map(|n| (n.node_id.clone(), n.edge_type.clone()))
-                    .collect();
-                for n in incoming {
-                    if !existing.contains(&(n.node_id.clone(), n.edge_type.clone())) {
-                        out.push(n);
-                    }
-                }
+                // Include all edges from both directions.
+                // Distinct mutual edges (A→B and B→A) both appear.
+                // Self-loops (A→A) will appear twice (once from each direction).
+                out.extend(incoming);
                 Ok(out)
             }
         }
@@ -322,6 +314,94 @@ mod tests {
         assert!(n.is_empty());
     }
 
+    #[test]
+    fn direction_both_with_mutual_edges() {
+        let (_db, gs) = setup();
+        let b = branch();
+        add_nodes(&gs, b, "g", &["A", "B"]);
+        // A→B and B→A are distinct edges
+        gs.add_edge(b, "g", "A", "B", "KNOWS", EdgeData::default())
+            .unwrap();
+        gs.add_edge(b, "g", "B", "A", "KNOWS", EdgeData::default())
+            .unwrap();
+
+        let n = gs
+            .neighbors(b, "g", "A", Direction::Both, None)
+            .unwrap();
+        // Should see both edges: outgoing A→B and incoming B→A
+        assert_eq!(n.len(), 2);
+        assert!(n.iter().all(|nb| nb.node_id == "B"));
+    }
+
+    #[test]
+    fn direction_both_mutual_edges_different_weights() {
+        let (_db, gs) = setup();
+        let b = branch();
+        add_nodes(&gs, b, "g", &["A", "B"]);
+        gs.add_edge(
+            b,
+            "g",
+            "A",
+            "B",
+            "TRUST",
+            EdgeData {
+                weight: 0.9,
+                properties: None,
+            },
+        )
+        .unwrap();
+        gs.add_edge(
+            b,
+            "g",
+            "B",
+            "A",
+            "TRUST",
+            EdgeData {
+                weight: 0.3,
+                properties: None,
+            },
+        )
+        .unwrap();
+
+        let n = gs
+            .neighbors(b, "g", "A", Direction::Both, None)
+            .unwrap();
+        assert_eq!(n.len(), 2);
+        let mut weights: Vec<f64> = n.iter().map(|nb| nb.edge_data.weight).collect();
+        weights.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert!((weights[0] - 0.3).abs() < 1e-10);
+        assert!((weights[1] - 0.9).abs() < 1e-10);
+    }
+
+    #[test]
+    fn neighbors_returns_edge_data() {
+        let (_db, gs) = setup();
+        let b = branch();
+        add_nodes(&gs, b, "g", &["A", "B"]);
+        gs.add_edge(
+            b,
+            "g",
+            "A",
+            "B",
+            "SCORED",
+            EdgeData {
+                weight: 0.95,
+                properties: Some(serde_json::json!({"source": "manual"})),
+            },
+        )
+        .unwrap();
+
+        let n = gs
+            .neighbors(b, "g", "A", Direction::Outgoing, None)
+            .unwrap();
+        assert_eq!(n.len(), 1);
+        assert_eq!(n[0].edge_data.weight, 0.95);
+        assert_eq!(
+            n[0].edge_data.properties,
+            Some(serde_json::json!({"source": "manual"}))
+        );
+    }
+
     // =========================================================================
     // Degree
     // =========================================================================
@@ -354,9 +434,10 @@ mod tests {
         add_nodes(&gs, b, "g", &["A"]);
         gs.add_edge(b, "g", "A", "A", "SELF", EdgeData::default())
             .unwrap();
-        // Self-loop: outgoing=1, incoming=1. Both should deduplicate to 1.
+        // Self-loop: outgoing=1, incoming=1, both=2 (same edge from each direction).
         assert_eq!(gs.degree(b, "g", "A", Direction::Outgoing).unwrap(), 1);
         assert_eq!(gs.degree(b, "g", "A", Direction::Incoming).unwrap(), 1);
+        assert_eq!(gs.degree(b, "g", "A", Direction::Both).unwrap(), 2);
     }
 
     // =========================================================================
@@ -655,6 +736,93 @@ mod tests {
             .unwrap();
         assert_eq!(result.edges.len(), 1);
         assert_eq!(result.edges[0], ("A".to_string(), "B".to_string(), "E".to_string()));
+    }
+
+    #[test]
+    fn bfs_traversal_order_is_breadth_first() {
+        let (_db, gs) = setup();
+        let b = branch();
+        // Build: A → B → D, A → C → E
+        add_nodes(&gs, b, "g", &["A", "B", "C", "D", "E"]);
+        gs.add_edge(b, "g", "A", "B", "E", EdgeData::default())
+            .unwrap();
+        gs.add_edge(b, "g", "A", "C", "E", EdgeData::default())
+            .unwrap();
+        gs.add_edge(b, "g", "B", "D", "E", EdgeData::default())
+            .unwrap();
+        gs.add_edge(b, "g", "C", "E", "E", EdgeData::default())
+            .unwrap();
+
+        let result = gs
+            .bfs(b, "g", "A", BfsOptions::default())
+            .unwrap();
+
+        // A should be first (depth 0)
+        assert_eq!(result.visited[0], "A");
+        // B and C at depth 1, before D and E at depth 2
+        let b_pos = result.visited.iter().position(|v| v == "B").unwrap();
+        let c_pos = result.visited.iter().position(|v| v == "C").unwrap();
+        let d_pos = result.visited.iter().position(|v| v == "D").unwrap();
+        let e_pos = result.visited.iter().position(|v| v == "E").unwrap();
+        assert!(b_pos < d_pos, "B (depth 1) should come before D (depth 2)");
+        assert!(b_pos < e_pos, "B (depth 1) should come before E (depth 2)");
+        assert!(c_pos < d_pos, "C (depth 1) should come before D (depth 2)");
+        assert!(c_pos < e_pos, "C (depth 1) should come before E (depth 2)");
+    }
+
+    #[test]
+    fn bfs_max_nodes_1_returns_only_start() {
+        let (_db, gs) = setup();
+        let b = branch();
+        add_nodes(&gs, b, "g", &["A", "B", "C"]);
+        gs.add_edge(b, "g", "A", "B", "E", EdgeData::default())
+            .unwrap();
+        gs.add_edge(b, "g", "A", "C", "E", EdgeData::default())
+            .unwrap();
+
+        let result = gs
+            .bfs(
+                b,
+                "g",
+                "A",
+                BfsOptions {
+                    max_depth: 10,
+                    max_nodes: Some(1),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(result.visited.len(), 1);
+        assert_eq!(result.visited[0], "A");
+    }
+
+    #[test]
+    fn bfs_direction_both_traverses_bidirectionally() {
+        let (_db, gs) = setup();
+        let b = branch();
+        // A → B, C → A (A has outgoing to B and incoming from C)
+        add_nodes(&gs, b, "g", &["A", "B", "C"]);
+        gs.add_edge(b, "g", "A", "B", "E", EdgeData::default())
+            .unwrap();
+        gs.add_edge(b, "g", "C", "A", "E", EdgeData::default())
+            .unwrap();
+
+        let result = gs
+            .bfs(
+                b,
+                "g",
+                "A",
+                BfsOptions {
+                    max_depth: 1,
+                    direction: Direction::Both,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        // Should visit A, B (outgoing), and C (incoming)
+        assert_eq!(result.visited.len(), 3);
+        assert!(result.visited.contains(&"B".to_string()));
+        assert!(result.visited.contains(&"C".to_string()));
     }
 
     // =========================================================================

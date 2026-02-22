@@ -6,7 +6,7 @@
 use strata_core::types::BranchId;
 use strata_core::StrataResult;
 
-use super::types::{CascadePolicy, NodeData};
+use super::types::CascadePolicy;
 use super::GraphStore;
 
 impl GraphStore {

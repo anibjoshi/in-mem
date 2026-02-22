@@ -200,4 +200,50 @@ mod tests {
 
         assert_eq!(idx.outgoing_neighbors("A", None).len(), 3);
     }
+
+    #[test]
+    fn add_edge_duplicate_appends() {
+        let mut idx = AdjacencyIndex::new();
+        idx.add_edge("A", "B", "KNOWS", EdgeData::default());
+        idx.add_edge("A", "B", "KNOWS", EdgeData { weight: 2.0, properties: None });
+
+        // AdjacencyIndex doesn't deduplicate — caller is responsible
+        let out = idx.outgoing_neighbors("A", None);
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn mutual_edges_tracked_separately() {
+        let mut idx = AdjacencyIndex::new();
+        idx.add_edge("A", "B", "TRUST", EdgeData { weight: 0.9, properties: None });
+        idx.add_edge("B", "A", "TRUST", EdgeData { weight: 0.3, properties: None });
+
+        let a_out = idx.outgoing_neighbors("A", None);
+        assert_eq!(a_out.len(), 1);
+        assert_eq!(a_out[0].edge_data.weight, 0.9);
+
+        let a_in = idx.incoming_neighbors("A", None);
+        assert_eq!(a_in.len(), 1);
+        assert_eq!(a_in[0].edge_data.weight, 0.3);
+    }
+
+    #[test]
+    fn remove_node_with_no_edges() {
+        let mut idx = AdjacencyIndex::new();
+        idx.add_node("A");
+        idx.remove_node("A");
+        assert!(!idx.nodes.contains("A"));
+    }
+
+    #[test]
+    fn remove_nonexistent_node_is_noop() {
+        let mut idx = AdjacencyIndex::new();
+        idx.remove_node("ghost"); // Should not panic
+    }
+
+    #[test]
+    fn remove_nonexistent_edge_is_noop() {
+        let mut idx = AdjacencyIndex::new();
+        idx.remove_edge("A", "B", "E"); // Should not panic
+    }
 }

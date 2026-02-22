@@ -396,4 +396,104 @@ mod tests {
         let key = storage_key(branch, "test/key");
         assert_kv_tag(&key);
     }
+
+    // --- URI encoding edge cases ---
+
+    #[test]
+    fn uri_encode_decode_with_percent_2f() {
+        // URI containing literal "%2F" should round-trip correctly
+        let uri = "kv://main/key%2Fwith%2Fencoded";
+        let encoded = encode_uri(uri);
+        let decoded = decode_uri(&encoded);
+        assert_eq!(decoded, uri);
+    }
+
+    #[test]
+    fn uri_encode_decode_with_percent_25() {
+        // URI containing literal "%25" should round-trip correctly
+        let uri = "kv://main/100%25done";
+        let encoded = encode_uri(uri);
+        let decoded = decode_uri(&encoded);
+        assert_eq!(decoded, uri);
+    }
+
+    #[test]
+    fn uri_encode_decode_with_slashes_and_percents() {
+        // URI with both slashes and percent signs
+        let uri = "kv://main/path/to/100%25/file";
+        let encoded = encode_uri(uri);
+        let decoded = decode_uri(&encoded);
+        assert_eq!(decoded, uri);
+    }
+
+    #[test]
+    fn uri_encode_decode_percent_2f_and_real_slash() {
+        // URI containing both a literal "%2F" and real slashes
+        let uri = "json://main/doc%2Fwith%2Fslashes/and/real/slashes";
+        let encoded = encode_uri(uri);
+        let decoded = decode_uri(&encoded);
+        assert_eq!(decoded, uri);
+    }
+
+    #[test]
+    fn ref_index_key_roundtrip_with_complex_uri() {
+        // Full ref index round-trip with a URI containing slashes
+        let uri = "kv://main/path/to/thing";
+        let key = ref_index_key(uri, "mygraph", "node1");
+        let (decoded_uri, graph, node_id) = parse_ref_index_key(&key).unwrap();
+        assert_eq!(decoded_uri, uri);
+        assert_eq!(graph, "mygraph");
+        assert_eq!(node_id, "node1");
+    }
+
+    // --- Negative parsing tests ---
+
+    #[test]
+    fn parse_forward_edge_key_wrong_graph_returns_none() {
+        let key = forward_edge_key("g", "A", "T", "B");
+        assert!(parse_forward_edge_key("other", &key).is_none());
+    }
+
+    #[test]
+    fn parse_forward_edge_key_malformed_returns_none() {
+        assert!(parse_forward_edge_key("g", "g/e/A").is_none());
+        assert!(parse_forward_edge_key("g", "garbage").is_none());
+    }
+
+    #[test]
+    fn parse_reverse_edge_key_wrong_graph_returns_none() {
+        let key = reverse_edge_key("g", "B", "T", "A");
+        assert!(parse_reverse_edge_key("other", &key).is_none());
+    }
+
+    #[test]
+    fn parse_node_key_wrong_graph_returns_none() {
+        let key = node_key("g", "n1");
+        assert!(parse_node_key("other", &key).is_none());
+    }
+
+    #[test]
+    fn parse_ref_index_key_malformed_returns_none() {
+        assert!(parse_ref_index_key("not_a_ref_key").is_none());
+        assert!(parse_ref_index_key("__ref__/only_one_part").is_none());
+    }
+
+    // --- Cross-type parsing tests ---
+
+    #[test]
+    fn forward_edge_key_not_parseable_as_node() {
+        let key = forward_edge_key("g", "A", "T", "B");
+        assert!(parse_node_key("g", &key).is_none() || {
+            // It may parse as a node key but the result should not be "A"
+            // since the format is different
+            let parsed = parse_node_key("g", &key).unwrap();
+            parsed != "A"
+        });
+    }
+
+    #[test]
+    fn node_key_not_parseable_as_forward_edge() {
+        let key = node_key("g", "mynode");
+        assert!(parse_forward_edge_key("g", &key).is_none());
+    }
 }

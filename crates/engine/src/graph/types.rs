@@ -52,36 +52,24 @@ pub struct Edge {
 }
 
 /// Cascade policy for referential integrity when a bound entity is deleted.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
 pub enum CascadePolicy {
     /// Delete the graph node and all its edges.
     Cascade,
     /// Keep the node but remove the entity_ref binding.
     Detach,
     /// Do nothing (default).
+    #[default]
     Ignore,
 }
 
-impl Default for CascadePolicy {
-    fn default() -> Self {
-        CascadePolicy::Ignore
-    }
-}
-
 /// Metadata about a graph instance.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct GraphMeta {
     /// Cascade policy when bound entities are deleted.
     #[serde(default)]
     pub cascade_policy: CascadePolicy,
-}
-
-impl Default for GraphMeta {
-    fn default() -> Self {
-        Self {
-            cascade_policy: CascadePolicy::default(),
-        }
-    }
 }
 
 /// Direction for traversal operations.
@@ -305,6 +293,27 @@ mod tests {
             let restored: GraphMeta = serde_json::from_str(&json).unwrap();
             assert_eq!(meta, restored);
         }
+    }
+
+    #[test]
+    fn cascade_policy_serde_lowercase() {
+        // Verify serde serializes as lowercase (matching API input format)
+        let json = serde_json::to_string(&CascadePolicy::Cascade).unwrap();
+        assert_eq!(json, "\"cascade\"");
+        let json = serde_json::to_string(&CascadePolicy::Detach).unwrap();
+        assert_eq!(json, "\"detach\"");
+        let json = serde_json::to_string(&CascadePolicy::Ignore).unwrap();
+        assert_eq!(json, "\"ignore\"");
+    }
+
+    #[test]
+    fn cascade_policy_deserialize_lowercase() {
+        let c: CascadePolicy = serde_json::from_str("\"cascade\"").unwrap();
+        assert_eq!(c, CascadePolicy::Cascade);
+        let d: CascadePolicy = serde_json::from_str("\"detach\"").unwrap();
+        assert_eq!(d, CascadePolicy::Detach);
+        let i: CascadePolicy = serde_json::from_str("\"ignore\"").unwrap();
+        assert_eq!(i, CascadePolicy::Ignore);
     }
 
     #[test]

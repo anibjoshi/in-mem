@@ -160,6 +160,7 @@ pub fn graph_list_nodes(
 }
 
 /// Handle GraphAddEdge command.
+#[allow(clippy::too_many_arguments)]
 pub fn graph_add_edge(
     p: &Arc<Primitives>,
     branch: BranchId,
@@ -232,6 +233,7 @@ pub fn graph_neighbors(
 }
 
 /// Handle GraphBfs command.
+#[allow(clippy::too_many_arguments)]
 pub fn graph_bfs(
     p: &Arc<Primitives>,
     branch: BranchId,
