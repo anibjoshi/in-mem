@@ -317,9 +317,8 @@ impl Strata {
         }
     }
 
-    /// Get the underlying executor.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn executor(&self) -> &Executor {
+    /// Get the underlying executor for direct command execution.
+    pub fn executor(&self) -> &Executor {
         &self.executor
     }
 
