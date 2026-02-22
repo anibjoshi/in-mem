@@ -998,6 +998,170 @@ impl Executor {
                 })?;
                 crate::handlers::space::space_exists(&self.primitives, branch, space)
             }
+
+            // Graph commands
+            Command::GraphCreate {
+                branch,
+                graph,
+                cascade_policy,
+            } => {
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
+                crate::handlers::graph::graph_create(
+                    &self.primitives,
+                    branch,
+                    graph,
+                    cascade_policy,
+                )
+            }
+            Command::GraphDelete { branch, graph } => {
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
+                crate::handlers::graph::graph_delete(&self.primitives, branch, graph)
+            }
+            Command::GraphList { branch } => {
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
+                crate::handlers::graph::graph_list(&self.primitives, branch)
+            }
+            Command::GraphGetMeta { branch, graph } => {
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
+                crate::handlers::graph::graph_get_meta(&self.primitives, branch, graph)
+            }
+            Command::GraphAddNode {
+                branch,
+                graph,
+                node_id,
+                entity_ref,
+                properties,
+            } => {
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
+                crate::handlers::graph::graph_add_node(
+                    &self.primitives,
+                    branch,
+                    graph,
+                    node_id,
+                    entity_ref,
+                    properties,
+                )
+            }
+            Command::GraphGetNode {
+                branch,
+                graph,
+                node_id,
+            } => {
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
+                crate::handlers::graph::graph_get_node(&self.primitives, branch, graph, node_id)
+            }
+            Command::GraphRemoveNode {
+                branch,
+                graph,
+                node_id,
+            } => {
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
+                crate::handlers::graph::graph_remove_node(&self.primitives, branch, graph, node_id)
+            }
+            Command::GraphListNodes { branch, graph } => {
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
+                crate::handlers::graph::graph_list_nodes(&self.primitives, branch, graph)
+            }
+            Command::GraphAddEdge {
+                branch,
+                graph,
+                src,
+                dst,
+                edge_type,
+                weight,
+                properties,
+            } => {
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
+                crate::handlers::graph::graph_add_edge(
+                    &self.primitives,
+                    branch,
+                    graph,
+                    src,
+                    dst,
+                    edge_type,
+                    weight,
+                    properties,
+                )
+            }
+            Command::GraphRemoveEdge {
+                branch,
+                graph,
+                src,
+                dst,
+                edge_type,
+            } => {
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
+                crate::handlers::graph::graph_remove_edge(
+                    &self.primitives,
+                    branch,
+                    graph,
+                    src,
+                    dst,
+                    edge_type,
+                )
+            }
+            Command::GraphNeighbors {
+                branch,
+                graph,
+                node_id,
+                direction,
+                edge_type,
+            } => {
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
+                crate::handlers::graph::graph_neighbors(
+                    &self.primitives,
+                    branch,
+                    graph,
+                    node_id,
+                    direction,
+                    edge_type,
+                )
+            }
+            Command::GraphBfs {
+                branch,
+                graph,
+                start,
+                max_depth,
+                max_nodes,
+                edge_types,
+                direction,
+            } => {
+                let branch = branch.ok_or(Error::InvalidInput {
+                    reason: "Branch must be specified or resolved to default".into(),
+                })?;
+                crate::handlers::graph::graph_bfs(
+                    &self.primitives,
+                    branch,
+                    graph,
+                    start,
+                    max_depth,
+                    max_nodes,
+                    edge_types,
+                    direction,
+                )
+            }
         };
 
         match &result {

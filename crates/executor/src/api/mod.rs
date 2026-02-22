@@ -40,6 +40,7 @@ mod branch;
 mod branches;
 mod db;
 mod event;
+mod graph;
 mod json;
 mod kv;
 mod state;
@@ -1080,6 +1081,230 @@ mod tests {
             assert_eq!(model.endpoint, "http://localhost:11434/v1");
             assert_eq!(model.model, "qwen3:1.7b");
             assert_eq!(model.timeout_ms, 5000);
+        }
+    }
+
+    // =========================================================================
+    // Graph API Tests
+    // =========================================================================
+
+    #[test]
+    fn test_graph_create_list_delete() {
+        let db = create_strata();
+
+        db.graph_create("my_graph").unwrap();
+
+        let graphs = db.graph_list().unwrap();
+        assert!(graphs.contains(&"my_graph".to_string()));
+
+        let meta = db.graph_get_meta("my_graph").unwrap();
+        assert!(meta.is_some());
+
+        db.graph_delete("my_graph").unwrap();
+        let graphs = db.graph_list().unwrap();
+        assert!(!graphs.contains(&"my_graph".to_string()));
+    }
+
+    #[test]
+    fn test_graph_node_crud() {
+        let db = create_strata();
+        db.graph_create("ng").unwrap();
+
+        db.graph_add_node("ng", "n1", None, Some(Value::Object(
+            [("name".to_string(), Value::String("Alice".into()))].into_iter().collect()
+        ))).unwrap();
+
+        let node = db.graph_get_node("ng", "n1").unwrap();
+        assert!(node.is_some());
+
+        let nodes = db.graph_list_nodes("ng").unwrap();
+        assert_eq!(nodes, vec!["n1"]);
+
+        db.graph_remove_node("ng", "n1").unwrap();
+        assert!(db.graph_get_node("ng", "n1").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_graph_edge_crud() {
+        let db = create_strata();
+        db.graph_create("eg").unwrap();
+
+        db.graph_add_edge("eg", "A", "B", "KNOWS", None, None).unwrap();
+
+        let neighbors = db.graph_neighbors("eg", "A", "outgoing", None).unwrap();
+        assert_eq!(neighbors.len(), 1);
+        assert_eq!(neighbors[0].node_id, "B");
+        assert_eq!(neighbors[0].edge_type, "KNOWS");
+        assert_eq!(neighbors[0].weight, 1.0);
+
+        db.graph_remove_edge("eg", "A", "B", "KNOWS").unwrap();
+        let neighbors = db.graph_neighbors("eg", "A", "outgoing", None).unwrap();
+        assert!(neighbors.is_empty());
+    }
+
+    #[test]
+    fn test_graph_bfs() {
+        let db = create_strata();
+        db.graph_create("bg").unwrap();
+
+        db.graph_add_edge("bg", "A", "B", "E", None, None).unwrap();
+        db.graph_add_edge("bg", "B", "C", "E", None, None).unwrap();
+        db.graph_add_edge("bg", "C", "D", "E", None, None).unwrap();
+
+        let result = db.graph_bfs("bg", "A", 10, None, None, None).unwrap();
+        assert_eq!(result.visited.len(), 4);
+        assert_eq!(result.visited[0], "A");
+    }
+
+    #[test]
+    fn test_graph_branch_isolation() {
+        let mut db = create_strata();
+
+        // Create graph on default branch
+        db.graph_create("isolated").unwrap();
+        db.graph_add_node("isolated", "n1", None, None).unwrap();
+
+        // Create and switch to new branch
+        db.create_branch("graph-branch").unwrap();
+        db.set_branch("graph-branch").unwrap();
+
+        // Graph should not exist on the new branch
+        let graphs = db.graph_list().unwrap();
+        assert!(!graphs.contains(&"isolated".to_string()));
+
+        // Switch back — graph should still be there
+        db.set_branch("default").unwrap();
+        let graphs = db.graph_list().unwrap();
+        assert!(graphs.contains(&"isolated".to_string()));
+        assert!(db.graph_get_node("isolated", "n1").unwrap().is_some());
+    }
+
+    #[test]
+    fn test_patient_care_graph_end_to_end() {
+        let db = create_strata();
+
+        // Create graph
+        db.graph_create("patient_care").unwrap();
+
+        // Add nodes
+        db.graph_add_node(
+            "patient_care",
+            "patient-4821",
+            Some("json://main/patient-4821"),
+            Some(Value::Object(
+                [("department".to_string(), Value::String("endocrinology".into()))]
+                    .into_iter()
+                    .collect(),
+            )),
+        )
+        .unwrap();
+        db.graph_add_node(
+            "patient_care",
+            "ICD:E11.9",
+            None,
+            Some(Value::Object(
+                [("description".to_string(), Value::String("Type 2 Diabetes".into()))]
+                    .into_iter()
+                    .collect(),
+            )),
+        )
+        .unwrap();
+        db.graph_add_node(
+            "patient_care",
+            "lab:HbA1c",
+            Some("kv://main/lab:4821:HbA1c:2026-01"),
+            None,
+        )
+        .unwrap();
+        db.graph_add_node("patient_care", "med:metformin", None, None)
+            .unwrap();
+        db.graph_add_node(
+            "patient_care",
+            "ICD:N18.3",
+            None,
+            Some(Value::Object(
+                [("description".to_string(), Value::String("CKD Stage 3".into()))]
+                    .into_iter()
+                    .collect(),
+            )),
+        )
+        .unwrap();
+
+        // Add edges
+        db.graph_add_edge(
+            "patient_care", "patient-4821", "ICD:E11.9", "DIAGNOSED_WITH", None, None,
+        ).unwrap();
+        db.graph_add_edge(
+            "patient_care", "patient-4821", "lab:HbA1c", "HAS_LAB_RESULT", None, None,
+        ).unwrap();
+        db.graph_add_edge(
+            "patient_care", "lab:HbA1c", "ICD:E11.9", "SUPPORTS", Some(0.95), None,
+        ).unwrap();
+        db.graph_add_edge(
+            "patient_care", "ICD:E11.9", "med:metformin", "TREATED_BY", None, None,
+        ).unwrap();
+        db.graph_add_edge(
+            "patient_care", "med:metformin", "ICD:N18.3", "CONTRAINDICATES", Some(0.8), None,
+        ).unwrap();
+
+        // Query: what supports the diabetes diagnosis?
+        let supporters = db
+            .graph_neighbors("patient_care", "ICD:E11.9", "incoming", Some("SUPPORTS"))
+            .unwrap();
+        assert_eq!(supporters.len(), 1);
+        assert_eq!(supporters[0].node_id, "lab:HbA1c");
+
+        // Contraindication check via BFS
+        let risks = db
+            .graph_bfs(
+                "patient_care",
+                "med:metformin",
+                2,
+                None,
+                Some(vec!["CONTRAINDICATES".into()]),
+                Some("outgoing"),
+            )
+            .unwrap();
+        assert!(risks.visited.contains(&"ICD:N18.3".to_string()));
+
+        // Verify node count
+        let mut nodes = db.graph_list_nodes("patient_care").unwrap();
+        nodes.sort();
+        assert_eq!(nodes.len(), 5);
+
+        // Verify all 5 edges exist
+        let all_neighbors = db
+            .graph_neighbors("patient_care", "patient-4821", "outgoing", None)
+            .unwrap();
+        assert_eq!(all_neighbors.len(), 2); // DIAGNOSED_WITH + HAS_LAB_RESULT
+    }
+
+    #[test]
+    fn test_graph_read_only_rejects_writes() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create a database with a graph
+        {
+            let db = Strata::open(dir.path()).unwrap();
+            db.graph_create("rg").unwrap();
+        }
+
+        // Reopen in read-only mode
+        {
+            let db = Strata::open_with(
+                dir.path(),
+                OpenOptions::new().access_mode(AccessMode::ReadOnly),
+            )
+            .unwrap();
+
+            // Reads should work
+            let graphs = db.graph_list().unwrap();
+            assert!(graphs.contains(&"rg".to_string()));
+
+            // Writes should fail
+            assert!(db.graph_create("new_graph").is_err());
+            assert!(db.graph_add_node("rg", "n1", None, None).is_err());
+            assert!(db.graph_add_edge("rg", "A", "B", "E", None, None).is_err());
         }
     }
 }

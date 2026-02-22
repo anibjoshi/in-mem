@@ -961,6 +961,134 @@ pub enum Command {
         /// Space name.
         space: String,
     },
+
+    // ==================== Graph ====================
+    /// Create a new graph.
+    /// Returns: `Output::Unit`
+    GraphCreate {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<BranchId>,
+        graph: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cascade_policy: Option<String>,
+    },
+
+    /// Delete a graph and all its data.
+    /// Returns: `Output::Unit`
+    GraphDelete {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<BranchId>,
+        graph: String,
+    },
+
+    /// List all graphs.
+    /// Returns: `Output::Keys`
+    GraphList {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<BranchId>,
+    },
+
+    /// Get graph metadata.
+    /// Returns: `Output::Maybe`
+    GraphGetMeta {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<BranchId>,
+        graph: String,
+    },
+
+    /// Add or update a node.
+    /// Returns: `Output::Unit`
+    GraphAddNode {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<BranchId>,
+        graph: String,
+        node_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        entity_ref: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        properties: Option<Value>,
+    },
+
+    /// Get a node.
+    /// Returns: `Output::Maybe`
+    GraphGetNode {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<BranchId>,
+        graph: String,
+        node_id: String,
+    },
+
+    /// Remove a node and its incident edges.
+    /// Returns: `Output::Unit`
+    GraphRemoveNode {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<BranchId>,
+        graph: String,
+        node_id: String,
+    },
+
+    /// List all node IDs in a graph.
+    /// Returns: `Output::Keys`
+    GraphListNodes {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<BranchId>,
+        graph: String,
+    },
+
+    /// Add or update an edge.
+    /// Returns: `Output::Unit`
+    GraphAddEdge {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<BranchId>,
+        graph: String,
+        src: String,
+        dst: String,
+        edge_type: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        weight: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        properties: Option<Value>,
+    },
+
+    /// Remove an edge.
+    /// Returns: `Output::Unit`
+    GraphRemoveEdge {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<BranchId>,
+        graph: String,
+        src: String,
+        dst: String,
+        edge_type: String,
+    },
+
+    /// Get neighbors of a node.
+    /// Returns: `Output::GraphNeighbors`
+    GraphNeighbors {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<BranchId>,
+        graph: String,
+        node_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        direction: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        edge_type: Option<String>,
+    },
+
+    /// BFS traversal.
+    /// Returns: `Output::GraphBfs`
+    GraphBfs {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<BranchId>,
+        graph: String,
+        start: String,
+        max_depth: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_nodes: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        edge_types: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        direction: Option<String>,
+    },
 }
 
 impl Command {
@@ -1006,6 +1134,12 @@ impl Command {
                 | Command::BranchImport { .. }
                 | Command::ConfigureModel { .. }
                 | Command::ModelsPull { .. }
+                | Command::GraphCreate { .. }
+                | Command::GraphDelete { .. }
+                | Command::GraphAddNode { .. }
+                | Command::GraphRemoveNode { .. }
+                | Command::GraphAddEdge { .. }
+                | Command::GraphRemoveEdge { .. }
         )
     }
 
@@ -1093,6 +1227,18 @@ impl Command {
             Command::SpaceCreate { .. } => "SpaceCreate",
             Command::SpaceDelete { .. } => "SpaceDelete",
             Command::SpaceExists { .. } => "SpaceExists",
+            Command::GraphCreate { .. } => "GraphCreate",
+            Command::GraphDelete { .. } => "GraphDelete",
+            Command::GraphList { .. } => "GraphList",
+            Command::GraphGetMeta { .. } => "GraphGetMeta",
+            Command::GraphAddNode { .. } => "GraphAddNode",
+            Command::GraphGetNode { .. } => "GraphGetNode",
+            Command::GraphRemoveNode { .. } => "GraphRemoveNode",
+            Command::GraphListNodes { .. } => "GraphListNodes",
+            Command::GraphAddEdge { .. } => "GraphAddEdge",
+            Command::GraphRemoveEdge { .. } => "GraphRemoveEdge",
+            Command::GraphNeighbors { .. } => "GraphNeighbors",
+            Command::GraphBfs { .. } => "GraphBfs",
         }
     }
 
@@ -1176,6 +1322,22 @@ impl Command {
             | Command::SpaceCreate { branch, .. }
             | Command::SpaceDelete { branch, .. }
             | Command::SpaceExists { branch, .. } => {
+                resolve_branch!(branch);
+            }
+
+            // Graph commands — only have branch
+            Command::GraphCreate { branch, .. }
+            | Command::GraphDelete { branch, .. }
+            | Command::GraphList { branch, .. }
+            | Command::GraphGetMeta { branch, .. }
+            | Command::GraphAddNode { branch, .. }
+            | Command::GraphGetNode { branch, .. }
+            | Command::GraphRemoveNode { branch, .. }
+            | Command::GraphListNodes { branch, .. }
+            | Command::GraphAddEdge { branch, .. }
+            | Command::GraphRemoveEdge { branch, .. }
+            | Command::GraphNeighbors { branch, .. }
+            | Command::GraphBfs { branch, .. } => {
                 resolve_branch!(branch);
             }
 

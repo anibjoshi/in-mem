@@ -370,6 +370,8 @@ fn format_raw(output: &Output) -> String {
             .collect::<Vec<_>>()
             .join(" "),
         Output::Text(t) => t.clone(),
+        Output::GraphNeighbors(hits) => serde_json::to_string(&hits).unwrap_or_default(),
+        Output::GraphBfs(result) => serde_json::to_string(&result).unwrap_or_default(),
     }
 }
 
@@ -786,6 +788,20 @@ fn format_human(output: &Output) -> String {
             )
         }
         Output::Text(t) => format!("\"{}\"", t),
+        Output::GraphNeighbors(hits) => {
+            format!(
+                "(neighbors) {} result(s)\n{}",
+                hits.len(),
+                serde_json::to_string_pretty(&hits).unwrap_or_default()
+            )
+        }
+        Output::GraphBfs(result) => {
+            format!(
+                "(bfs) {} node(s) visited\n{}",
+                result.visited.len(),
+                serde_json::to_string_pretty(&result).unwrap_or_default()
+            )
+        }
     }
 }
 

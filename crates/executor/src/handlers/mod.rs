@@ -21,6 +21,7 @@ pub mod embed;
 pub mod embed_hook;
 pub mod event;
 pub mod generate;
+pub mod graph;
 pub mod json;
 pub mod kv;
 pub mod models;
