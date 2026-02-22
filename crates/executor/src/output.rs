@@ -193,6 +193,12 @@ pub enum Output {
     /// Plain text result (detokenization)
     Text(String),
 
+    /// Graph neighbor query results
+    GraphNeighbors(Vec<GraphNeighborHit>),
+
+    /// Graph BFS traversal results
+    GraphBfs(GraphBfsResult),
+
     /// Model successfully pulled/downloaded
     ModelsPulled {
         /// Name of the model that was pulled.

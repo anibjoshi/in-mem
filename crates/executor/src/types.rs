@@ -485,3 +485,29 @@ pub struct SearchResultHit {
     /// Optional text snippet
     pub snippet: Option<String>,
 }
+
+// =============================================================================
+// Graph Types
+// =============================================================================
+
+/// A neighbor entry returned by graph neighbor queries.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GraphNeighborHit {
+    /// The neighbor node ID.
+    pub node_id: String,
+    /// The edge type connecting to this neighbor.
+    pub edge_type: String,
+    /// Edge weight.
+    pub weight: f64,
+}
+
+/// BFS traversal result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GraphBfsResult {
+    /// Visited node IDs in BFS order.
+    pub visited: Vec<String>,
+    /// Depth at which each node was first discovered.
+    pub depths: std::collections::HashMap<String, usize>,
+    /// Edges traversed: (src, dst, edge_type).
+    pub edges: Vec<(String, String, String)>,
+}

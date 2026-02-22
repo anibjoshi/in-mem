@@ -961,6 +961,179 @@ pub enum Command {
         /// Space name.
         space: String,
     },
+
+    // ==================== Graph ====================
+    /// Create a new graph.
+    /// Returns: `Output::Unit`
+    GraphCreate {
+        /// Target branch (resolved from context if absent).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<BranchId>,
+        /// Graph name.
+        graph: String,
+        /// Optional cascade policy: `"cascade"`, `"detach"`, or `"ignore"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cascade_policy: Option<String>,
+    },
+
+    /// Delete a graph and all its data.
+    /// Returns: `Output::Unit`
+    GraphDelete {
+        /// Target branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<BranchId>,
+        /// Graph name.
+        graph: String,
+    },
+
+    /// List all graphs.
+    /// Returns: `Output::Keys`
+    GraphList {
+        /// Target branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<BranchId>,
+    },
+
+    /// Get graph metadata.
+    /// Returns: `Output::Maybe`
+    GraphGetMeta {
+        /// Target branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<BranchId>,
+        /// Graph name.
+        graph: String,
+    },
+
+    /// Add or update a node.
+    /// Returns: `Output::Unit`
+    GraphAddNode {
+        /// Target branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<BranchId>,
+        /// Graph name.
+        graph: String,
+        /// Node identifier.
+        node_id: String,
+        /// Optional entity reference URI (e.g. `"kv://main/key"`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        entity_ref: Option<String>,
+        /// Optional properties to attach to the node.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        properties: Option<Value>,
+    },
+
+    /// Get a node.
+    /// Returns: `Output::Maybe`
+    GraphGetNode {
+        /// Target branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<BranchId>,
+        /// Graph name.
+        graph: String,
+        /// Node identifier.
+        node_id: String,
+    },
+
+    /// Remove a node and its incident edges.
+    /// Returns: `Output::Unit`
+    GraphRemoveNode {
+        /// Target branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<BranchId>,
+        /// Graph name.
+        graph: String,
+        /// Node identifier.
+        node_id: String,
+    },
+
+    /// List all node IDs in a graph.
+    /// Returns: `Output::Keys`
+    GraphListNodes {
+        /// Target branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<BranchId>,
+        /// Graph name.
+        graph: String,
+    },
+
+    /// Add or update an edge.
+    /// Returns: `Output::Unit`
+    GraphAddEdge {
+        /// Target branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<BranchId>,
+        /// Graph name.
+        graph: String,
+        /// Source node ID.
+        src: String,
+        /// Destination node ID.
+        dst: String,
+        /// Edge type label.
+        edge_type: String,
+        /// Optional edge weight (default 1.0).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        weight: Option<f64>,
+        /// Optional properties to attach to the edge.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        properties: Option<Value>,
+    },
+
+    /// Remove an edge.
+    /// Returns: `Output::Unit`
+    GraphRemoveEdge {
+        /// Target branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<BranchId>,
+        /// Graph name.
+        graph: String,
+        /// Source node ID.
+        src: String,
+        /// Destination node ID.
+        dst: String,
+        /// Edge type label.
+        edge_type: String,
+    },
+
+    /// Get neighbors of a node.
+    /// Returns: `Output::GraphNeighbors`
+    GraphNeighbors {
+        /// Target branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<BranchId>,
+        /// Graph name.
+        graph: String,
+        /// Node identifier.
+        node_id: String,
+        /// Direction: `"outgoing"`, `"incoming"`, or `"both"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        direction: Option<String>,
+        /// Optional edge type filter.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        edge_type: Option<String>,
+    },
+
+    /// BFS traversal.
+    /// Returns: `Output::GraphBfs`
+    GraphBfs {
+        /// Target branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<BranchId>,
+        /// Graph name.
+        graph: String,
+        /// Start node ID.
+        start: String,
+        /// Maximum traversal depth.
+        max_depth: usize,
+        /// Maximum number of nodes to visit.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_nodes: Option<usize>,
+        /// Only traverse edges of these types.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        edge_types: Option<Vec<String>>,
+        /// Traversal direction.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        direction: Option<String>,
+    },
 }
 
 impl Command {
@@ -1006,6 +1179,12 @@ impl Command {
                 | Command::BranchImport { .. }
                 | Command::ConfigureModel { .. }
                 | Command::ModelsPull { .. }
+                | Command::GraphCreate { .. }
+                | Command::GraphDelete { .. }
+                | Command::GraphAddNode { .. }
+                | Command::GraphRemoveNode { .. }
+                | Command::GraphAddEdge { .. }
+                | Command::GraphRemoveEdge { .. }
         )
     }
 
@@ -1093,6 +1272,18 @@ impl Command {
             Command::SpaceCreate { .. } => "SpaceCreate",
             Command::SpaceDelete { .. } => "SpaceDelete",
             Command::SpaceExists { .. } => "SpaceExists",
+            Command::GraphCreate { .. } => "GraphCreate",
+            Command::GraphDelete { .. } => "GraphDelete",
+            Command::GraphList { .. } => "GraphList",
+            Command::GraphGetMeta { .. } => "GraphGetMeta",
+            Command::GraphAddNode { .. } => "GraphAddNode",
+            Command::GraphGetNode { .. } => "GraphGetNode",
+            Command::GraphRemoveNode { .. } => "GraphRemoveNode",
+            Command::GraphListNodes { .. } => "GraphListNodes",
+            Command::GraphAddEdge { .. } => "GraphAddEdge",
+            Command::GraphRemoveEdge { .. } => "GraphRemoveEdge",
+            Command::GraphNeighbors { .. } => "GraphNeighbors",
+            Command::GraphBfs { .. } => "GraphBfs",
         }
     }
 
@@ -1176,6 +1367,22 @@ impl Command {
             | Command::SpaceCreate { branch, .. }
             | Command::SpaceDelete { branch, .. }
             | Command::SpaceExists { branch, .. } => {
+                resolve_branch!(branch);
+            }
+
+            // Graph commands — only have branch
+            Command::GraphCreate { branch, .. }
+            | Command::GraphDelete { branch, .. }
+            | Command::GraphList { branch, .. }
+            | Command::GraphGetMeta { branch, .. }
+            | Command::GraphAddNode { branch, .. }
+            | Command::GraphGetNode { branch, .. }
+            | Command::GraphRemoveNode { branch, .. }
+            | Command::GraphListNodes { branch, .. }
+            | Command::GraphAddEdge { branch, .. }
+            | Command::GraphRemoveEdge { branch, .. }
+            | Command::GraphNeighbors { branch, .. }
+            | Command::GraphBfs { branch, .. } => {
                 resolve_branch!(branch);
             }
 
